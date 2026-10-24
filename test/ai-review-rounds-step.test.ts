@@ -71,6 +71,9 @@ import {
   AI_REVIEW_PR_BODY_VAR,
   AI_REVIEW_RUN_STEP_ID,
   buildReviewPrompt,
+  AI_REVIEW_CARRY_PATH_VAR,
+  AI_REVIEW_CARRY_READ,
+  buildCarryScript,
   buildRoundsScript,
 } from "../lib/scaffold/ai-review-step.ts";
 import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
@@ -502,7 +505,16 @@ describe("AC-S5: nothing from the branch under review reaches the prompt", () =>
     // Said positively too, so the absence above is not the only thing
     // standing between here and a reviewer inventing its own scope.
     expect(flat).toContain("READ THE WHOLE BRANCH, ON EVERY ROUND");
-    expect(flat).toContain("nothing carries its findings forward for you");
+    // This used to require "nothing carries its findings forward for you",
+    // which was true when it was written and stopped being true in #1381.
+    // What the case is FOR is that the prompt states the carry's real state
+    // rather than leaving the reviewer to infer one, so it now requires the
+    // variable the walker's file arrives under — and AC-S6 below is what
+    // keeps the two in step, in both directions.
+    expect(
+      flat,
+      "the prompt no longer tells the reviewer where to read what earlier rounds raised",
+    ).toContain(AI_REVIEW_CARRY_PATH_VAR);
   });
 
   test("AC-S5: an absent state file is a stated case, not an undefined one", () => {
@@ -739,6 +751,34 @@ describe("AC-S6 (#1241): the cap bounds re-litigation, never the gate", () => {
       .filter(f => f !== "lib/ai-review-rounds.ts")
       .filter(importsSymbol);
 
+    // THE SECOND ARM, and it is the one this case was blind to until #1381.
+    //
+    // #1381's third comment measured it: the detector above searches `lib
+    // gates scripts workflows bin`, and the walker that carries findings
+    // forward is BASH in `.github/workflows/ai-review.yml`, which is in none
+    // of them. The `else` branch was unreachable by construction for the
+    // design of record, so the `if` branch was unconditional — and at the
+    // moment a carry shipped, this case would still have forbidden the
+    // prompt from saying so. The two readings of that collide: a sentence
+    // avoiding the literal passes for a SPELLING rather than a fact, and a
+    // sentence saying it plainly goes red on a correct prompt.
+    //
+    // A bash caller cannot import anything, so the predicate is the step
+    // that WRITES the carried-findings file: `AI_REVIEW_CARRY_PATH_VAR` is
+    // emitted by `buildCarryScript` and by nothing else, and comment lines
+    // are stripped first for the same citation-versus-claim reason the
+    // symbol predicate above exists — a step merely MENTIONING the variable
+    // is not a step that walks the ledger.
+    const stripComments = (run: string) =>
+      run.split("\n").filter(l => !l.trim().startsWith("#")).join("\n");
+    const walksTheLedger = (run: string) =>
+      stripComments(run).includes(AI_REVIEW_CARRY_PATH_VAR) &&
+      stripComments(run).includes(AI_REVIEW_CARRY_READ);
+    const doc = Bun.YAML.parse(yml) as any;
+    const bash = ((doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []) as any[])
+      .filter(s => walksTheLedger(String(s?.run ?? "")))
+      .map(s => String(s?.id ?? s?.name ?? "(unnamed)"));
+
     // Two controls, one per arm, because a reading that matches nothing is
     // indistinguishable from a tree with no production callers and the branch
     // below then holds vacuously. The second control is the one the first
@@ -755,21 +795,87 @@ describe("AC-S6 (#1241): the cap bounds re-litigation, never the gate", () => {
       "the symbol predicate does not fire on a file that demonstrably imports carryForward, " +
         "so the filter above is empty by construction",
     ).toBe(true);
-    if (production.length === 0) {
+    // The bash arm's controls, both directions, for the same reason: a
+    // predicate that matches nothing reads exactly like a tree with no
+    // walker, and one that matches everything reads like a tree where every
+    // step is one.
+    expect(
+      walksTheLedger(buildCarryScript()),
+      "the bash predicate does not fire on the walker's own script, so the arm below is " +
+        "empty by construction and cannot tell 'no walker' from 'broken detector'",
+    ).toBe(true);
+    expect(
+      walksTheLedger(buildRoundsScript()),
+      "the bash predicate fires on the round counter, which walks no ledger — it is wider " +
+        "than what it detects",
+    ).toBe(false);
+
+    // CASE-FOLDED, and that is a repair rather than a tidy. The forbidden
+    // string was matched against the prompt verbatim, and #1381's prompt
+    // SHOUTS the promise — `CARRIED FORWARD FOR YOU`. So the `if` arm would
+    // have been satisfied by the exact sentence it exists to refuse, the
+    // moment somebody deleted the walker and left the prompt: a guard
+    // defeated by the shift key, which is `.claude/rules/
+    // checks-must-be-able-to-fail.md`'s second shape — a detector narrower
+    // than what it detects.
+    const said = flat.toLowerCase();
+    const PROMISE = "carried forward for you";
+    if (production.length === 0 && bash.length === 0) {
       expect(
-        flat,
+        said,
         `nothing in lib/, gates/, scripts/, workflows/ or bin/ calls carryForward or ` +
-          `suppressRepeats, so the prompt may not tell the reviewer a finding "is carried ` +
-          `forward for you" — it would stop reporting a live finding on that promise (#1241)`,
-      ).not.toContain("carried forward for you");
+          `suppressRepeats, and no step of the committed workflow walks the ledger, so the ` +
+          `prompt may not tell the reviewer a finding "is carried forward for you" — it ` +
+          `would stop reporting a live finding on that promise (#1241)`,
+      ).not.toContain(PROMISE);
     } else {
       // A caller exists, so the sentence is earned. Require it, in the other
       // direction, rather than letting the case quietly stop asserting.
-      expect(flat, `production callers exist (${production.join(", ")})`).toContain(
-        "carried forward",
-      );
+      expect(
+        said,
+        `callers exist (TypeScript: ${production.join(", ") || "none"}; bash: ${
+          bash.join(", ") || "none"
+        })`,
+      ).toContain(PROMISE);
     }
   }, 30_000);
+
+  test("AC-S6: the MUTANT — the walker deleted — reddens the prompt that promises a carry", () => {
+    // The `else` arm above now fires, which means the `if` arm is the one
+    // nothing watches. #1381's own comment on the issue is the reason this
+    // row exists: an arm unreachable by construction makes the other
+    // unconditional, and the gate stops being a gate in whichever direction
+    // it cannot reach.
+    //
+    // So: the same two predicates, over a workflow with the walker's bash
+    // removed and over a tree with no TypeScript caller. Under that reading
+    // the committed prompt — which says CARRIED FORWARD FOR YOU — is
+    // forbidden, and that is the refusal, performed and observed.
+    const stripComments = (run: string) =>
+      run.split("\n").filter(l => !l.trim().startsWith("#")).join("\n");
+    const walksTheLedger = (run: string) =>
+      stripComments(run).includes(AI_REVIEW_CARRY_PATH_VAR) &&
+      stripComments(run).includes(AI_REVIEW_CARRY_READ);
+    const doc = Bun.YAML.parse(yml) as any;
+    const steps = (doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []) as any[];
+
+    const real = steps.filter(s => walksTheLedger(String(s?.run ?? "")));
+    expect(real, "the committed workflow has no walker, so this row measures nothing")
+      .not.toHaveLength(0);
+
+    const mutant = steps
+      .map(s => (walksTheLedger(String(s?.run ?? "")) ? { ...s, run: "echo nothing\n" } : s))
+      .filter(s => walksTheLedger(String(s?.run ?? "")));
+    expect(mutant, "the mutation did not remove the walker, so nothing was mutated")
+      .toHaveLength(0);
+
+    const said = buildReviewPrompt().replace(/\s+/g, " ").toLowerCase();
+    expect(
+      said,
+      "with the walker removed the `if` arm applies, and it has to refuse this prompt — " +
+        "if it does not, deleting the walker leaves the promise standing and nothing says so",
+    ).toContain("carried forward for you");
+  });
 
   test("AC-S6: the committed workflow's rounds step names no scope at all", () => {
     const doc = Bun.YAML.parse(yml) as any;
