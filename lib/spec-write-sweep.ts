@@ -151,6 +151,21 @@ export function blankComments(src: string): string {
   return out.join("");
 }
 
+/**
+ * Index just past the literal opened at `start`, or `start + 1` if it never
+ * closes.
+ *
+ * **An unterminated literal is not a literal.** Returning `src.length`
+ * instead makes every scanner here silently blind from that byte to the end
+ * of its input, and `identifiersIn` runs over a VIEW — a concatenation of
+ * initialiser fragments, not well-formed source — where a lone backtick
+ * really does occur: `initialiserOf` correctly captures
+ * `raw.replace(/` + "`" + `/g, "")` with the backtick intact, and everything
+ * appended after it was being dropped, so an identifier whose initialiser
+ * named a spec path was never chased. Found by the AI review on this PR, as
+ * the third instance of this one defect class. On well-formed source nothing
+ * changes: there are no unterminated literals in a file that parses.
+ */
 function skipQuoted(src: string, start: number, quote: string): number {
   let i = start + 1;
   while (i < src.length) {
@@ -175,7 +190,9 @@ function skipQuoted(src: string, start: number, quote: string): number {
     if (src[i] === quote) return i + 1;
     i++;
   }
-  return src.length;
+  // Never closed: consume the opener only, so the rest of the input is still
+  // read. See the docstring — this is the whole point of the function.
+  return start + 1;
 }
 
 /** A `/` opens a regex only where a value cannot already have ended. */
@@ -198,7 +215,8 @@ function skipRegex(src: string, start: number): number {
     else if (c === "/" && !inClass) return i + 1;
     i++;
   }
-  return src.length;
+  // Same rule as `skipQuoted`: an unclosed regex is not a regex.
+  return start + 1;
 }
 
 // ── Argument extraction ───────────────────────────────────────────

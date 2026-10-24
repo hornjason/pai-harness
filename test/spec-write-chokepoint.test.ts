@@ -47,6 +47,7 @@ import {
   WRITE_PRIMITIVES,
   blankComments,
   expandView,
+  identifiersIn,
   shellCorpus,
   shellSpecWrites,
   specChokepointViolations,
@@ -593,6 +594,29 @@ describe("#1552: the sweep's reading is what it claims", () => {
     );
   });
 
+  test("a lone backtick in the view does not blind the rest of the chase", () => {
+    // The round-3 AI-review finding, verbatim as a fixture. The VIEW is a
+    // concatenation of initialiser fragments, not well-formed source, so a
+    // backtick captured out of a regex literal really is unterminated there.
+    // Swallowing to the end of the string dropped `helper` — and with it the
+    // `"specs/report.md"` that makes this a spec write. An unterminated
+    // literal is not a literal.
+    const root = tempRoot("lone-backtick");
+    plant(
+      root,
+      "lib/chain.ts",
+      [
+        "const outPath = mask + tail;",
+        'const mask = raw.replace(/`/g, "");',
+        "const tail = helper;",
+        'const helper = "specs/report.md";',
+        "writeFileSync(outPath, body);",
+      ].join("\n"),
+    );
+    const found = specChokepointViolations(root, ["lib"]);
+    expect(found.map((s) => s.line)).toEqual([5]);
+  });
+
   test("a template literal's ${…} hole is code, and its identifiers are chased", () => {
     // The round-2 AI-review finding on this PR. Blanking the whole template
     // span erased `outDir`, so the view had nothing to chase, the literal
@@ -630,6 +654,41 @@ describe("#1552: the sweep's reading is what it claims", () => {
     // violation list, each for a word inside a filename.
     const src = ['const md = buildSpecMap();', 'const p = join(root, "AGENTS.md");'].join("\n");
     expect(expandView(src, "p")).not.toMatch(/spec/i);
+  });
+
+  test("no fragment can make the harvester stop reading before the end", () => {
+    // Three AI-review rounds on this PR found three instances of ONE defect:
+    // the scanner's view of its input silently shrinking. Round 1 was the
+    // first-declaration-only lookup, round 2 the blanked template hole,
+    // round 3 a lone backtick swallowing to EOF. A fourth instance is not
+    // worth waiting for, so this asserts the PROPERTY instead of another
+    // case — which is what `.claude/rules/checks-must-be-able-to-fail.md`
+    // says to do when a guard's view of its input can shrink: assert on the
+    // view itself.
+    //
+    // The invariant: appending a fresh identifier to any fragment must add
+    // that identifier to the harvest. Anything that jumps to the end of the
+    // string loses the marker, whatever the mechanism.
+    const MARKER = "zzTrailingMarker";
+    const fragments = [
+      "`", // lone backtick — round 3
+      '"', // lone double quote
+      "'", // lone single quote
+      "/", // lone slash
+      'raw.replace(/`/g, "")', // the round-3 chain's middle link
+      "`${outDir}/X.md`", // a well-formed template
+      '`${`${deep}`}`', // nested templates
+      "/[\"']x/", // a regex holding both quote characters
+      "join(a, `b`, 'c', \"d\")",
+      "a + `unclosed ${b}",
+      "`text` + ident",
+    ];
+    const lost = fragments.filter((f) => !identifiersIn(`${f} ${MARKER}`).includes(MARKER));
+    expect(
+      lost,
+      "the harvester stopped reading before the end of these fragments, so every " +
+        "identifier after them is invisible and a spec write built from one is missed",
+    ).toEqual([]);
   });
 
   test("every primitive in WRITE_PRIMITIVES is actually detected", () => {
