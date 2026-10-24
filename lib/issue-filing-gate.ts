@@ -140,6 +140,27 @@ import { clauses, createsIssue, flagValues, labelValues } from "./issue-create-o
 export const FILING_OVERRIDE_LABEL = "arbiter-override";
 
 /**
+ * Does `FILING_OVERRIDE_LABEL` waive this refusal?
+ *
+ * **ONE binding, and it exists because there were briefly two.** `filingGate`
+ * decided it when it chose whether the label overrides, and `refusalMessage`
+ * decided it again when it chose whether to offer the label — two deciders
+ * over one question, which
+ * `.claude/rules/checks-must-be-able-to-fail.md` says is behaviourally one
+ * decider with a spare. They disagreed the moment the cap landed: the gate
+ * made `OVER_CAP` unwaivable and the message went on closing with *"re-run
+ * with --label arbiter-override"*, so the one refusal no label can open was
+ * also the one advertising the bypass. Found by the AI review of PR #1597.
+ *
+ * `OVER_CAP` is the only `false`, and the reason is not a policy preference:
+ * the label answers a claim ABOUT a finding, and a count makes none. A
+ * waivable cap is the per-finding judgement the cap exists to replace.
+ */
+export function waivableRefusal(refusal: ArbiterRefusal | null): boolean {
+  return refusal !== "OVER_CAP";
+}
+
+/**
  * How many claims `SUCCESS.md` states under "Done, for the harness".
  *
  * A constant and not a read, because this decision runs inside a hook from an
@@ -737,10 +758,18 @@ export interface FilingLedgerRow {
    *
    * `null` on the rows `scripts/arbitrate-finding.ts` and
    * `lib/ai-review-jury.ts` write — neither adjudicates a `gh issue create`
-   * from a checkout — and on a chokepoint filing from a directory that is
-   * not a git checkout. `emittedInRun` treats `null` as a run of its own
-   * rather than as an exemption, so filing from outside a checkout shares
-   * one allowance instead of escaping the count.
+   * from a checkout — and on every row written before this column existed.
+   * **Not on a chokepoint filing from a directory that is not a checkout:**
+   * `runIdFor` falls back to the resolved path rather than returning `null`,
+   * because a `null` there would merge every non-checkout filing on the
+   * machine into one allowance, and the fix for that gag would have been an
+   * exemption.
+   *
+   * `emittedInRun` counts only rows whose `run` equals the run being
+   * adjudicated, so a `null` row counts towards nothing. That is the honest
+   * direction: a row that cannot name its run cannot be attributed to one,
+   * and attributing it to all of them would cap every run on this machine
+   * out of the backlog the column was added to measure.
    */
   run: string | null;
 }
@@ -1856,8 +1885,8 @@ export async function filingGate(
     // below is keyed off `read1` rather than `verdict` so the unreadable
     // tracker is still said out loud when that happens.
     const { finding } = filingFinding(attempt);
-    // **The cap is applied BEFORE the class check and before anything reads
-    // the tracker's answer, and it converts an UNMEASURED.** Every other
+    // **The cap is applied before anything READS THE TRACKER'S ANSWER, and
+    // it converts an UNMEASURED.** Every other
     // UNMEASURED arm in this file allows, which is right for a reading about
     // the environment — but if the cap sat behind them, a session with no
     // `GITHUB_TOKEN` would have no cap at all, and this file's own header
@@ -1866,7 +1895,10 @@ export async function filingGate(
     // is not a gate. The cap needs no tracker, so nothing about the tracker
     // may excuse it.
     //
-    // **The class check runs BEFORE the cap, and the ordering is forced.**
+    // **Against the OTHER refusal in this block, the class check runs first,
+    // and that ordering is forced.** The two are not in tension with the
+    // paragraph above: the tracker is what the cap must not wait for, and
+    // the class check reads no tracker either.
     // At `FILINGS_PER_RUN = 1` a run's second clause is over the cap
     // whatever it says, so a cap placed first makes `SAME_CLASS_IN_RUN`
     // unreachable — a refusal nothing can ever emit, which is a check that
@@ -1922,7 +1954,7 @@ export async function filingGate(
     // a label that waived it would hand back exactly the per-filing
     // judgement the cap exists to replace: a valid reason defeating the cap
     // IS the bar that let three of three filings through on 2026-10-24.
-    const waivable = verdict.refusal !== "OVER_CAP";
+    const waivable = waivableRefusal(verdict.refusal);
     const overridden =
       labelled && waivable && (verdict.outcome === "REFUSE" || prior !== null);
     // **This clause's own reading, and nothing about the command.** The
@@ -2129,8 +2161,31 @@ export function markBlockedCommand(rows: readonly FilingLedgerRow[]): FilingLedg
  * a refusal nobody can act on becomes a refusal everybody routes around, and
  * the three VERIFY-lock bypasses in `lib/issue-create-override.ts` are what
  * that looks like when it happens.
+ *
+ * **The override stanza is printed only when the label would actually waive
+ * this refusal**, read from `waivableRefusal` rather than decided here. For
+ * one review round it was unconditional, so an `OVER_CAP` refusal said *"no
+ * label waives it"* in `overCapReason` and then closed by telling the agent
+ * to re-run with the label — in the same message, four lines apart. The cap
+ * holds either way, because `filingGate` reads the same predicate; what the
+ * contradiction costs is the next agent, who is taught by the gate's own
+ * output to reach for the override on the gate it cannot open. The refusal
+ * still NAMES the label, saying it does not apply: an agent that has read
+ * about the override and finds silence here tries it, and silence is also
+ * indistinguishable from a message written before the cap existed.
  */
 export function refusalMessage(v: FilingAdjudication): string {
+  const tail = waivableRefusal(v.refusal)
+    ? [
+        `If this one genuinely is the exception, re-run with --label ${FILING_OVERRIDE_LABEL}.`,
+        `The override is recorded in ${ledgerPath()} beside the refusal it waived, so`,
+        "an override that was right is evidence and one that was wrong is countable.",
+      ]
+    : [
+        `--label ${FILING_OVERRIDE_LABEL} does NOT waive this one. It answers a claim about a`,
+        "finding, and this refusal makes none — it is an accounting of what this run has",
+        `already filed. The attempt is recorded in ${ledgerPath()} either way.`,
+      ];
   return [
     "[FindingArbiter] This filing was adjudicated and refused before it reached the tracker.",
     "",
@@ -2142,9 +2197,7 @@ export function refusalMessage(v: FilingAdjudication): string {
     "already in; or answer it in a PR comment with a reason. A reason closes a",
     "finding and silence does not. Filing is the exception, not the default.",
     "",
-    `If this one genuinely is the exception, re-run with --label ${FILING_OVERRIDE_LABEL}.`,
-    `The override is recorded in ${ledgerPath()} beside the refusal it waived, so`,
-    "an override that was right is evidence and one that was wrong is countable.",
+    ...tail,
   ].join("\n");
 }
 

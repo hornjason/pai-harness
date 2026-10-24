@@ -2636,7 +2636,7 @@ describe("FG-120..FG-135: a filing declares why it cannot be a comment", () => {
  * parse-only test would have asserted is shown to be identical across the
  * real gate and M1.
  */
-describe("FG-137..FG-139: a mutant that always passes the reason check turns a case red", () => {
+describe("FG-137..FG-139, FG-153, FG-156: a mutant turns a case red", () => {
   const LIB = join(REPO, "lib");
   const UNIT = "issue-filing-gate.ts";
 
@@ -2684,6 +2684,8 @@ describe("FG-137..FG-139: a mutant that always passes the reason check turns a c
   const M2 = "if (token in COMMENT_EXEMPTIONS) return token as CommentExemption;";
   /** `M3` — the cap never binds, however much the run has filed. */
   const M3 = "spent >= FILINGS_PER_RUN";
+  /** `M4` — every refusal becomes waivable, including the cap. */
+  const M4 = 'return refusal !== "OVER_CAP";';
 
   const UNDECLARED =
     'gh issue create --title "zqxjMutantProbe abandons a sweep it started" ' +
@@ -2818,6 +2820,79 @@ describe("FG-137..FG-139: a mutant that always passes the reason check turns a c
     ).toBeNull();
   });
 
+  test("FG-156: M4 — one predicate decides both the waiver and the sentence", async () => {
+    // `waivableRefusal` is read twice — by `filingGate` to decide whether the
+    // label overrides, and by `refusalMessage` to decide whether to offer it.
+    // Forcing it to `true` must move BOTH, or they are not one binding and
+    // the pair can drift again exactly as it did: for one review round the
+    // gate refused OVER_CAP unwaivably while the message closed by telling
+    // the agent to re-run with the label.
+    const mutant: Gate = await import(buildMutant("cap-waivable", M4, "return true;"));
+    const real: Gate = await import("../lib/issue-filing-gate");
+    const dir = join(scratch, "mut-waivable-run");
+    mkdirSync(dir, { recursive: true });
+
+    const at = "2026-10-24T12:00:00.000Z";
+    const filing =
+      'gh issue create --title "zqxjWaiverProbe loses a sweep it started" ' +
+      `--body "\`zqxjWaiverProbe\` in lib/zqxj-waiver.ts drops 11 of 43 commands over 5207 runs. Claim 4. ${DECLARED}"`;
+    const runOn = (gate: Gate, prior: unknown[], cmd: string = filing) =>
+      gate.filingGate(cmd, {
+        projectRoot: dir,
+        now: at,
+        readExisting: async () => gate.measuredCorpus([]),
+        readLedger: () => prior as never,
+        readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
+      });
+
+    // BASELINE FIRST, on both: an empty ledger allows, so neither gate is
+    // refusing or allowing everything when the mutation rows are read.
+    expect((await runOn(mutant, [])).rows[0].refusal, "the mutant loaded").toBeNull();
+    expect((await runOn(real, [])).rows[0].refusal, "as did the real gate").toBeNull();
+
+    const spent = [
+      {
+        at,
+        key: `b.1/${at}/0`,
+        id: "new",
+        title: "already filed by this run",
+        symptomHash: "h",
+        category: "correctness" as const,
+        severity: null,
+        disposition: "ISSUE" as const,
+        refusal: null,
+        emitted: true,
+        withheldBy: null,
+        jury: null,
+        duplicateOf: [],
+        overridden: false,
+        refiledAfter: null,
+        exemption: "out-of-pr-diff" as const,
+        run: real.runIdFor(dir),
+      },
+    ];
+    const labelled = `${filing} --label ${FILING_OVERRIDE_LABEL}`;
+
+    // Half one, the waiver. The real gate ignores the label; the mutant
+    // honours it and the filing reaches the tracker.
+    const realLabelled = await runOn(real, spent, labelled);
+    expect(realLabelled.rows[0].overridden).toBe(false);
+    expect(realLabelled.rows[0].emitted).toBe(false);
+    const mutantLabelled = await runOn(mutant, spent, labelled);
+    expect(mutantLabelled.rows[0].overridden, "the label now waives the cap").toBe(true);
+    expect(mutantLabelled.refusal, "and the command is allowed through").toBeNull();
+
+    // Half two, the sentence. Same mutation, the OTHER reader: with no label
+    // at all the refusal stops saying the label is no use here and starts
+    // recommending it. A test asserting only the waiver would leave this
+    // half of the predicate unmeasured.
+    expect((await runOn(real, spent)).refusal ?? "").toContain("does NOT waive this one");
+    expect(
+      (await runOn(mutant, spent)).refusal ?? "",
+      "the message follows the predicate rather than deciding again",
+    ).toContain(`re-run with --label ${FILING_OVERRIDE_LABEL}`);
+  });
+
   test("FG-140: a directory that is not a git repository is UNMEASURED, naming it", async () => {
     const notARepo = join(scratch, "not-a-repo");
     mkdirSync(notARepo, { recursive: true });
@@ -2897,7 +2972,7 @@ describe("FG-137..FG-139: a mutant that always passes the reason check turns a c
  * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
  * the half FG-91 surrendered. Nothing else in the file moved.
  */
-describe("FG-143..FG-154: a numeric cap, which no argument defeats", () => {
+describe("FG-143..FG-155: a numeric cap, which no argument defeats", () => {
   const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
   const AT = "2026-10-24T12:00:00.000Z";
 
@@ -2908,6 +2983,9 @@ describe("FG-143..FG-154: a numeric cap, which no argument defeats", () => {
   const second =
     'gh issue create --title "zqxjCapTwo miscounts its own retries" ' +
     `--body "\`zqxjCapTwo\` in lib/zqxj-cap-two.ts reports 51 of 83 retries across 4409 sweeps. Claim 4. ${DECLARED}"`;
+
+  /** The same filing with its declaration removed — refused, and waivable. */
+  const undeclaredSecond = second.replace(` ${DECLARED}`, "");
 
   /** One emitted row, attributed to `run`, at `at`. */
   const landed = (run: string, at: string = AT): FilingLedgerRow => ({
@@ -2991,6 +3069,29 @@ describe("FG-143..FG-154: a numeric cap, which no argument defeats", () => {
     expect(r.rows[0].overridden, "the label is read and it waives nothing here").toBe(false);
     expect(r.rows[0].emitted).toBe(false);
     expect(r.refusal, "the command is still blocked").not.toBeNull();
+  });
+
+  test("FG-155: the cap's refusal does not advertise the label it ignores", async () => {
+    // Found by the AI review of PR #1597, and the contradiction sat inside
+    // ONE message: `overCapReason` says "no label waives it" and the closing
+    // stanza said "re-run with --label arbiter-override", four lines below
+    // it. FG-146 did not move, because the cap held either way — what a
+    // refusal SAYS and what it DOES were separate readings, and the thing
+    // the agent acts on is the sentence at the bottom.
+    const over = (await gateIn(second, runA, [landed(runIdFor(runA))])).refusal ?? "";
+    expect(over).toContain(`--label ${FILING_OVERRIDE_LABEL} does NOT waive this one`);
+    expect(over, "and nothing in it tells the agent to re-run with the label").not.toContain(
+      `re-run with --label ${FILING_OVERRIDE_LABEL}`,
+    );
+
+    // CONTROL, one axis: a refusal the label DOES waive still offers it. A
+    // message that offered it to nobody passes the assertion above and
+    // deletes the escape hatch from every other refusal in this file.
+    const waivable = await gateIn(undeclaredSecond, runA, []);
+    expect(waivable.rows[0].refusal, "under the cap, and refused for a waivable reason").toBe(
+      "COMMENT_INSTEAD",
+    );
+    expect(waivable.refusal ?? "").toContain(`re-run with --label ${FILING_OVERRIDE_LABEL}`);
   });
 
   test("FG-147: a REFUSED filing does not consume the allowance", async () => {
