@@ -297,9 +297,9 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     id: "spec-own-test",
     event: "touched a specs/ file that has a suite named after it",
     tests: [],
-    derivedTarget:
-      "the suite named after that spec — the basename, lowercased, under " +
-      "`test/` with a `.test.ts` suffix — when it exists",
+    // Kept short on purpose: this cell is rendered into an always-loaded
+    // rule file, whose peak surface sits inside 400 bytes of its budget.
+    derivedTarget: "the suite named after it: `test/` + its basename lowercased + `.test.ts`",
     derive: (c, exists) => [ownSpecTestPath(c.path)].filter(exists),
     fires: c => inDir(c.path, "specs") && isMarkdown(c.path),
   },
