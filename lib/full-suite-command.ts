@@ -4,6 +4,11 @@ const SUITE_INVOCATION = /^bun\s+test(?![:\w-])/;
 /** A redirection operator, attached target or not: `>`, `2>`, `&>>`, `2>&1`. */
 const REDIRECT = /^(?:\d*|&)>>?(?:&\d+)?(.*)$/;
 
+/** An operand naming a file or a directory, rather than a bare word. */
+function looksLikePath(operand: string): boolean {
+  return operand.includes("/") || /\.(test\.)?(ts|tsx|js|jsx)$/.test(operand);
+}
+
 /**
  * True for a whole-suite run, false for one scoped to paths.
  *
@@ -14,15 +19,15 @@ export function isFullSuite(command: string): boolean {
   if (!SUITE_INVOCATION.test(command)) return false;
 
   const tokens = command.trim().split(/\s+/);
-  const args: string[] = [];
+  const operands: string[] = [];
 
   for (let i = 2; i < tokens.length; i++) {
-    const t = tokens[i];
+    const token = tokens[i];
 
     // Flags never make a run targeted.
-    if (t.startsWith("-")) continue;
+    if (token.startsWith("-")) continue;
 
-    const redirect = t.match(REDIRECT);
+    const redirect = token.match(REDIRECT);
     if (redirect) {
       // `2>/dev/null` carries its target; a bare `>` consumes the next token.
       // Either way the target is a sink, not a test path.
@@ -30,8 +35,8 @@ export function isFullSuite(command: string): boolean {
       continue;
     }
 
-    args.push(t);
+    operands.push(token);
   }
 
-  return !args.some(a => a.includes("/") || /\.(test\.)?(ts|tsx|js|jsx)$/.test(a));
+  return !operands.some(looksLikePath);
 }
