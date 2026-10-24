@@ -3931,3 +3931,129 @@ function __standsAloneAfter(body: string, start: number, end: number): boolean {
     }
   });
 });
+
+// ── #1471: a quoted FINAL word kept its closing quote ────────────────────
+//
+// `endOfQuoted` returned a bare index. For a span closing at the very last
+// character that index IS `s.length` — the same value an UNTERMINATED span
+// returns — and the one caller that strips the quotes resolved the tie with
+// `end === s.length ? s.length : end - 1`. A correctly closed final word
+// took the unterminated branch and kept its closing quote.
+//
+// #1239's defect one level down: there `indexOf` could not tell `"` from
+// `\"`; here `s.length` could not tell *closed at the end* from *never
+// closed*. `.claude/rules/checks-must-be-able-to-fail.md` names the shape —
+// one value is almost never specific to one mechanism. The fix is in
+// `endOfQuoted`'s RETURN (`{ end, contentEnd }`), not at the three call
+// sites: computing `terminated` locally at each would be three deciders
+// over one question, and a mutation of any one would leave the others
+// holding the case up.
+//
+// **The trailing space is not a control at the decision level.** #1471's
+// table pairs each spelling with a spaced variant, and `segments()` TRIMS
+// the trailing space — so by the time `decideBashWrite` sees them the two
+// are the same string. The spaced rows below are asserted at `writeTargets`,
+// where the difference is real; the decision-level witness uses the
+// UNQUOTED spelling as its control instead.
+
+describe("#1471 WITNESS: a quoted final word resolves without its quote", () => {
+  const P = "/tmp/probe-store/workflow-state.json";
+
+  const rows: { id: string; cmd: string }[] = [
+    { id: "redirect, double-quoted", cmd: `echo x > "${P}"` },
+    { id: "redirect, single-quoted", cmd: `echo x > '${P}'` },
+    { id: "append, double-quoted", cmd: `echo x >> "${P}"` },
+    { id: "append, single-quoted", cmd: `echo x >> '${P}'` },
+    { id: "cp, double-quoted", cmd: `cp /tmp/x "${P}"` },
+    { id: "cp, single-quoted", cmd: `cp /tmp/x '${P}'` },
+    { id: "mv, double-quoted", cmd: `mv /tmp/x "${P}"` },
+    { id: "tee, double-quoted", cmd: `echo x | tee "${P}"` },
+  ];
+
+  for (const { id, cmd } of rows) {
+    test(`#1471: ${id} — final word`, () => {
+      expect(writeTargets(cmd), cmd).toContain(P);
+    });
+
+    // The same spelling with one trailing space. It passed BEFORE the fix
+    // and must go on passing: it is what shows the quote-stripping itself
+    // was never broken, only its boundary case.
+    test(`#1471 CONTROL: ${id} — trailing space`, () => {
+      expect(writeTargets(`${cmd} `), `${cmd} `).toContain(P);
+    });
+  }
+
+  test("#1471 CONTROL: an UNTERMINATED quote still runs to end-of-string", () => {
+    // The case the ternary was written for. Both are syntax errors bash
+    // refuses, so no real write hangs on the answer — but a fix that
+    // resolved the ambiguity by always subtracting one would eat the last
+    // character of the path here, and that is a silent change to a
+    // fail-closed reading.
+    expect(writeTargets(`echo x > "${P}`), "unterminated double").toContain(P);
+    expect(writeTargets(`echo x > '${P}`), "unterminated single").toContain(P);
+  });
+
+  test("#1471 CONTROL: a backtick span still keeps its backticks", () => {
+    // The third caller reads `end`, never `contentEnd`, because #1175 wants
+    // the span VERBATIM so an unexpanded path stays unplaceable. A fix that
+    // handed every caller the stripped boundary would quietly expand it.
+    const t = writeTargets("echo x > /tmp/`id -un`/workflow-state.json");
+    expect(t.join(" "), "the backtick span was stripped").toContain("`id -un`");
+  });
+});
+
+describe("#1471 WITNESS: the bypass this reached, at the decision", () => {
+  // A trailing quote on a target is not by itself a bypass — `names()`
+  // matches with `includes`, so `…/workflow-state.json"` still names the
+  // protected file. Measured on the unfixed tree: every PROTECTED_FILES and
+  // PROTECTED_HOOKS row still blocked.
+  //
+  // The reachable bypass is the DIRECTORY destination. `…/hooks/"` does not
+  // end with `/`, so the directory is read as a plain file, the
+  // `dest/basename(src)` expansion never runs, and the single remaining
+  // target names no protected artifact at all. That is #1184's H4 through a
+  // new door, and before this fix it ALLOWED.
+  const HOOKS = join(import.meta.dir, "..", "hooks");
+  const SRC = join(import.meta.dir, "..", "evil.hook.ts");
+
+  test("#1471: the fixture's own premises", () => {
+    // Asserted, not assumed. A scratch directory is exempt, so every row
+    // would read `blocked=false` INCLUDING the control — which is exactly
+    // how this measurement went wrong on its first attempt, against
+    // `mkdtemp` under TMPDIR, where all five rows came back identical and
+    // the table witnessed nothing.
+    expect(existsSync(HOOKS), "the fixture directory does not exist").toBe(true);
+    expect(isScratchPath(HOOKS), "the fixture directory is scratch, so every row is exempt").toBe(
+      false,
+    );
+  });
+
+  test("#1471: cp into a quoted directory is refused, as the unquoted form is", () => {
+    const unquoted = decideBashWrite(`cp ${SRC} ${HOOKS}/`);
+    const quoted = decideBashWrite(`cp ${SRC} "${HOOKS}/"`);
+
+    expect(unquoted.blocked, "the CONTROL stopped refusing, so this row measures nothing").toBe(
+      true,
+    );
+    expect(
+      quoted.blocked,
+      "a quoted directory destination allowed a hook write — the dest/basename(src) " +
+        "expansion was lost because the target kept its closing quote",
+    ).toBe(true);
+  });
+
+  test("#1471: the expansion itself is back, not just the verdict", () => {
+    // `blocked` is one bit and several mechanisms produce it. This asserts
+    // the mechanism: the expanded sink is present, and no target carries a
+    // quote.
+    const t = writeTargets(`cp ${SRC} "${HOOKS}/"`);
+    expect(
+      t.some(x => x.endsWith("evil.hook.ts")),
+      `the dest/basename(src) expansion did not run: ${JSON.stringify(t)}`,
+    ).toBe(true);
+    expect(
+      t.every(x => !x.includes('"')),
+      `a target kept its quote: ${JSON.stringify(t)}`,
+    ).toBe(true);
+  });
+});

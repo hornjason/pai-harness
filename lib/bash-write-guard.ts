@@ -1097,15 +1097,56 @@ export function commandWord(segment: string): string {
  * takes NO escapes, so `'a\'` is a complete span whose contents are `a\`,
  * while in a double-quoted span `\` escapes whatever follows it.
  *
- * Unterminated spans return `s.length` — the pre-existing, fail-closed
+ * Unterminated spans run to `s.length` — the pre-existing, fail-closed
  * direction. Those spellings are syntax errors that bash refuses to run, so
- * nothing executable depends on the choice; it is kept because changing it
- * in this commit would make the regression battery green for two reasons
- * and leave nobody able to say which one held.
+ * nothing executable depends on the choice.
  *
- * One function, two callers, so a mutation of it moves both.
+ * ## #1471: `end` alone could not say which of those two happened
+ *
+ * This used to return a bare number, and for a span that closes at the very
+ * LAST character of the string that number is `s.length` — the same value
+ * an unterminated span returns. The one caller that strips the quotes
+ * resolved the ambiguity with `end === s.length ? s.length : end - 1`, which
+ * cannot be right: it takes the unterminated branch for a correctly closed
+ * final word and keeps the closing quote inside the word.
+ *
+ * Measured on `5d0bf00e` before this fix, and **one trailing space is the
+ * entire difference** — `segments()` trims it, so the spaced form is simply
+ * the same command without a final-word quote:
+ *
+ *     cp /tmp/evil.hook.ts /repo/hooks/     → targets 2, BLOCKED
+ *     cp /tmp/evil.hook.ts "/repo/hooks/"   → targets 1, ALLOWED
+ *
+ * The consequence is sharper than a cosmetic trailing quote. `/repo/hooks/"`
+ * does not end with `/`, so `isDirDestination` reads a DIRECTORY as a plain
+ * file, the `dest/basename(src)` expansion never happens, and the target
+ * that would have named `.hook.ts` is never produced. That is #1184's H4
+ * arriving through a new door.
+ *
+ * It is #1239's defect one level down: there, `indexOf` could not tell `"`
+ * from `\"`; here, `s.length` could not tell *closed at the end* from
+ * *never closed*. One value carrying two meanings — and
+ * `.claude/rules/checks-must-be-able-to-fail.md` names the shape: *a status
+ * code is almost never specific to one mechanism*.
+ *
+ * So the span reports BOTH boundaries and no caller recomputes either.
+ * `contentEnd` is where the span's contents stop; `end` is where the next
+ * word starts. For a terminated span they differ by the closing quote, and
+ * for an unterminated one they are equal. The three callers read the field
+ * they need and none of them owns a ternary — which is the point, because
+ * a `terminated` flag computed at each call site would be three deciders
+ * over one question, and that is how this family keeps coming back.
+ *
+ * One function, three callers, so a mutation of it moves all of them.
  */
-function endOfQuoted(s: string, i: number): number {
+interface QuotedSpan {
+  /** The index just past the closing quote, or `s.length` if there is none. */
+  end: number;
+  /** Where the span's CONTENTS stop — `end - 1` when terminated, else `end`. */
+  contentEnd: number;
+}
+
+function endOfQuoted(s: string, i: number): QuotedSpan {
   const q = s[i];
   for (let j = i + 1; j < s.length; j++) {
     // Every span except the single-quoted one takes escapes — that is the
@@ -1115,9 +1156,9 @@ function endOfQuoted(s: string, i: number): number {
       j++; // the escaped character, whatever it is, is not a delimiter
       continue;
     }
-    if (s[j] === q) return j + 1;
+    if (s[j] === q) return { end: j + 1, contentEnd: j };
   }
-  return s.length;
+  return { end: s.length, contentEnd: s.length };
 }
 
 /**
@@ -1179,7 +1220,7 @@ function endOfSubstitution(s: string, i: number): number {
     if (q === "'" || q === '"') {
       // `endOfQuoted` returns the index AFTER the closing quote; the loop's
       // j++ would then step over the character following it, so back up one.
-      j = endOfQuoted(s, j) - 1;
+      j = endOfQuoted(s, j).end - 1;
       continue;
     }
     if (s[j] === '(') depth++;
@@ -1346,14 +1387,18 @@ function readWord(s: string, i: number): [string, number] {
     // shortest bypass in the family, and the issue that filed the `$( )`
     // spellings did not name it. `endOfQuoted` honours the backslash.
     if (c === "'" || c === '"') {
-      const end = endOfQuoted(s, i);
+      const span = endOfQuoted(s, i);
       // The span's CONTENTS, outer quotes removed. The escape is kept rather
       // than resolved: this module expands nothing, and keeping the text
       // verbatim is what lets `isScratchPath` go on reading an unexpanded
       // path as unprovable (#1175). What had to be right here is the word
       // BOUNDARY, so the operator after it is still seen.
-      w += s.slice(i + 1, end === s.length ? s.length : end - 1);
-      i = end;
+      //
+      // #1471: this read `end === s.length ? s.length : end - 1`, which is
+      // the ambiguity `endOfQuoted` now resolves for it. `contentEnd` is the
+      // answer, not a ternary this site re-derives.
+      w += s.slice(i + 1, span.contentEnd);
+      i = span.end;
       continue;
     }
     // #1205: a command substitution is part of the word it sits in, however
@@ -1388,9 +1433,11 @@ function readWord(s: string, i: number): [string, number] {
       // scanner rather than a fourth hand-rolled one. It returns `s.length`
       // for an unterminated span, which is the same fail-closed direction
       // this branch already took.
-      const end = endOfQuoted(s, i);
-      w += s.slice(i, end);
-      i = end;
+      // Keeps the backticks, so it reads `end` and never `contentEnd` — the
+      // whole span verbatim is the point here (#1175).
+      const span = endOfQuoted(s, i);
+      w += s.slice(i, span.end);
+      i = span.end;
       continue;
     }
     if (c === '$' && s[i + 1] === '(') {
