@@ -1273,6 +1273,7 @@ describe("FG-90..FG-96: a blocked command filed nothing (#1344)", () => {
       jury: null,
       duplicateOf: [],
       overridden: false,
+      refiledAfter: null,
       ...over,
     });
     const refused = row({

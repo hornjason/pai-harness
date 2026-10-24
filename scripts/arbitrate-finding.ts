@@ -395,6 +395,10 @@ export function ledgerRow(finding: Finding, verdict: Verdict, at: string): Filin
     // No override exists on this path. The `arbiter-override` label is a
     // `gh issue create` flag the chokepoint reads, and nothing here has one.
     overridden: false,
+    // A ballot is cast over one candidate, not over a re-filing, so there is
+    // no earlier refusal of this title for it to waive. The chokepoint in
+    // `lib/issue-filing-gate.ts` is the writer that performs that lookup.
+    refiledAfter: null,
   };
 }
 

@@ -534,6 +534,10 @@ export function juryLedgerRow(
     // No override exists on this path. `arbiter-override` is a
     // `gh issue create` label the chokepoint reads, and nothing here has one.
     overridden: false,
+    // A review round adjudicates candidates, not `gh issue create` attempts,
+    // so there is no earlier filing of this title for one to be a re-draft
+    // of. `null` is the reading here, not an unperformed lookup (#1536).
+    refiledAfter: null,
   };
 }
 

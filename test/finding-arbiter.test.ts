@@ -27,11 +27,13 @@ import {
   containedCitationPath,
   containmentOf,
   DUPLICATE_CONTAINMENT_MIN_KEYS,
+  DUPLICATE_CONTAINMENT_RATIO,
   DUPLICATE_MIN_SHARED_QUANTITIES,
   FILING_BUDGET_FINDINGS,
   citedLines,
   citedSymbols,
   duplicateOverlap,
+  quantityKeys,
   sharedKeys,
   symptomHash,
   symptomKeys,
@@ -140,11 +142,15 @@ describe("AR-1: dedupe keys on the measured symptom, not the title", () => {
   test("#1175 and #1177 are the same symptom under completely different titles", () => {
     const overlap = duplicateOverlap(I1175, I1177);
     expect(overlap.duplicate).toBe(true);
-    // The readings, not the prose, are what agree.
-    expect(overlap.keys).toContain("qty:144");
-    expect(overlap.keys).toContain("qty:234");
-    expect(overlap.keys).toContain("qty:5060");
+    // What agrees is the symbols and the files, not the prose — and since
+    // #1536 not the readings either: #1177 renders 144 and 234 inside a
+    // markdown table, where nothing follows the number but a pipe, so it
+    // reports no qualified reading at all. The pair is held by containment,
+    // which is what AR-39 is about.
+    expect(overlap.keys.filter(k => k.startsWith("qty:")), "no shared reading").toEqual([]);
     expect(overlap.keys).toContain("sym:PROTECTED_FILES");
+    expect(overlap.keys).toContain("file:specs/hook-architecture-spec.md");
+    expect(containmentOf(I1175, I1177)).toBe(1);
   });
 
   test("#1195 and #1196 are the same symptom, filed one minute apart", () => {
@@ -217,7 +223,10 @@ describe("AR-2: extraction refuses the shapes that are not readings", () => {
   // #1333. The ISO form was already masked; a clock time written apart from
   // its date was not, because the `:\d+` rule took the minutes and left the
   // hour standing as an ordinary integer over the `n >= 10` floor.
-  const qty = (body: string) => symptomKeys({ id: "x", title: "t", body }).filter(k => k.startsWith("qty:"));
+  // `quantityKeys` and not `symptomKeys`: readings left the identity set in
+  // #1536 and live in their own producer. The clock-time masking these rows
+  // are about is unchanged and still happens in `quantitiesIn`.
+  const qty = (body: string) => quantityKeys({ id: "x", title: "t", body });
 
   test("a clock time is not a quantity", () => {
     expect(qty("the run started at 15:24 and ended at 16:02")).toEqual([]);
@@ -231,9 +240,12 @@ describe("AR-2: extraction refuses the shapes that are not readings", () => {
     // The positive control. A fix that widened far enough to swallow ordinary
     // integers would satisfy the case above and break the function's purpose,
     // so the two assertions have to sit together.
-    expect(qty("it found 15 violations")).toEqual(["qty:15"]);
-    expect(qty("41 spellings were swept, 7 newly blocked")).toEqual(["qty:41"]);
-    expect(qty("the ratio moved from 1,024 to 2,048")).toEqual(["qty:1024", "qty:2048"]);
+    expect(qty("it found 15 violations")).toEqual(["qty:15:violations"]);
+    expect(qty("41 spellings were swept, 7 newly blocked")).toEqual(["qty:41:spellings"]);
+    // `2,048` ends the sentence, so nothing says what it counted and it is
+    // not a key (#1536). The reading this row exists for — that masking a
+    // clock time does not mask an ordinary integer — is unchanged.
+    expect(qty("the ratio moved from 1,024 to 2,048")).toEqual(["qty:1024:to"]);
   });
 
   /**
@@ -289,8 +301,8 @@ describe("AR-2: extraction refuses the shapes that are not readings", () => {
     expect(qty("the gap was 15:48:30 exactly")).toEqual([]);
     // And the positive control, restated against the NEW boundary: widening
     // to swallow ordinary integers would satisfy every row above.
-    expect(qty("it found 19 violations")).toEqual(["qty:19"]);
-    expect(qty("105 checks ran")).toEqual(["qty:105"]);
+    expect(qty("it found 19 violations")).toEqual(["qty:19:violations"]);
+    expect(qty("105 checks ran")).toEqual(["qty:105:checks"]);
   });
 
   test("a clock hour and a reading of the same number do not collide", () => {
@@ -515,7 +527,11 @@ describe("AR-6: the planted pair — the gate separates them under the real call
     const knownDuplicate: Finding = {
       id: "new-dup",
       title: "worded nothing like the one above",
-      body: "Sweeping the corpus: 742 operands, of which `widgetHandler` mishandles 311.",
+      // `311 of them` and not `311.`: since #1536 a reading is a key only
+      // when the body says what was counted, so a fixture whose number ends
+      // the sentence reports no reading and this pair would stop colliding
+      // for a reason that has nothing to do with what the row measures.
+      body: "Sweeping the corpus: 742 operands, of which `widgetHandler` mishandles 311 of them.",
     };
     const knownGood: Finding = {
       id: "new-good",
@@ -532,8 +548,8 @@ describe("AR-6: the planted pair — the gate separates them under the real call
     expect(dup.duplicateOf).toEqual(["7001"]);
     expect(dup.occurrences).toBe(2);
     // The refusal names its evidence, so it is reviewable rather than silent.
-    expect(dup.collidingKeys).toContain("qty:311");
-    expect(dup.collidingKeys).toContain("qty:742");
+    expect(dup.collidingKeys).toContain("qty:311:of");
+    expect(dup.collidingKeys).toContain("qty:742:operands");
 
     expect(good.disposition).toBe("COMMENT");
     expect(good.refusal).toBeNull();
@@ -622,11 +638,11 @@ describe("AR-7: the issue budget is rule-promotion's, not a second one", () => {
 
 describe("AR-8: checks run in cost order", () => {
   test("a duplicate is never paid a git grep", () => {
-    const filed: Finding = { id: "7002", title: "filed", body: "`absentSymbolXyz` fails 311 of 742 times." };
+    const filed: Finding = { id: "7002", title: "filed", body: "`absentSymbolXyz` fails 311 of 742 runs." };
     // The symbol is absent from origin/main, so stage 4 would read scope=branch.
     // The verdict is DUPLICATE, which is only reachable if stage 1 short-circuited.
     const v = arbitrate(
-      { id: "new", title: "reworded", body: "742 runs, 311 failures in `absentSymbolXyz`." },
+      { id: "new", title: "reworded", body: "742 runs, with 311 of them failing in `absentSymbolXyz`." },
       opts({ existing: [filed] }),
     );
     expect(v.refusal).toBe("DUPLICATE");
@@ -634,9 +650,9 @@ describe("AR-8: checks run in cost order", () => {
   });
 
   test("a duplicate is never paid a verifier group either — the vote is the dearest instrument", () => {
-    const filed: Finding = { id: "7003", title: "filed", body: "`absentSymbolXyz` fails 311 of 742 times." };
+    const filed: Finding = { id: "7003", title: "filed", body: "`absentSymbolXyz` fails 311 of 742 runs." };
     const v = arbitrate(
-      { id: "new", title: "reworded", body: "742 runs, 311 failures in `absentSymbolXyz`." },
+      { id: "new", title: "reworded", body: "742 runs, with 311 of them failing in `absentSymbolXyz`." },
       { projectRoot: root, existing: [filed] }, // no votes at all
     );
     expect(v.refusal).toBe("DUPLICATE");
@@ -744,48 +760,69 @@ describe("AR-9: the incident that motivated #1187, driven through the real funct
    * So these rows now assert the measurement instead of the verdict. They
    * are still able to fail, and the thing that reddens them is the thing
    * worth hearing about: a change to key extraction.
+   *
+   * ## AND THAT IS WHAT REDDENED THEM (#1536)
+   *
+   * The paragraph above is still the correct account of the clock-time
+   * leak. What it got wrong is the last sentence of the bold claim: the
+   * pair IS detected now, by the containment arm, because quantities left
+   * `symptomKeys` and stopped padding the denominator. The capability was
+   * not one we never had; it was one no reading taken over that key set
+   * could see. Both rows below say so, and both are still equalities rather
+   * than bare numbers, for the reason the second one gives.
    */
-  test("#1333: the pair is no longer detected, and the numbers say why", () => {
+  test("#1333: the pair IS detected, and not by the quantity arm that leaked", () => {
     const [a, b] = incident;
     const overlap = duplicateOverlap(a, b);
-    expect(overlap.duplicate).toBe(false);
-    // One shared quantity, against a threshold of two. Before the mask it
-    // was two, and the second was a clock hour.
+    // Still fewer than two shared quantities — the leaked clock hour has
+    // not come back, and the arm it defeated is still defeated. What finds
+    // the pair is containment over locations.
     const quantities = overlap.keys.filter(k => k.startsWith("qty:"));
     expect(quantities.length).toBeLessThan(DUPLICATE_MIN_SHARED_QUANTITIES);
     // The leaked key, named, so a regression puts it back in front of a reader.
     expect(quantities).not.toContain("qty:15");
+    expect(quantities).not.toContain("qty:15:48");
+
+    expect(containmentOf(a, b)).toBeGreaterThanOrEqual(DUPLICATE_CONTAINMENT_RATIO);
+    expect(overlap.duplicate).toBe(true);
   });
 
   /**
-   * ## THE TIE IS THE FINDING, SO IT IS ASSERTED AS A TIE
+   * ## THE TIE WAS THE FINDING, AND IT IS BROKEN (#1536)
    *
    * #1195/#1196 are the same incident. #1195/#1239 are different defects in
-   * the same subsystem. On clean keys **both pairs have identical
-   * containment**, so no value of `DUPLICATE_CONTAINMENT_RATIO` admits the
-   * first and excludes the second. The docblock's claim that 0.8 is
-   * separated from 0.6 by "a single pair" was true only while the leak
-   * inflated that pair above the other.
+   * the same subsystem. On the key set #1333 left behind **both pairs had
+   * identical containment**, so no value of `DUPLICATE_CONTAINMENT_RATIO`
+   * admitted the first and excluded the second — and this row asserted that
+   * as an equality, saying in as many words: *a change that separates them
+   * is news, and reddens this*.
    *
-   * Written as an EQUALITY BETWEEN THE TWO, deliberately. Two bare
-   * assertions on 0.750 would stay green under a change that moved both,
-   * and a change that moved both is not news. A change that *separates*
-   * them is news, and reddens this.
+   * It reddened. Not from a constant — both are untouched — but from the
+   * denominator: quantities left `symptomKeys`, #1239 fell to three keys and
+   * under `DUPLICATE_CONTAINMENT_MIN_KEYS`, and #1196's shared symbols are
+   * almost all of what it has. So the claim was true of the ratio and false
+   * of the problem.
+   *
+   * Still written as a RELATION between the two rather than as two bare
+   * numbers, for the same reason it was before: a change that moves both is
+   * not news, and a change that re-ties them is.
    */
-  test("#1333: the true pair and a distinct pair are tied, so no containment cut separates them", () => {
+  test("#1536: the true pair and the distinct pair are separated, by the key set and not the cut", () => {
     const [a, b] = incident;
     const truePair = containmentOf(a, b);
     const distinctPair = containmentOf(a, distinct);
 
-    expect(truePair).toBe(distinctPair);
+    expect(truePair).toBeGreaterThan(distinctPair);
+    expect(truePair).toBeGreaterThanOrEqual(DUPLICATE_CONTAINMENT_RATIO);
 
-    // The tie is only meaningful if both are live readings rather than two
-    // pairs the key floor refused. A refusal scores 0 and would tie too.
-    expect(truePair).toBeGreaterThan(0);
-    expect(symptomKeys(distinct).length).toBeGreaterThanOrEqual(DUPLICATE_CONTAINMENT_MIN_KEYS);
+    // WHICH mechanism separated them, asserted rather than described: the
+    // distinct pair scores 0 because #1239 is under the floor, and a 0 from
+    // the floor and a 0 from a genuine non-overlap are the same number.
+    expect(symptomKeys(distinct).length).toBeLessThan(DUPLICATE_CONTAINMENT_MIN_KEYS);
+    expect(distinctPair).toBe(0);
 
-    // And the distinct pair really is distinct, or the tie proves nothing.
-    expect(duplicateOverlap(a, distinct).duplicate).toBe(false);
+    expect(duplicateOverlap(a, b).duplicate, "the true pair").toBe(true);
+    expect(duplicateOverlap(a, distinct).duplicate, "and the distinct one").toBe(false);
   });
 
   /**
@@ -871,8 +908,9 @@ describe("AR-10: the dedupe threshold against a real long issue", () => {
       title: "A long finding that quotes many readings",
       body:
         "`collectDestination`, `nonCanonicalRoots`, `PROTECTED_FILES`, `stripHeredocs`, `readWord` " +
-        "in `lib/bash-write-guard.ts` and `specs/HOOK-ARCHITECTURE-SPEC.md`. Readings: 144, 234, " +
-        "5060, 15, 777, 41, 62, 88, 91, 103, 117, 128, 139, 151, 166.",
+        "in `lib/bash-write-guard.ts` and `specs/HOOK-ARCHITECTURE-SPEC.md`. Readings: 144 rows, " +
+        "234 commands, 5060 invocations, 15 spellings, 777 writes, 41 guards, 62 trees, 88 roots, " +
+        "91 basenames, 103 segments, 117 heredocs, 128 verbs, 139 targets, 151 refusals, 166 allows.",
     };
     const unrelated: Finding = {
       id: "new",
@@ -881,7 +919,11 @@ describe("AR-10: the dedupe threshold against a real long issue", () => {
         "`fetchTagDepth` in `lib/release-tags.ts` requests 50 refs but the repo carries 312 tags, " +
         "so 262 annotated tags are invisible. Measured over 4 runs.",
     };
-    expect(symptomKeys(keyRich).length).toBeGreaterThan(15);
+    // Key-rich across BOTH producers since #1536, and the readings have to
+    // be counted where they now live: a bare list of integers stopped being
+    // a key set, so a fixture quoting one would no longer be rich at all and
+    // this row would pass by having nothing to collide with.
+    expect(symptomKeys(keyRich).length + quantityKeys(keyRich).length).toBeGreaterThan(15);
     expect(duplicateOverlap(keyRich, unrelated).duplicate).toBe(false);
   });
 });
@@ -1035,7 +1077,10 @@ describe("AR-13: the dedupe is one-hop on purpose", () => {
   // A and B share a reading; B and C share a different one; A and C share
   // only the file. The same shape as the 50 measured on the real tracker.
   const A: Finding = { id: "A", title: "alpha reading", body: "`alphaHandler` in `lib/x.ts` mishandles 111 of 222 operands." };
-  const B: Finding = { id: "B", title: "both readings", body: "`alphaHandler` in `lib/x.ts` mishandles 111 of 222 operands, and `betaHandler` leaks 333 across 444 runs." };
+  // `333 descriptors` and not `333 across`: since #1536 a reading carries
+  // what was counted, so B and C only share the beta reading if B says what
+  // it counted too. The chain shape this row rests on is unchanged.
+  const B: Finding = { id: "B", title: "both readings", body: "`alphaHandler` in `lib/x.ts` mishandles 111 of 222 operands, and `betaHandler` leaks 333 descriptors across 444 runs." };
   const C: Finding = { id: "C", title: "beta reading", body: "`betaHandler` in `lib/x.ts` leaks 333 descriptors across 444 runs." };
 
   test("the fixture is a chain, not a clique — the premise this rests on", () => {
@@ -1103,12 +1148,16 @@ describe("AR-14: the candidate ledger — the withheld rows are the point", () =
     const filed: Finding = {
       id: "9001",
       title: "already filed",
-      body: "`zetaHandler` fails 311 of 742 times.",
+      body: "`zetaHandler` fails 311 of 742 runs.",
     };
     const dup: Finding = {
+      // Both bodies say `311 of` and `742 runs`: since #1536 two findings
+      // share a reading only when they agree on what was counted, so a
+      // fixture whose integers float free of their units would not be a
+      // planted duplicate at all and the CONTROL below would read zero.
       id: UNFILED_ID,
       title: "reworded, same symptom",
-      body: "742 runs, 311 failures in `zetaHandler`.",
+      body: "742 runs, with 311 of them failing in `zetaHandler`.",
     };
     const findings = [
       inScope(1),
@@ -1693,9 +1742,12 @@ describe("AR-17: the corpus key is unique by construction, or it is absent", () 
     ) as Finding[];
     expect(duplicateOverlap(incident[0]!, incident[1]!).duplicate).toBe(true);
     // Named, so the next leak of this shape reddens here instead of being
-    // absorbed: the match must not rest on a fragment of a clock time.
+    // absorbed: the match must not rest on a fragment of a clock time. Since
+    // #1536 the real pair shares ONE reading — #1177 renders 234 and 144
+    // inside a markdown table, where a pipe follows the number and nothing
+    // says what was counted — and the match rests on containment instead.
     expect(duplicateOverlap(incident[0]!, incident[1]!).keys.filter(k => k.startsWith("qty:")))
-      .toEqual(["qty:144", "qty:234", "qty:5060"]);
+      .toEqual(["qty:144:are"]);
     const r = arbitrateBatch(incident.map(f => ({ ...f, id: UNFILED_ID })), opts(eachVotedTheSame(AGREED, incident.length)));
     expect(new Set(r.candidates.map(c => c.symptomHash)).size).toBe(2);
   });
@@ -1998,18 +2050,23 @@ describe("AR-19: a byte-identical re-filing is a duplicate, whatever it counts",
     // containment a replacement rather than a second arm, this is what sees
     // it — 1195/1196 is at 0.78, below the 0.8 cut, and is held by the
     // quantity arm alone.
+    // Both sides say `144 of` and `234 commands`. Before #1536 the bare
+    // integers were enough and these bodies carried `144 of 234.`; a
+    // reading now has to say what it counted, so a fixture that did not
+    // would stop exercising the quantity arm and this row would be green
+    // off the containment arm it is here to control for.
     const a: Finding = {
       id: "1175",
       title: "The retry budget gives up early",
       body:
-        "`retryBudget` in lib/command-retry.ts completed 144 of 234. " +
+        "`retryBudget` in lib/command-retry.ts completed 144 of 234 commands. " +
         "`sweepPlan`, `attemptCursor` and `backoffTable` are the callers.",
     };
     const b: Finding = {
       id: "1177",
       title: "Long sweeps lose their last attempts",
       body:
-        "144 of 234 reached the end, in lib/command-retry.ts. " +
+        "144 of 234 commands reached the end, in lib/command-retry.ts. " +
         "`drainQueue`, `resumeToken`, `frameBudget` and `lastAttempt` disagree.",
     };
     // The pair MUST be below the containment cut, or this row is green by the
@@ -2320,5 +2377,166 @@ describe("AR-21: every verifier's vote, and the disagreement, reach the ledger",
     expect(split.disagreed).toBe(true);
     expect(unanimous.disagreed).toBe(false);
     expect(split.ballot).toEqual(SPLIT);
+  });
+});
+
+/**
+ * AR-36..AR-40: a bare integer is not a symptom, and a reading is not an
+ * identity (#1536).
+ *
+ * Two false `DUPLICATE`s on 2026-10-24, both overridden after a human read
+ * the issue the refusal named, and in both the shared keys were integers
+ * meaning different things on either side: line numbers in #1534 — *"the
+ * clean arm changes 7–11, 22, 25, 28"* — against counts in #1162, *"19
+ * distinct check names"*, *"22 times"*, *"28 carrying refusals"*.
+ *
+ * ## What was broken to make these fail
+ *
+ * All five rows are red on the parent commit, and they fail on two
+ * different mechanisms, which is why there are five rather than one:
+ *
+ * - **AR-36 / AR-37** — emit the bare `qty:<n>` again and the two
+ *   quantity-only fixtures collide. That is the defect as filed.
+ * - **AR-38 / AR-39** — these two rule out the CHEAPEST WRONG FIX, which is
+ *   qualifying the quantity and leaving it inside `symptomKeys`. That
+ *   satisfies AR-36 and AR-38 on its own and takes **AR-39** from 1.000 to
+ *   0.417, because a body repeats one number beside a different word each
+ *   time and every repetition is another key the other side lacks.
+ * - **AR-40** — the capability `DUPLICATE_CONTAINMENT_RATIO`'s docblock
+ *   declared unreachable at any value of the constant. Red before, and red
+ *   again under any change that returns a reading to the denominator.
+ */
+describe("AR-36..AR-40: a reading is evidence about a finding, not its identity", () => {
+  /**
+   * The two live bodies, cut to the sentences that produced the keys.
+   *
+   * Cut rather than quoted whole so the fixture can state its own premise:
+   * the integers are the only thing these two share, and AR-36 asserts that
+   * rather than leaving a reader to fetch two issues and believe it.
+   */
+  const LINE_NUMBERS: Finding = {
+    id: "1534",
+    title: "The clean arm's banked reading is labelled FIRED and was never measured",
+    body:
+      "`armReading` in evals/ai-review-control/baselines/review-control-readings.json " +
+      "is wrong: line 19 is not a changed line — the clean arm changes 7-11, 22, 25, 28, " +
+      "30, 38, 41 — and its content is byte-identical in `baseline.ts`.",
+  };
+  const COUNTS: Finding = {
+    id: "1162",
+    title: "Findings are discarded four ways and no artefact records which",
+    body:
+      "`refusalStore` in lib/refusal-store.ts drops them. Measured against the live " +
+      "store: 44 run stores, 28 carrying refusals, 111 refusal entries across 19 " +
+      "distinct check names, top check appearing 22 times across 18 runs.",
+  };
+
+  test("AR-36: two findings that share only integers are NOT duplicates", () => {
+    // The fixture proves its own premise first. A pair sharing nothing at
+    // all would be green here under the defect too, so the row would be
+    // vacuous without this.
+    const bothMention = [19, 22, 28].filter(
+      n =>
+        new RegExp(`\\b${n}\\b`).test(LINE_NUMBERS.body) &&
+        new RegExp(`\\b${n}\\b`).test(COUNTS.body),
+    );
+    expect(bothMention, "the two bodies must still share these three integers").toEqual([19, 22, 28]);
+
+    expect(sharedKeys(LINE_NUMBERS, COUNTS), "and share no key at all").toEqual([]);
+    expect(duplicateOverlap(LINE_NUMBERS, COUNTS).duplicate).toBe(false);
+  });
+
+  test("AR-37 CONTROL: two findings that took the SAME reading still collide", () => {
+    // The positive control. A fix that merely stopped reading numbers would
+    // satisfy AR-36 by deleting the arm, so this pair agrees on what was
+    // counted as well as on the number and is held by that arm alone.
+    const a: Finding = {
+      id: "a",
+      title: "The sweep stops early",
+      body: "`sweepPlan` in lib/sweep.ts reached 144 commands of 234 commands, over 5060 invocations.",
+    };
+    const b: Finding = {
+      id: "b",
+      title: "Long sweeps lose their tail",
+      body: "Over 5060 invocations `sweepPlan` completes 144 commands, short of 234 commands.",
+    };
+    expect(containmentOf(a, b), "the pair must sit below the containment cut, or this proves nothing")
+      .toBeLessThan(0.8);
+    expect(
+      quantityKeys(a).filter(k => quantityKeys(b).includes(k)).length,
+      "held by the quantity arm, which needs two shared readings",
+    ).toBeGreaterThanOrEqual(DUPLICATE_MIN_SHARED_QUANTITIES);
+    expect(duplicateOverlap(a, b).duplicate).toBe(true);
+  });
+
+  test("AR-38: a quantity key names what was counted, and a bare integer is no key", () => {
+    const q = (body: string) => quantityKeys({ id: "x", title: "t", body });
+    expect(q("it found 19 violations")).toEqual(["qty:19:violations"]);
+    // A position in a list: nothing follows these but punctuation, so
+    // nothing says what they counted.
+    expect(q("the clean arm changes 7-11, 22, 25, 28, 30")).toEqual([]);
+    // The same integer, two readings, two keys — which is the whole claim.
+    expect(q("line 19 is not a changed line")).toEqual(["qty:19:is"]);
+    expect(q("19 distinct check names")).toEqual(["qty:19:distinct"]);
+    // Emphasis is a reformat, not a different reading. Without the `*` mask
+    // the bolded form emits nothing and matches nothing.
+    expect(q("**144** rows were dropped")).toEqual(["qty:144:rows"]);
+    expect(q("a 5,060-command corpus")).toEqual(["qty:5060:command"]);
+  });
+
+  test("AR-39: re-stating a reading cannot move containment", () => {
+    // #1175/#1177, the pair this module was built on, with #1175 repeating
+    // its headline number four times the way the real body does.
+    const a: Finding = {
+      id: "1175",
+      title: "The retry budget gives up early",
+      body:
+        "`retryBudget` in lib/command-retry.ts completed 144 of 234. The 144 are real, " +
+        "the 144 is an understatement, and the 144 go to allowed. " +
+        "`sweepPlan`, `attemptCursor` and `backoffTable` are the callers.",
+    };
+    const b: Finding = {
+      id: "1177",
+      title: "Long sweeps lose their last attempts",
+      body:
+        "144 of 234 reached the end, in lib/command-retry.ts. `retryBudget`, `sweepPlan`, " +
+        "`attemptCursor`, `backoffTable`, `drainQueue`, `resumeToken` and `lastAttempt` disagree.",
+    };
+    expect(
+      symptomKeys(a).filter(k => k.startsWith("qty:")),
+      "the identity set must carry no readings, or the ratio below measures prose",
+    ).toEqual([]);
+    expect(containmentOf(a, b)).toBe(1);
+    expect(duplicateOverlap(a, b).duplicate).toBe(true);
+  });
+
+  test("AR-40: the #1195 tie no value of the ratio could break", () => {
+    // `DUPLICATE_CONTAINMENT_RATIO`'s docblock records #1195/#1196 (a true
+    // duplicate) and #1195/#1239 (distinct) tied at 0.750 and concludes
+    // that NO value of the constant admits the first and excludes the
+    // second. True of the ratio, false of the problem: the readings were in
+    // the denominator. Both constants are untouched by #1536.
+    const guard = "`decideBashWrite` in lib/bash-write-guard.ts";
+    const a: Finding = {
+      id: "1195",
+      title: "The write guard misreads a heredoc",
+      body:
+        `${guard} calls \`stripHeredocs\`, \`commandWord\`, \`readWord\`, \`statSync\` and ` +
+        "`isDirDestination`, and `resolveTarget`, `normaliseRoot` and `scratchPrefix` follow.",
+    };
+    const b: Finding = {
+      id: "1196",
+      title: "Two regressions from the same merge",
+      body:
+        "`stripHeredocs`, `commandWord`, `readWord`, `statSync` and `isDirDestination` " +
+        "all moved in one merge.",
+    };
+    const distinct: Finding = {
+      id: "1239",
+      title: "A scratch directory is refused from the root",
+      body: `${guard} refuses a named scratch dir.`,
+    };
+    expect(duplicateOverlap(a, b).duplicate, "the true pair").toBe(true);
+    expect(duplicateOverlap(a, distinct).duplicate, "and the distinct one it was tied with").toBe(false);
   });
 });
