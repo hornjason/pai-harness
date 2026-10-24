@@ -47,6 +47,22 @@
  * nothing to classify. So `AI_REVIEW_WORKFLOW_NAME` is declared here, the
  * generated `ai-review.yml` renders its `name:` from it, and AC-8 asserts
  * the subscription names the workflow the generator actually produced.
+ *
+ * ## The known boundary: two of these jobs can lose one reading
+ *
+ * The ledger PATCH is a read-modify-write of one comment. Two review rounds
+ * finishing close together fire two of these jobs, both read the ledger
+ * before either writes, and the later write can drop the earlier round's
+ * discriminator. Recorded rather than papered over, because the obvious fix
+ * is worse: a `concurrency:` group holds at most one pending run and
+ * **cancels** whatever arrives behind it, so a burst would classify nothing
+ * at all — and a cancelled run and a run that found nothing to classify are
+ * the same absence, which is this feature's own defect.
+ *
+ * The recovery is the one #1488 already names. A round that lost its
+ * reading still reads NOT_RECORDED, so the next round on that pull request
+ * records it, and `scripts/record-ai-review-unmeasured.ts` over a window
+ * catches whatever is left while its log still exists.
  */
 
 /**
