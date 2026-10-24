@@ -14,7 +14,7 @@
  *
  * Thin CLI consumer — all logic lives in lib/create-sc.ts.
  */
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import {
   allocateScNumber,
   generateSCText,
@@ -24,7 +24,8 @@ import {
 import { readScRegistry } from "./sync-sc-status";
 import { describeReading } from "../lib/sc-id-cross-tree";
 import { currentScOwner } from "../lib/sc-reservations";
-import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
+import { skipLine } from "../lib/derived-spec";
+import { maySpecBeWritten, writeSpec } from "../lib/write-spec";
 import { join } from "path";
 
 /** Same resolution sync-sc-status uses, so both halves read one tree. */
@@ -118,15 +119,15 @@ try {
     // disappears at the next regeneration, having consumed an SC id that
     // nothing then declares. Refuse loudly rather than allocate into a file
     // that cannot keep it.
-    const reading = readDerivedDeclaration(content);
-    if (!mayWrite(reading)) {
-      console.error(skipLine(specPath, reading));
+    const early = maySpecBeWritten(content);
+    if (!early.allowed) {
+      console.error(skipLine(specPath, early.reading));
       process.exit(1);
     }
 
     // Append SC line to the end of the file
     const newContent = content.trimEnd() + "\n" + scLine + "\n";
-    writeFileSync(specPath, newContent);
+    writeSpec(specPath, newContent);
     console.log(`Appended to ${specPath}: ${scLine}`);
     // What the number is a floor over, stated rather than implied. A clone on
     // another machine is outside anything this process can reach, and an

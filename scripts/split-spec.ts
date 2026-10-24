@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { localCalendarDay } from "../lib/local-calendar-day";
-import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
+import { skipLine } from "../lib/derived-spec";
+import { maySpecBeWritten, writeSpec } from "../lib/write-spec";
 
 export interface SplitBoundary {
   heading: string;
@@ -264,9 +265,9 @@ if (import.meta.main) {
   // generator owns would lose its entire body to a stub the generator then
   // overwrites — and refusing after the split files are on disk leaves the
   // tree half-migrated.
-  const reading = readDerivedDeclaration(content);
-  if (!mayWrite(reading)) {
-    console.error(skipLine(specPath, reading));
+  const early = maySpecBeWritten(content);
+  if (!early.allowed) {
+    console.error(skipLine(specPath, early.reading));
     process.exit(1);
   }
 
@@ -307,19 +308,19 @@ if (import.meta.main) {
   // Write split files
   for (const file of splitFiles) {
     const filePath = join(splitDir, file.filename);
-    writeFileSync(filePath, file.content);
+    writeSpec(filePath, file.content);
     console.log(`Created: ${filePath} (${file.lineCount} lines)`);
   }
 
   // Write INDEX.md
   const indexContent = generateIndex(splitFiles, originalGoverns);
   const indexPath = join(splitDir, "INDEX.md");
-  writeFileSync(indexPath, indexContent);
+  writeSpec(indexPath, indexContent);
   console.log(`Created: ${indexPath}`);
 
   // Replace original with redirect
   const redirectContent = generateRedirect(specPath, splitDir, splitFiles);
-  writeFileSync(specPath, redirectContent);
+  writeSpec(specPath, redirectContent);
   console.log(`Updated: ${specPath} (now a redirect)`);
 
   console.log(

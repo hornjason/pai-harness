@@ -14,7 +14,7 @@
  *   bun scripts/sync-sc-status.ts --report  # Output per-spec coverage report
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 
 import { walkTestFiles } from "../lib/walk-test-files";
 import { commentMask, enclosingComment, stripJsComments } from "../lib/strip-js-comments";
@@ -23,7 +23,8 @@ import { join } from "path";
 import { execSync } from "child_process";
 import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
 import { behavioralCachePath, readFreshCache } from "../lib/behavioral-cache";
-import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
+import { skipLine } from "../lib/derived-spec";
+import { maySpecBeWritten, writeSpec } from "../lib/write-spec";
 import { detectDrift } from "./detect-sc-drift";
 import {
   ambiguityOf,
@@ -689,9 +690,9 @@ export function flipCheckboxes(specFile: string, scIds: string[], specsDir?: str
   // #1286: ticking a checkbox is an in-place edit like any other. A spec a
   // generator owns gets its ticks from the generator, and flipping one here
   // is discarded at the next regeneration after breaking whatever pins it.
-  const reading = readDerivedDeclaration(content);
-  if (!mayWrite(reading)) {
-    console.warn(skipLine(specFile, reading));
+  const early = maySpecBeWritten(content);
+  if (!early.allowed) {
+    console.warn(skipLine(specFile, early.reading));
     return 0;
   }
 
@@ -708,7 +709,7 @@ export function flipCheckboxes(specFile: string, scIds: string[], specsDir?: str
   // Write unless dry-run: use explicit isDryRun param if provided, else module-level flag
   const shouldSkipWrite = isDryRun !== undefined ? isDryRun : dryRun;
   if (flipped > 0 && !shouldSkipWrite) {
-    writeFileSync(filePath, content);
+    writeSpec(filePath, content, { label: specFile });
   }
   return flipped;
 }

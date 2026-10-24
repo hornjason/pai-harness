@@ -4,8 +4,9 @@
  * replaces ACCEPTED status with SHIPPED + issue number.
  * Project-agnostic: never hardcodes any specific spec filename.
  */
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { mayWrite, readDerivedDeclaration, skipLine } from "./derived-spec";
+import { readFileSync, existsSync } from "fs";
+import { skipLine } from "./derived-spec";
+import { maySpecBeWritten, writeSpec } from "./write-spec";
 
 export interface SpecUpdateInput {
   goalRecord: {
@@ -83,20 +84,23 @@ export async function updateSpecStatus(input: SpecUpdateInput): Promise<SpecUpda
   // #1286: marking a decision row SHIPPED is an in-place spec edit. On a
   // spec a generator owns it is discarded at the next regeneration, after
   // breaking whatever pins the file.
-  const derived = readDerivedDeclaration(content);
-  if (rowsUpdated > 0 && !mayWrite(derived)) {
-    console.warn(skipLine(specPath, derived));
+  // #1552: asked early because the caller's `skipped`/`reason` fields are
+  // part of this function's contract, then asked again by `writeSpec`. Two
+  // consults of one decider — `mayWrite` — not two deciders.
+  const early = maySpecBeWritten(content);
+  if (rowsUpdated > 0 && !early.allowed) {
+    console.warn(skipLine(specPath, early.reading));
     return {
       updated: false,
       skipped: true,
       specPath,
       rowsUpdated: 0,
-      reason: skipLine(specPath, derived),
+      reason: skipLine(specPath, early.reading),
     };
   }
 
   if (rowsUpdated > 0) {
-    writeFileSync(specPath, content);
+    writeSpec(specPath, content);
   }
 
   return {

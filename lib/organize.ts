@@ -22,7 +22,7 @@ import {
 import { join, relative, dirname, basename } from "path";
 import { loadComplianceConfig, type OrganizeExternalSource } from "./config-loader.js";
 import { matchesAnyAlias, projectAliases } from "./project-aliases.js";
-import { mayWrite, readDerivedDeclaration, skipLine } from "./derived-spec";
+import { maySpecBeReplaced, writeSpec } from "./write-spec";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -483,6 +483,17 @@ function executeProposals(root: string, proposals: OrganizeProposal[]): void {
 
     if (!existsSync(srcPath)) continue;
 
+    // #1552: `renameSync` below REPLACES its destination silently, and
+    // `organizeProjectReport` picks a target from the filename alone — a
+    // stray `API-SPEC.md` at the root is proposed onto `specs/API-SPEC.md`,
+    // annihilating a generator-owned spec without any write primitive ever
+    // touching it. Ask who owns the destination, not the source.
+    const dest = maySpecBeReplaced(tgtPath, { label: proposal.target });
+    if (!dest.allowed) {
+      console.warn(dest.refusal!);
+      continue;
+    }
+
     const tgtDir = dirname(tgtPath);
     if (!existsSync(tgtDir)) {
       mkdirSync(tgtDir, { recursive: true });
@@ -555,14 +566,13 @@ function updateInternalReferences(root: string, moveMap: Map<string, string>): v
     // #1286: organize moves docs into `specs/`, `docs/` and `reference/` and
     // then rewrites links INSIDE them. A moved file can be a spec a generator
     // owns, and rewriting its links is discarded at the next regeneration.
-    const derived = readDerivedDeclaration(content);
-    if (changed && !mayWrite(derived)) {
-      console.warn(skipLine(newPath, derived));
-      continue;
-    }
-
+    // #1552: the refusal is no longer restated here — `writeSpec` asks the
+    // one decider and hands back the line to print. The target is a moved
+    // document, which the static sweep cannot see is a spec path, so this
+    // site is routed by hand rather than because a check demanded it.
     if (changed) {
-      writeFileSync(fullPath, content);
+      const result = writeSpec(fullPath, content, { label: newPath });
+      if (result.refusal) console.warn(result.refusal);
     }
   }
 }

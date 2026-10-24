@@ -13,7 +13,8 @@
  *   bun scripts/convert-spec.ts rules.md --governs "input validation"  # custom governs
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, mkdirSync } from "fs";
+import { writeSpec } from "../lib/write-spec";
 import { join, basename, dirname } from "path";
 import { SIGNAL_PHRASE_PATTERNS } from "../lib/signal-phrases";
 import { localCalendarDay } from "../lib/local-calendar-day";
@@ -289,6 +290,10 @@ if (existsSync(outputPath)) {
   process.exit(1);
 }
 
-writeFileSync(outputPath, specContent);
+// #1552: create-only — the `existsSync` refusal above means this never meets
+// bytes a generator owns. It routes through the chokepoint anyway, because
+// "this writer is safe for a second reason" is how two unguarded writers got
+// classified out of the population in the first place.
+writeSpec(outputPath, specContent, { label: `specs/${filename}` });
 console.log(`Created specs/${filename}`);
 console.log(`  ${rules.length} rules extracted (${rules.filter((r) => !r.testable).length} non-testable)`);

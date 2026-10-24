@@ -19,12 +19,8 @@ import {
 } from "../lib/conformity";
 import { parseScDeclarations } from "../lib/sc-ids";
 import { collectSpecFiles } from "../lib/spec-files";
-import {
-  mayWrite,
-  readDerivedDeclaration,
-  skipLine,
-  type DerivedReading,
-} from "../lib/derived-spec";
+import { skipLine, type DerivedReading } from "../lib/derived-spec";
+import { maySpecBeWritten, writeSpec } from "../lib/write-spec";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -780,8 +776,11 @@ export function auditSpecs(
     // scaffold turns those into `UPDATED: specs/<file>` and stages the path,
     // so recording rewrites for a file nobody wrote reports an edit that did
     // not happen and dirties a tree that is clean.
-    const reading = readDerivedDeclaration(content);
-    if (opts?.fix && rewritable.length > 0 && !mayWrite(reading)) {
+    // #1552: this early consult is NOT a second decider — `maySpecBeWritten`
+    // and `writeSpec` both land on `mayWrite`. It exists because the refusal
+    // has to happen before the rewrite loop, not at the write.
+    const { allowed, reading } = maySpecBeWritten(content);
+    if (opts?.fix && rewritable.length > 0 && !allowed) {
       skipped.push({
         specFile,
         reading,
@@ -849,7 +848,7 @@ export function auditSpecs(
       }
 
       if (hasChanges) {
-        writeFileSync(filePath, modified);
+        writeSpec(filePath, modified, { label: specFile });
       }
     }
   }

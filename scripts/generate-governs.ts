@@ -9,9 +9,10 @@
  *   bun scripts/generate-governs.ts --apply   # Apply changes
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
+import { skipLine } from "../lib/derived-spec";
+import { maySpecBeWritten, writeSpec } from "../lib/write-spec";
 
 const ROOT = join(import.meta.dir, "..");
 const SPECS_DIR = join(ROOT, "specs");
@@ -52,9 +53,9 @@ function processFile(filePath: string, relPath: string): void {
 
   // #1286: `governs:` is frontmatter the generator emits. Writing it here
   // is discarded at the next regeneration, after breaking what pins the file.
-  const derived = readDerivedDeclaration(content);
-  if (apply && !mayWrite(derived)) {
-    console.warn(`   ${skipLine(relPath, derived)}`);
+  const early = maySpecBeWritten(content);
+  if (apply && !early.allowed) {
+    console.warn(`   ${skipLine(relPath, early.reading)}`);
     count++;
     return;
   }
@@ -67,7 +68,7 @@ function processFile(filePath: string, relPath: string): void {
       const fmEnd = content.indexOf("\n---", 4);
       newContent = content.substring(0, fmEnd) + `\ngoverns: ${truncated}` + content.substring(fmEnd);
     }
-    writeFileSync(filePath, newContent);
+    writeSpec(filePath, newContent, { label: relPath });
   }
   count++;
 }

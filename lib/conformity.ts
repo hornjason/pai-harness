@@ -10,7 +10,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSyn
 import { tmpdir } from "os";
 import type { Dirent } from "fs";
 import { collectSpecFiles } from "./spec-files";
-import { mayWrite, readDerivedDeclaration, skipLine } from "./derived-spec";
+import { skipLine } from "./derived-spec";
+import { maySpecBeWritten, writeSpec } from "./write-spec";
 import {
   ambiguousSpecNames,
   readSpecRequirements,
@@ -334,9 +335,12 @@ export function flipPassingCheckboxes(): number {
     // on a spec a generator owns is discarded at the next regeneration,
     // after breaking whatever pins the file — and a criterion counted as
     // flipped in a file nobody wrote is a number that means nothing.
-    const derived = readDerivedDeclaration(content);
-    if (!mayWrite(derived)) {
-      console.warn(skipLine(specPath, derived));
+    // #1552: the question is asked twice here and that is deliberate — once
+    // early so `flipped` does not count a file nobody wrote, and once inside
+    // `writeSpec`. Two consults of ONE decider, both landing on `mayWrite`.
+    const early = maySpecBeWritten(content);
+    if (!early.allowed) {
+      console.warn(skipLine(specPath, early.reading));
       continue;
     }
 
@@ -349,7 +353,7 @@ export function flipPassingCheckboxes(): number {
         flipped++;
       }
     }
-    if (changed) writeFileSync(specPath, content);
+    if (changed) writeSpec(specPath, content);
   }
   return flipped;
 }

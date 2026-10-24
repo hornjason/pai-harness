@@ -11,11 +11,12 @@
  *   bun scripts/migrate-specs.ts /path --dry-run      # preview without moving
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { execFileSync } from "child_process";
 import { join } from "path";
 import { localCalendarDay } from "../lib/local-calendar-day";
-import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
+import { skipLine } from "../lib/derived-spec";
+import { maySpecBeWritten, writeSpec } from "../lib/write-spec";
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -83,9 +84,9 @@ for (const file of specFiles) {
   // bytes (injected frontmatter, renumbered criteria) before `git mv` moves
   // it. A spec a generator owns must be migrated by changing its generator,
   // not by editing output the next run discards.
-  const reading = readDerivedDeclaration(content);
-  if (!mayWrite(reading)) {
-    console.warn(`  ${skipLine(`docs/specs/${file}`, reading)}`);
+  const early = maySpecBeWritten(content);
+  if (!early.allowed) {
+    console.warn(`  ${skipLine(`docs/specs/${file}`, early.reading)}`);
     continue;
   }
 
@@ -98,7 +99,7 @@ for (const file of specFiles) {
   }
 
   // Write transformed content back to source before git mv
-  writeFileSync(srcPath, content);
+  writeSpec(srcPath, content, { label: `docs/specs/${file}` });
 
   // Use git mv to preserve history
   try {

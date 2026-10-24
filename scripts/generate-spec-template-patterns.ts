@@ -4,9 +4,10 @@
  * from config/matcher-registry.json
  */
 
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync } from "fs";
 import { join } from "path";
-import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
+import { skipLine } from "../lib/derived-spec";
+import { maySpecBeWritten, writeSpec } from "../lib/write-spec";
 
 const PROJECT_ROOT = join(import.meta.dir, "..");
 const REGISTRY_PATH = join(PROJECT_ROOT, "config/matcher-registry.json");
@@ -65,14 +66,14 @@ function main() {
   // no generator — its `<!-- BEGIN GENERATED PATTERNS -->` delimits a region
   // rather than the file — so this reads `authored` and proceeds. The guard
   // is here for a consumer whose template IS produced by something else.
-  const derived = readDerivedDeclaration(template);
-  if (!mayWrite(derived)) {
-    console.error(skipLine(TEMPLATE_PATH, derived));
+  const early = maySpecBeWritten(template);
+  if (!early.allowed) {
+    console.error(skipLine(TEMPLATE_PATH, early.reading));
     process.exit(1);
   }
 
   // Write back
-  writeFileSync(TEMPLATE_PATH, updated, "utf-8");
+  writeSpec(TEMPLATE_PATH, updated);
 
   console.log(`Generated ${registry.length} patterns in SPEC-TEMPLATE.md`);
 }
