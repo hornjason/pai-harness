@@ -132,9 +132,92 @@ git commit -am "MEASUREMENT candidate (#<n>)" && git push -u origin HEAD
 
 # 3. the draft pull request. NEVER --fill from a closing keyword, never
 #    `gh pr merge`, never `gh pr edit --add-label`.
+#
+#    The title NAMES NO CASE — see "two things the title and the round
+#    number leak" below. It cost #1513 four draws to find that out.
 gh pr create --draft --base measurement/<n>-baseline \
-  --title "MEASUREMENT — DO NOT MERGE: <subject>/<case> (#<n>)" --body "…"
+  --title "MEASUREMENT — DO NOT MERGE: ai-review control reading (#<n>)" --body "…"
 ```
+
+### What a `reviewPath` must be, and what it costs (#1513)
+
+The route above says the file "sits under `lib/`, where the reviewer does
+look, and nothing in the tree says it is a subject". Both halves were true of
+the path and neither was true of **staging**, which is the part #1509 had to
+run before anyone could see it. A subject is a *compacted, self-contained
+copy*, so it is by construction a worse file than any live module whose path
+it borrows, and the two subjects paid for that in two different currencies.
+
+**Three rules, and they are executed rather than written down.**
+`reviewPathViolations` in `control.ts` is the one binding;
+`test/review-negative-control.test.ts` drives it over this repository and over
+a planted copy of each failure.
+
+| A `reviewPath` must… | because, measured |
+|---|---|
+| **not resolve in the tree** | `lib/project-state-root.ts`: all four of #1509's draws carried a true `critical` at line 39 saying the module no longer exports what its callers import — in the *clean* draws too. The clean arm then scores `FIRED` on a finding about the staging, so the precision half had exactly one reachable outcome. |
+| **not be named by any `specs/` document** | `lib/test-suite-lock.ts`: SC-648, SC-649, SC-759, SC-760 and SC-625 assert that file's contents and the compacted copy carries none of them. Re-measured on `009562dc`: **5 of 1410** conformity cases red with the candidate staged there, **0 of 1410** with it at the new path, and `git push --dry-run` of a branch carrying each is refused in the first case and clears in the second. `--no-verify` is not an option, so N stayed at 0. |
+| **not match a pattern in `REVIEW.md`'s *Do not flag* list** | a finding there is a declared false positive by construction, so the reading measures exclusion-obedience. The patterns are read out of `REVIEW.md` rather than restated — a second copy would be a second decider, and an empty read is a **refusal**, because zero patterns match nothing and would certify every path. |
+
+The rule refuses a **prose mention** in `specs/` as well as a content
+assertion. That is deliberate and it is the direction that costs a rename
+rather than a reading.
+
+Both subjects now stage at a path that exists in neither:
+
+| subject | `reviewPath` |
+|---|---|
+| `suite-lock-redirect` | `lib/full-suite-command.ts` |
+| `worktree-state-write` | `lib/state-generator-root.ts` |
+
+#### The cost, measured rather than predicted
+
+#1513 names the risk up front: *a reviewer may treat an unreferenced new
+module differently from a change to a live one, and if so the instrument has
+moved rather than been fixed.* It does treat it differently, it is visible in
+the payloads, and **it is priced as noise.**
+
+In 3 of the 8 readings below the reviewer observed that nothing imports the
+module — *"The whole file is dead code"*, *"no hook or any other production
+code imports `generatorTarget`"*. Every one was `medium` or `low`, which
+`AI_REVIEW_SEVERITIES` does not block, so each is counted as advisory and
+none changes an outcome. Set against what it replaced — a `critical` in
+**4 of 4** draws, blocking, on the clean arm as well as the planted one —
+the instrument moved from a confound that made one arm unreadable to a
+confound that costs an advisory slot.
+
+**What that does not establish**: whether an unreferenced module makes the
+reviewer *less likely to block on a real defect*. The recall readings below
+are `DETECTED` at a fresh round, so it did not happen here; two drawn
+`DETECTED` is not a bound on how often it would.
+
+#### Two things the title and the round number leak
+
+Both were found by running the protocol, both are the instrument reading
+something that is not the diff, and the second invalidated a reading.
+
+- **The title named the case, and the reviewer read it.** The template used
+  to be `MEASUREMENT — DO NOT MERGE: <subject>/<case>`. On the clean draw
+  under that title the reviewer wrote a `low` finding saying the title names
+  `worktree-state-write/planted` while the staged file *"is byte-for-byte
+  identical to `evals/ai-review-control/subjects/worktree-state-write/clean.ts`"*
+  — it had located the subject directory and compared against it. Under a
+  title naming no case, on a byte-identical tree, the same case returned
+  **zero findings of any severity**, twice.
+- **A measurement pair accumulates rounds, and the round cap is real.** The
+  fourth round on one pull request returned `MISSED` carrying its own
+  explanation: *"Round budget is spent (review_round=4, round_budget=3) with
+  the carry ledger UNMEASURED"*. The plant was located — `medium` at line 46,
+  inside the declared range, naming the bypass exactly — and not raised to a
+  blocking severity. That reading changed **two** things against the readings
+  before it, the title and the round, so it attributes neither and is
+  reported as `UNMEASURED` rather than as recall. The recall arm was re-taken
+  on a **fresh pair at round 1** with the corrected title, which varies one
+  thing, and came back `DETECTED`.
+
+So: **one candidate per measurement pair, and open a new pair rather than
+pushing the other candidate over it.** A pair is cheap; a draw taken past the
+round cap is not a draw.
 
 ### Capturing what the reviewer wrote
 
@@ -251,6 +334,56 @@ failure about the subject from a true observation about the staging. A subject
 whose `reviewPath` named a module the tree does not already have would not
 have it, and that is the change to consider before the next reading.
 
+**That change is #1513 and it is made.** Both subjects moved off their live
+modules — see *What a `reviewPath` must be* above — and the readings below
+are the re-measurement.
+
+## The second readings, 2026-10-24 — the first `DETECTED` and `QUIET`
+
+Stored beside the first, under `secondReadings` in
+`baselines/review-control-readings.json`. Reviewer: the `ai-review` job on
+`hornjason/pai-harness`, adjudicated by `bunx rungate@0.8.2
+ai-review-findings`. `worktree-state-write` now stages at
+`lib/state-generator-root.ts`.
+
+Two things changed between these and the first readings, and only one of them
+is this issue. **#1511 merged as `8bf49915`**, so the ledger round entry
+carries the verdict word and each finding carries `failure_scenario` — which
+is what makes `DETECTED` reachable through this route at all. #1513 is what
+makes the reading worth taking.
+
+| case | pull request | round | N | `score` outcome, every draw | what the reviewer wrote |
+|---|---|---|---|---|---|
+| `worktree-state-write/planted` | #1522 | 1 | 2 | **`DETECTED`**, both | one `high` at line **46**, inside the declared range [42, 47], naming the linked-worktree bypass and `CLAUDE.md`'s DA-owned rule. Zero advisory, both draws. |
+| `worktree-state-write/clean` | #1518 | 3 | 2 | **`QUIET`**, both | **nothing at all** — zero findings of any severity, both draws. |
+
+A third attempt on the planted run returned `findings: null` and is
+`UNMEASURED` rather than a draw: the #1478 no-payload tax, confirmed by
+grepping the full log with a positive control — `AI_REVIEW_ACTION_OUTCOME`
+appears twice and resolves to `success`, and the #1455 structural-decline line
+appears zero times. The cure was one bare `gh run rerun`.
+
+**The `critical`@39 confound is absent from every payload**, planted and
+clean, in all eight readings taken after the move. That is the thing #1513
+asked for: *a reading that still carries a blocking finding on the clean case
+has not fixed this*, and the clean case now carries no finding at all.
+
+**Two draws is still not a variance estimate**, and this one is weaker than it
+looks in one specific way: the two clean draws are two attempts of one run,
+and the two planted draws are attempts 1 and 3 of one run. Same tree, same
+event. The disagreement this instrument has already recorded (#1504, #1290
+CRC-B3) is across attempts, so that is the right axis — it is just two points
+on it.
+
+### What this is still not grounds for
+
+It is not grounds to tick CRC-A4, and the reason has not changed:
+`.claude/rules/claiming-sc-coverage.md` is explicit, four correct
+discriminations are not a score, and `suite-lock-redirect` has had **no
+reviewer reading at all**. What has changed is that the gate making that
+impossible is gone — see below — so the remaining N = 0 is work nobody has
+done rather than a reading nobody can take.
+
 ### Why `suite-lock-redirect` was not measured
 
 Its `reviewPath`, `lib/test-suite-lock.ts`, is named by five conformity
@@ -261,6 +394,24 @@ option here. Measured: **5 of 1410** conformity cases red with the subject
 staged, **0 of 1410** with it absent. That is a true refusal by a gate doing
 its job, so the subject is unmeasurable by this route until its `reviewPath`
 moves off a module the repository asserts the contents of.
+
+**It has moved, and the gate now clears it** (#1513). The subject stages at
+`lib/full-suite-command.ts`, and the refusal was re-measured in both
+directions on `009562dc` rather than inferred from the path:
+
+| what was staged | conformity | `git push --dry-run` of a branch carrying it |
+|---|---|---|
+| the candidate at `lib/test-suite-lock.ts` | 1214 pass, **5 fail** of 1410 | refused — *"ERROR: Conformity tests failed against the commits being pushed"* |
+| the candidate at `lib/full-suite-command.ts` | 1219 pass, **0 fail** of 1410 | clears |
+| the **baseline** at `lib/full-suite-command.ts` | 1219 pass, **0 fail** of 1410 | — |
+
+Neither ref was created; `--dry-run` runs the hook and pushes nothing. The
+second row is the one that matters, because the gate is what refused the
+measurement and the gate is what was re-asked.
+
+**No reviewer reading has been taken of either `suite-lock-redirect` case.**
+The obstacle is gone and the subject is stageable; nobody has staged it. That
+is still N = 0, and it is the next reading to take rather than a box to tick.
 
 ## The five readings
 

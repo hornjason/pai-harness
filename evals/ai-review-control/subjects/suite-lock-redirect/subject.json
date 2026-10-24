@@ -1,8 +1,9 @@
 {
   "id": "suite-lock-redirect",
-  "reviewPath": "lib/test-suite-lock.ts",
+  "reviewPath": "lib/full-suite-command.ts",
   "baseline": "baseline.ts",
   "provenance": "A compacted, self-contained copy of the full-suite detector in lib/test-suite-lock.ts. A copy on purpose: a subject whose source is the live module moves every time the module does, and a control that moves is not a control.",
+  "reviewPathRationale": "lib/full-suite-command.ts exists in neither the tree nor the specs (#1513). It CANNOT be lib/test-suite-lock.ts, the module it is a copy of: five conformity criteria — SC-648, SC-649, SC-759, SC-760, SC-625 — assert that file's contents, the compacted copy carries none of them, and the pre-push gate correctly refuses the measurement branch. Measured on 009562dc: 5 of 1410 conformity cases red with the candidate staged there, 0 of 1410 with it staged at this path. lib/ is where the reviewer looks and is excluded by nothing in REVIEW.md's Do not flag list.",
   "cases": [
     {
       "id": "suite-lock-redirect/planted",
