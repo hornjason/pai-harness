@@ -28,7 +28,7 @@ import { spawnSync } from "child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { missingStateVerdict, projectStateViolations } from "../lib/project-state-shape";
+import { missingStateVerdict, projectStateViolations, selectRecentSessions } from "../lib/project-state-shape";
 
 const REPO = join(import.meta.dir, "..");
 const SCRIPT = join(REPO, "scripts", "update-project-state.ts");
@@ -294,5 +294,123 @@ describe("#project-state: the script refuses rather than crashing", () => {
     const nonZero = allExits.filter(e => e !== "process.exit(0)");
     expect(nonZero.length).toBeGreaterThan(0);
     for (const e of nonZero) expect(e).toBe("process.exit(PROJECT_STATE_REFUSE_EXIT)");
+  });
+});
+
+/**
+ * #1517 / AC-1..AC-3: two sessions on one calendar day rendered oldest-first.
+ *
+ * `selectRecentSessions` keyed its sort on the ISO date alone, so same-day
+ * entries tied, and the tie-break read `b.i - a.i` — later array index first.
+ * `main` rendered `session 61` above `session 62`.
+ *
+ * Nothing named this function before #1517, which is the point: the direction
+ * had never been asserted in either direction, and #572's own criterion —
+ * SC-1961, "the position in the array decides nothing" — varies array order
+ * across three entries that never tie, so no row in that battery can come back
+ * wrong about a tie. The cases below hold the data fixed and vary position,
+ * which is the axis SC-1961 holds fixed.
+ *
+ * Every tied case here is red under BOTH index directions, by construction:
+ * `a.i - b.i` is the cheapest repair and it is a wrong one (see the comment on
+ * `selectRecentSessions`), so a case it satisfies would certify it.
+ */
+describe("#1517: same-day sessions render newest-first, and position decides nothing", () => {
+  /** Mirrors a live `project-state.json` entry: `<ISO date> session <n>[ prose]`. */
+  const s = (date: string) => ({ date, items: ["x"] });
+  const dates = (sel: { rendered: { date: string }[] }) => sel.rendered.map(r => r.date);
+
+  test("AC-2 control: distinct dates still render newest-first", () => {
+    // The date comparison was never the defect. A fix that reverses the whole
+    // comparator to repair the tied case turns this red — which is the point
+    // of keeping it beside the tied cases rather than trusting SC-1961 to
+    // catch it from another file.
+    expect(dates(selectRecentSessions([s("2026-10-01 session 1"), s("2026-10-17 session 2")], 3))).toEqual([
+      "2026-10-17 session 2",
+      "2026-10-01 session 1",
+    ]);
+  });
+
+  test("AC-1: two sessions on one day render newest-first — the live `main` reading", () => {
+    // Exactly what origin/main held at edb12c93: sessions 62 and 61, both
+    // 2026-10-24, newest written to the front. main rendered 61 then 62.
+    expect(dates(selectRecentSessions([s("2026-10-24 session 62"), s("2026-10-24 session 61")], 3))).toEqual([
+      "2026-10-24 session 62",
+      "2026-10-24 session 61",
+    ]);
+  });
+
+  test("AC-1: the same two entries render identically when the array is reversed", () => {
+    // The other half of the pair. Whichever index direction a comparator
+    // picks, one of these two cases is red — so no index-only tie-break can
+    // make this block green, and `a.i - b.i` cannot be mistaken for the fix.
+    expect(dates(selectRecentSessions([s("2026-10-24 session 61"), s("2026-10-24 session 62")], 3))).toEqual([
+      "2026-10-24 session 62",
+      "2026-10-24 session 61",
+    ]);
+  });
+
+  test("AC-1: a same-day group whose array order is neither ascending nor descending", () => {
+    // Not hypothetical. On 2026-10-23 the live file holds sessions 60, 58 and
+    // 59 at indices 2, 49 and 50 — the array is newest-first at its head and
+    // append-ordered from index 26 on, so it has no single direction. One
+    // case, red under both `b.i - a.i` and `a.i - b.i`, because no function
+    // of the index alone can order this group.
+    const sel = selectRecentSessions(
+      [s("2026-10-23 session 60"), s("2026-10-23 session 58"), s("2026-10-23 session 59")],
+      3,
+    );
+    expect(dates(sel)).toEqual(["2026-10-23 session 60", "2026-10-23 session 59", "2026-10-23 session 58"]);
+  });
+
+  test("AC-1: the limit still bites, and it keeps the newest of a tied group", () => {
+    // A tie that straddles the cut: ordering the group wrongly does not just
+    // reorder the output, it renders the wrong session and drops the newest.
+    const sel = selectRecentSessions(
+      [s("2026-10-24 session 61"), s("2026-10-24 session 62"), s("2026-10-23 session 60")],
+      2,
+    );
+    expect(dates(sel)).toEqual(["2026-10-24 session 62", "2026-10-24 session 61"]);
+  });
+
+  test("AC-3: a dated entry with no session number ranks below numbered ones on its day", () => {
+    // `2026-10-06 AFK pipeline-readiness run` is live at index 12 and is the
+    // one entry of 51 carrying no parseable number. It is DATED, so it is
+    // ordered and must not be reported as undated — the two states are
+    // different and only one of them is a gap in the data.
+    const sel = selectRecentSessions(
+      [s("2026-10-06 AFK pipeline-readiness run"), s("2026-10-06 session 34"), s("2026-10-06 session 33")],
+      3,
+    );
+    expect(dates(sel)).toEqual([
+      "2026-10-06 session 34",
+      "2026-10-06 session 33",
+      "2026-10-06 AFK pipeline-readiness run",
+    ]);
+    expect(sel.undated).toEqual([]);
+  });
+
+  test("AC-3: an undated entry still ranks below every dated one, however old, and is named", () => {
+    // The branch the comparator's own comment justifies: `""` is less than any
+    // ISO date, so no second branch is needed. Adding a second sort tier moves
+    // this path, so it is asserted rather than re-reasoned — and written FIRST
+    // in the array, the position that would promote it under a stable sort.
+    const undatedEntry = s("no date at all, session 99");
+    const sel = selectRecentSessions([undatedEntry, s("2024-01-01 session 1")], 3);
+    expect(dates(sel)).toEqual(["2024-01-01 session 1", "no date at all, session 99"]);
+    expect(sel.undated).toEqual([undatedEntry]);
+  });
+
+  test("AC-3: two undated entries are both reported, later index first", () => {
+    // Two entries that tie on every tier, so the third falls through to the
+    // ORIGINAL tie-break — unchanged, because where the data says nothing it
+    // was never wrong. Asserted in the direction the project already relies
+    // on: `sessions capped at 3, newest first` in update-project-state.test.ts
+    // renders five undated `Day N` entries and requires Day 5 to lead.
+    const first = s("undated one");
+    const second = s("undated two");
+    const sel = selectRecentSessions([first, second, s("2024-01-01 session 1")], 3);
+    expect(dates(sel)).toEqual(["2024-01-01 session 1", "undated two", "undated one"]);
+    expect(sel.undated, "both are named, in the order they were written").toEqual([first, second]);
   });
 });
