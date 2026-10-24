@@ -391,34 +391,7 @@ export type AiReviewUnmeasuredReason =
    * Comparing against a list the reader cannot normalise would demote every
    * finding, so the list being unreadable is a reading that failed.
    */
-  | "CHANGED_FILES_UNREADABLE"
-  /**
-   * A verifier ballot was named and could not be read (CRC-B4). An empty
-   * ballot set withholds nothing, which is indistinguishable from a group
-   * that upheld every finding, so a source this reader could not parse is a
-   * reading that failed rather than a quorum that agreed.
-   */
-  | "BALLOT_UNREADABLE"
-  /**
-   * A verifier ballot was named and no gate was wired to count it.
-   *
-   * The counting lives in `lib/ai-review-jury.ts` and is INJECTED rather
-   * than imported — see `main` — so an entry point that forgets to supply it
-   * would otherwise adjudicate the ballot away in silence. "Told to take a
-   * vote and could not" is UNMEASURED, and the finding keeps blocking.
-   */
-  | "BALLOT_UNWIRED"
-  /**
-   * The quorum returned a verdict list that does not describe the blocking
-   * set it was handed (CRC-B4).
-   *
-   * The same refusal `BALLOT_COUNT_MISMATCH` makes one level down in
-   * `lib/finding-arbiter.ts`: padding the short end would uphold findings
-   * nobody voted on and truncating the long end would discard votes
-   * somebody cast. Which group voted on which finding is not recoverable
-   * from a list of the wrong length, so nothing is recovered from it.
-   */
-  | "JURY_VERDICT_COUNT_MISMATCH";
+  | "CHANGED_FILES_UNREADABLE";
 
 /**
  * The fields a BLOCKING finding must carry, derived from the one contract map
@@ -542,7 +515,6 @@ function unmeasured(
 export function readAiReviewFindings(
   raw: string | null,
   changedFiles?: readonly string[],
-  withheld?: readonly (string | null)[],
 ): AiReviewFindingsReading {
   if (raw === null) {
     return unmeasured(["FINDINGS_FILE_ABSENT"], ["no findings payload was produced"]);
@@ -618,21 +590,8 @@ export function readAiReviewFindings(
   const reasons: AiReviewUnmeasuredReason[] = [];
   const detail: string[] = [];
   const blocking: unknown[] = [];
-  /**
-   * How many findings a demotion removed from the blocking set — CRC-B7's
-   * Pre-existing tag and CRC-B4's verifier quorum both. See the `agreed`
-   * computation below for why the reviewer's word is compared against the
-   * count BEFORE either of them ran.
-   */
+  /** How many findings CRC-B7 demoted. See the `agreed` computation below. */
   let demoted = 0;
-  /**
-   * How many findings have reached the verifier quorum's branch so far.
-   *
-   * The index into `withheld`, and the whole of the positional carry. It
-   * counts findings that would otherwise block — not findings in the
-   * payload — so it advances in step with the list the gate was handed.
-   */
-  let blockingIndex = 0;
 
   list.forEach((item, i) => {
     if (item === null || typeof item !== "object" || Array.isArray(item)) {
@@ -722,67 +681,26 @@ export function readAiReviewFindings(
           return;
         }
       }
-      // CRC-B4, and LAST of the three demotions, deliberately. The verifier
-      // group votes on the findings that would otherwise block, so it must
-      // see the set the earlier stages leave behind rather than the raw
-      // severity list — spending a full agent context on a finding the
-      // contract check or CRC-B7 has already removed is the budget this
-      // criterion is careful about.
+      // CRC-B4's verifier quorum does NOT appear here, and its absence is
+      // the decision rather than an omission.
       //
-      // It DEMOTES, it does not drop (CRC-B8). The finding stays in
-      // `reported`, so `advisoryReported` carries it into the notice and a
-      // maintainer still sees what the group voted down.
+      // A quorum that subtracts from this list is a gate whose input is the
+      // thing it gates: the verifier reads the cited file at the HEAD
+      // checkout, so code that argues itself clean would be voting on the
+      // finding about itself. And the group that would cast those votes is
+      // not independent — `AI_REVIEW_ALLOWED_TOOLS` grants
+      // `Read,Grep,Glob,Write` and `AI_REVIEW_DENY_RULES` denies `Task`, so
+      // a verifier step cannot spawn anything and N votes from one
+      // invocation are one opinion written down N times.
       //
-      // BY POSITION, and never by re-deriving the finding's identity.
-      //
-      // The list has one entry per finding that reaches this point, in the
-      // order they reach it — which is exactly the list the gate was handed
-      // as `blockingReported`, because pass one and pass two are this same
-      // function over the same payload and the only thing that differs is
-      // applied AFTER the decision each entry describes.
-      //
-      // An earlier cut keyed the verdict by `advisoryKey` and looked it up
-      // here, which made two findings sharing an identity share a vote:
-      // whichever the group voted on, the other was withheld or upheld on a
-      // verdict that was never about it. `lib/finding-arbiter.ts`'s
-      // `SHARED_BALLOT` had already refused precisely that — *"a vote is
-      // about a finding"* — and its remedy is one group per finding, in
-      // input order. A hash looked up twice is two derivations of one
-      // identity; a position is none.
-      //
-      // `null` means this finding keeps blocking. The gate separates "the
-      // group voted it down" from "no group could be convened" where the
-      // ballot is counted; by here there are only two outcomes.
-      if (withheld !== undefined) {
-        const voted = withheld[blockingIndex];
-        blockingIndex += 1;
-        if (voted !== undefined && voted !== null) {
-          demoted += 1;
-          detail.push(`finding ${i} is withheld by the verifier group: ${voted}`);
-          return;
-        }
-      }
+      // Until both are fixed — structural independence, and a base-ref read
+      // — the ballot is RECORDED and never acted on. `main` runs the gate
+      // for the ledger and the annotation; this list is untouched by it.
+      // See `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` under CRC-B4.
       blocking.push(item);
       detail.push(renderFinding(i, finding));
     }
   });
-
-  // The positional carry's own precondition, asserted rather than assumed.
-  //
-  // It is reachable: `withheld` comes from an INJECTED gate, so a caller
-  // that returns a list of the wrong length is a real input and not a
-  // hypothetical. Padding the short end would uphold findings nobody voted
-  // on and truncating the long end would discard votes somebody cast —
-  // `BALLOT_COUNT_MISMATCH`'s argument in `lib/finding-arbiter.ts`, one
-  // level up. Neither is taken: the reading refuses.
-  if (withheld !== undefined && withheld.length !== blockingIndex) {
-    reasons.push("JURY_VERDICT_COUNT_MISMATCH");
-    detail.push(
-      `the verifier quorum returned ${withheld.length} verdict(s) for ${blockingIndex} finding(s) ` +
-        `that would otherwise block. Which group voted on which finding is not recoverable from ` +
-        `a list of the wrong length, so none of it is used`,
-    );
-  }
 
   let verdict: string | null = null;
   if (!(AI_REVIEW_VERDICT_KEY in obj)) {
@@ -806,18 +724,13 @@ export function readAiReviewFindings(
   // The decision, and the only place it is made. `verdict` is compared to it
   // afterwards; it never contributes to it.
   const blocked = blocking.length > 0;
-  // The agreement is measured BEFORE the demotions, not after them.
+  // The agreement is measured BEFORE CRC-B7's demotion, not after it.
   //
   // The reviewer is not given the pull request's file list, so it cannot know
   // a finding is pre-existing and its `BLOCK` over one is honest. Comparing
   // its word against the post-demotion count would turn every successful
   // demotion into a CONTRADICTION — the arm would fire on the mechanism
   // working, which is the loudest possible way to be wrong.
-  //
-  // CRC-B4's withholding counts into the SAME number, for the same reason
-  // one step further out: the reviewer never saw the ballot either. A
-  // `BLOCK` over a finding a later verifier group voted down is an honest
-  // verdict that was overruled, not a reviewer disagreeing with itself.
   //
   // The real contradiction #1178 exists for is untouched: a `BLOCK` over a
   // payload whose findings are ALL advisory has `demoted === 0`, so it still
@@ -928,7 +841,6 @@ export function readChangedFiles(path: string): string[] | null {
 export function readAiReviewFindingsFile(
   path: string,
   changedFiles?: readonly string[],
-  withheld?: readonly (string | null)[],
 ): AiReviewFindingsReading {
   let raw: string;
   try {
@@ -943,7 +855,7 @@ export function readAiReviewFindingsFile(
       [`the findings payload at ${path} could not be read: ${(e as Error).message}`],
     );
   }
-  return readAiReviewFindings(raw, changedFiles, withheld);
+  return readAiReviewFindings(raw, changedFiles);
 }
 
 /** The sentence a refusal prints, or `null` when there is nothing to refuse. */
@@ -1010,6 +922,16 @@ export function aiReviewExitCode(reading: AiReviewFindingsReading): number {
 export const AI_REVIEW_JURY_NOTICE_TITLE = "AI review verifier quorum";
 
 /**
+ * The title the quorum's UNMEASURED state is named under.
+ *
+ * A SEPARATE title, because it is a different fact with a different fix: a
+ * group that met and disagreed is a reading, and a group that did not meet
+ * is not one. GitHub groups annotations by title, so one title for both
+ * would make the absence read as part of the vote.
+ */
+export const AI_REVIEW_JURY_UNMEASURED_TITLE = "AI review verifier quorum UNMEASURED";
+
+/**
  * The verifier quorum, as `main` consumes it (CRC-B4).
  *
  * **Injected, not imported**, and the reason is mechanical rather than
@@ -1021,21 +943,36 @@ export const AI_REVIEW_JURY_NOTICE_TITLE = "AI review verifier quorum";
  * like a guard behaving differently
  * (`.claude/rules/self-referential-tests.md`, Tier 1, last row).
  *
- * The seam is closed rather than left open: a ballot path with no gate wired
- * is `BALLOT_UNWIRED`, which is UNMEASURED and refuses. So the two entry
- * points — `scripts/ai-review-findings.ts`, which supplies the gate, and
- * this module's own `import.meta.main`, which does not — cannot diverge into
- * one that ignores the ballot and reports a pass.
+ * **The gate decides nothing.** It is consulted after the reading is
+ * complete, its answer reaches an annotation and the finding ledger, and
+ * `reading` is not rebuilt from it. So a gate that is absent, broken or
+ * wired wrong cannot change a verdict in either direction — which is the
+ * only honest arrangement while the group that casts the votes is not yet
+ * structurally independent. See `AI_REVIEW_JURY_NOTICE_TITLE`.
  */
 export interface AiReviewJuryGate {
   (
     blocking: readonly unknown[],
-    ballotPath: string,
+    ballotDir: string,
   ): {
-    /** Findings the group voted down, by key, with the sentence saying so. */
-    withheld: Readonly<Record<string, string>>;
-    /** Non-null when the ballot source itself could not be read. */
-    unreadable: string | null;
+    /**
+     * One entry per blocking finding, **in input order** — the sentence
+     * saying the group would have withheld it, or `null`.
+     *
+     * Positional rather than keyed, and that is the contract rather than a
+     * convenience. A map from a finding identity would be a SECOND
+     * derivation of that identity over a list already produced in order,
+     * and two findings sharing a key would share a vote.
+     * `lib/finding-arbiter.ts`'s `SHARED_BALLOT` refuses exactly that one
+     * level down — *"a vote is about a finding"*.
+     *
+     * **"Would have".** Nothing here subtracts: the entry is recorded and
+     * announced, and the finding blocks exactly as it did before the group
+     * met.
+     */
+    wouldWithhold: readonly (string | null)[];
+    /** Non-null when the ballot source could not be read. Never fatal. */
+    unmeasured: string | null;
     /** One sentence per finding voted on. */
     detail: readonly string[];
   };
@@ -1061,13 +998,11 @@ export function main(argv: string[], jury: AiReviewJuryGate | null = null): numb
   const changedPath = argv[1];
   const changed =
     changedPath === undefined || changedPath === "" ? undefined : readChangedFiles(changedPath);
-  // CRC-B4. The THIRD argument is a path to the verifier group's ballot, and
-  // it is optional on the same terms as the second: a caller that passes
-  // none gets exactly the reading this module gave before the quorum was
-  // wired. What it may NOT do is pass one and have it quietly ignored, which
-  // is what `BALLOT_UNWIRED` below refuses.
-  const ballotPath = argv[2];
-  const reading0 =
+  // CRC-B4. The THIRD argument is the directory the verifier group writes
+  // its ballots into, one file per verifier. Optional: a caller that passes
+  // none gets exactly the reading this module gave before the group existed.
+  const ballotDir = argv[2];
+  const reading =
     path === undefined || path === ""
       ? unmeasured(
           ["FINDINGS_FILE_ABSENT"],
@@ -1084,48 +1019,44 @@ export function main(argv: string[], jury: AiReviewJuryGate | null = null): numb
           )
         : readAiReviewFindingsFile(path, changed);
 
-  // CRC-B4, in two passes of the SAME function and never two deciders.
+  // CRC-B4, AFTER the reading and feeding nothing back into it.
   //
-  // Pass one has no ballot, so `blockingReported` is the existing decider's
-  // own answer to "which of these block". That list — and nothing re-derived
-  // from the severities — is what the group's votes are looked up for, which
-  // is the criterion's first clause: a quorum over the advisory tail spends
-  // a full agent context per nit. Pass two is the identical read with the
-  // withheld keys subtracted, so the jury only ever REMOVES from a set it
-  // did not compute.
+  // The group votes on `blockingReported` — the existing decider's own
+  // answer to "which of these block", never a list re-derived from the
+  // severities, which is the criterion's first clause: a quorum over the
+  // advisory tail spends a full agent context per nit.
   //
-  // Reading the payload twice costs one `readFileSync` of a file the step
-  // just wrote. A single-pass version would have to answer "does this block"
-  // inside the gate, which is the fourth shape in
-  // `.claude/rules/checks-must-be-able-to-fail.md`: two deciders agreeing,
-  // of which a mutation leaves either one holding every case up.
-  let reading = reading0;
+  // WHAT IT DOES NOT DO IS SUBTRACT, and that is a decision with two
+  // reasons, both of them properties of the tree rather than of this
+  // function:
+  //
+  //  - **The group is not independent yet.** `AI_REVIEW_ALLOWED_TOOLS`
+  //    grants the review action `Read,Grep,Glob,Write` and
+  //    `AI_REVIEW_DENY_RULES` denies `Task`, so one invocation cannot spawn
+  //    verifiers. Independence has to be a property of the WORKFLOW — one
+  //    action invocation per verifier — and a ballot that subtracts before
+  //    that holds is a quorum wired to a constant: populated, plausible,
+  //    and filtering nothing. That is the counterfeit CRC-B4 names.
+  //  - **The verifier reads the head checkout.** A subtracting ballot would
+  //    make the branch under review an input to the gate on the branch
+  //    under review.
+  //
+  // So the votes are counted, written to the finding ledger at decision
+  // time, and announced. Nothing below reads `gate` except the annotation.
+  // CRC-B4's *"surfaced only if enough agree"* clause is therefore NOT
+  // satisfied, and the spec says so rather than this comment alone.
   let juryDetail: readonly string[] = [];
-  if (ballotPath !== undefined && ballotPath !== "") {
+  let juryUnmeasured: string | null = null;
+  if (ballotDir !== undefined && ballotDir !== "") {
     if (jury === null) {
-      reading = unmeasured(
-        ["BALLOT_UNWIRED"],
-        [
-          `a verifier ballot was named at ${ballotPath} and this entry point has no quorum ` +
-            `wired to count it, so no finding could be withheld and none could be upheld. ` +
-            `That is a vote that was not taken, not a group that agreed`,
-        ],
-        reading0.reported,
-      );
-    } else if (
-      path !== undefined &&
-      path !== "" &&
-      changed !== null &&
-      reading0.blockingReported !== null &&
-      reading0.blockingReported.length > 0
-    ) {
-      const gate = jury(reading0.blockingReported, ballotPath);
+      juryUnmeasured =
+        `a verifier ballot directory was named at ${ballotDir} and this entry point has no ` +
+        `quorum wired to read it, so no vote was counted or recorded. That is a group that did ` +
+        `not meet, not a group that agreed`;
+    } else if (reading.blockingReported !== null && reading.blockingReported.length > 0) {
+      const gate = jury(reading.blockingReported, ballotDir);
       juryDetail = gate.detail;
-      if (gate.unreadable !== null) {
-        reading = unmeasured(["BALLOT_UNREADABLE"], [gate.unreadable], reading0.reported);
-      } else {
-        reading = readAiReviewFindingsFile(path, changed, gate.withheld);
-      }
+      juryUnmeasured = gate.unmeasured;
     }
   }
 
@@ -1157,15 +1088,38 @@ export function main(argv: string[], jury: AiReviewJuryGate | null = null): numb
   }
 
   // The quorum's own reading, on its own title, and emitted whatever the
-  // outcome was. A withheld finding is the one row nothing downstream can
-  // reconstruct — it is never commented on, never fixed and never filed —
-  // and the ledger it is written to lives on the runner and dies with the
-  // job. This annotation is the only part of it that outlives the run.
+  // outcome was. The ledger row is the durable record and it lives on the
+  // runner, which dies with the job; this annotation is the only part of
+  // the vote that outlives the run, so it carries the whole reading rather
+  // than a count.
+  //
+  // A `::notice`, never an `::error`. The ballot decides nothing this round
+  // and an annotation that reddened a check would be a gate arriving by the
+  // back door — see the block above `juryDetail`.
   if (juryDetail.length > 0) {
     console.log(
       `::notice title=${AI_REVIEW_JURY_NOTICE_TITLE}::${escapeAnnotation(
         `A separate verifier group voted on the ${juryDetail.length} finding(s) that would ` +
-          `otherwise block. ${juryDetail.join("; ")}.`,
+          `otherwise block. ${juryDetail.join("; ")}. THE VOTE IS RECORDED AND CHANGES ` +
+          `NOTHING: every finding above blocks exactly as it would have without it. The ` +
+          `group is not yet structurally independent and reads the head checkout, so acting ` +
+          `on it would be a gate whose input is the thing it gates.`,
+      )}`,
+    );
+  }
+
+  // A `::warning`, and the state is NAMED. An absent or unreadable ballot
+  // exiting 0 with no output is the Silent Default Substitution
+  // `.claude/rules/config-access.md` forbids: `0`, `{}` and `null` are
+  // indistinguishable from success and UNMEASURED is not. It does not
+  // refuse, because the consumer decides whether an unmeasured quorum is
+  // fatal and the honest default for a mechanism with no readings yet is an
+  // annotation rather than a red pipeline.
+  if (juryUnmeasured !== null) {
+    console.log(
+      `::warning title=${AI_REVIEW_JURY_UNMEASURED_TITLE}::${escapeAnnotation(
+        `The verifier quorum is UNMEASURED for this run: ${juryUnmeasured}. No finding's ` +
+          `status changed either way.`,
       )}`,
     );
   }

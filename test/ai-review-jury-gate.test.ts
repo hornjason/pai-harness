@@ -58,11 +58,14 @@ import {
 } from "../lib/ai-review-jury";
 import {
   AI_REVIEW_BLOCK_VERDICT,
+  AI_REVIEW_JURY_UNMEASURED_TITLE,
   AI_REVIEW_OUTCOME_LINE,
+  AI_REVIEW_PASS_VERDICT,
   main,
   readAiReviewFindings,
 } from "../lib/scaffold/ai-review-findings";
 import { VERIFIER_GROUP_SIZE, VERIFIER_QUORUM } from "../lib/finding-jury";
+import { AI_REVIEW_BALLOT_BASENAME } from "../lib/scaffold/ai-review-step";
 import { LEDGER_SESSION_ENV, type FilingLedgerRow } from "../lib/issue-filing-gate";
 
 let SCRATCH: string;
@@ -123,6 +126,40 @@ function ballotPayload(
       votes,
     })),
   });
+}
+
+/**
+ * The group as the deployed contract has it: ONE DIRECTORY PER VERIFIER,
+ * each holding one file with one vote per finding.
+ *
+ * Not one file carrying three votes, and the difference is the point. The
+ * review action runs with `Task` denied and `Read,Grep,Glob,Write` allowed,
+ * so one invocation cannot spawn verifiers — a single file claiming a group
+ * is exactly what one model in one context produces, and the merge can only
+ * count independence if independence has a shape. Every case that goes
+ * through `aiReviewJuryGate` builds its ballot this way.
+ */
+function ballotDir(
+  entries: Array<[Record<string, unknown>, number]>,
+  size: number = VERIFIER_GROUP_SIZE,
+): string {
+  const dir = join(SCRATCH, `ballots-${seq++}`);
+  for (let i = 0; i < size; i++) {
+    const own = join(dir, `verifier-${i}`);
+    mkdirSync(own, { recursive: true });
+    writeFileSync(
+      join(own, AI_REVIEW_BALLOT_BASENAME),
+      JSON.stringify({
+        [AI_REVIEW_BALLOT_KEY]: entries.map(([finding, agree]) => ({
+          file: finding.file,
+          summary: finding.summary,
+          votes: [vote(`verifier-${i}`, i < agree)],
+        })),
+      }),
+    );
+  }
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 let seq = 0;
@@ -267,18 +304,18 @@ describe("JG-4: an unreadable ballot source is a reading that failed", () => {
   test("JG-4a: a missing file is UNREADABLE, not an empty ballot", () => {
     const r = readBallots(null);
     expect(r.ballots).toBeNull();
-    expect(r.unreadable).toContain(BALLOT_UNREADABLE_PREFIX);
+    expect(r.unmeasured).toContain(BALLOT_UNREADABLE_PREFIX);
   });
 
   test("JG-4b: a payload with no ballots key is UNREADABLE", () => {
     const r = readBallots(JSON.stringify({ votes: {} }));
     expect(r.ballots).toBeNull();
-    expect(r.unreadable).toContain(AI_REVIEW_BALLOT_KEY);
+    expect(r.unmeasured).toContain(AI_REVIEW_BALLOT_KEY);
   });
 
   test("JG-4c: a declared, empty ballot set is readable and convenes nobody", () => {
     const r = readBallots(ballotPayload([]));
-    expect(r.unreadable).toBeNull();
+    expect(r.unmeasured).toBeNull();
     expect(r.ballots).toEqual({});
   });
 
@@ -287,7 +324,7 @@ describe("JG-4: an unreadable ballot source is a reading that failed", () => {
       JSON.stringify({ [AI_REVIEW_BALLOT_KEY]: [{ summary: "x", votes: ballotFor(0) }] }),
     );
     expect(r.ballots).toBeNull();
-    expect(r.unreadable).toContain("file");
+    expect(r.unmeasured).toContain("file");
   });
 
   test("JG-4e: an entry with no votes list is malformed, not an abstention", () => {
@@ -296,14 +333,14 @@ describe("JG-4: an unreadable ballot source is a reading that failed", () => {
       JSON.stringify({ [AI_REVIEW_BALLOT_KEY]: [{ file: f.file, summary: f.summary }] }),
     );
     expect(r.ballots).toBeNull();
-    expect(r.unreadable).toContain("votes");
+    expect(r.unmeasured).toContain("votes");
   });
 
   test("JG-4f: two ballots for one finding cannot be chosen between", () => {
     const f = blocking();
     const r = readBallots(ballotPayload([[f, ballotFor(0)], [f, ballotFor(VERIFIER_GROUP_SIZE)]]));
     expect(r.ballots).toBeNull();
-    expect(r.unreadable).toContain("second ballot");
+    expect(r.unmeasured).toContain("second ballot");
   });
 
   test("JG-4g: the pair the writer copies resolves to the key the gate uses", () => {
@@ -364,16 +401,13 @@ describe("JG-9: a shared identity does not become a shared quorum", () => {
     }
   });
 
-  test("JG-9c: the carry is positional — the reader never re-derives the key", () => {
-    const source = readFileSync(
-      join(LIB, "scaffold", "ai-review-findings.ts"),
-      "utf-8",
-    );
-    // The one site, and it reads an index. A lookup by `advisoryKey` here
-    // would be the second derivation of one identity, which is what let two
-    // findings share a vote.
-    expect(source).toContain("const voted = withheld[blockingIndex];");
-    expect(source).not.toContain("withheld[advisoryKey(");
+  test("JG-9c: the verdict list is built by position, never keyed", () => {
+    const source = readFileSync(join(LIB, "ai-review-jury.ts"), "utf-8");
+    // One append per finding, in the order they arrive, from the single
+    // `record` site. A keyed assignment — `withheld[key] = reason` — was
+    // the first cut and is what let two findings share a vote.
+    expect(source).toContain("withheld.push(");
+    expect(source).not.toMatch(/withheld\[[A-Za-z]/);
   });
 
   test("JG-9d: two distinct findings each take their own verdict, in order", () => {
@@ -387,44 +421,59 @@ describe("JG-9: a shared identity does not become a shared quorum", () => {
     expect(result.withheld[1]).toBeNull();
   });
 
-  test("JG-9e: a verdict list of the wrong length is refused, not padded", () => {
+  test("JG-9e: one verdict per blocking finding, in input order — the positional precondition", () => {
     const first = blocking({ summary: "the first defect" });
     const second = blocking({ summary: "the second defect" });
-    const payload = fixture(
-      JSON.stringify({ findings: [first, second], verdict: AI_REVIEW_BLOCK_VERDICT }),
-    );
-    // A gate that returns one verdict for two blocking findings. Reachable
-    // because the gate is injected, which is why this refusal can fire.
-    const short = () => ({ withheld: ["withheld by the group"], unreadable: null, detail: [] });
-    const { code, lines } = captureBoth(() => main([payload, "", "ballot-path"], short));
-    expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} UNMEASURED`))).toBe(true);
-    expect(lines.join("\n")).toContain("JURY_VERDICT_COUNT_MISMATCH");
-    expect(code).not.toBe(0);
+    // Distinct identities, and only the second is voted down. A keyed carry
+    // that collapsed the two would have to put the verdict somewhere, and
+    // the only wrong places left are index 0 or both indices.
+    const dir = ballotDir([
+      [first, VERIFIER_GROUP_SIZE],
+      [second, VERIFIER_QUORUM - 1],
+    ]);
+    const out = aiReviewJuryGate([first, second], dir);
+    expect(out.unmeasured).toBeNull();
+    expect(out.wouldWithhold).toHaveLength(2);
+    expect(out.wouldWithhold[0]).toBeNull();
+    expect(out.wouldWithhold[1]).not.toBeNull();
+  });
+
+  test("JG-9f: the reader subtracts nothing, so nothing can be subtracted wrongly", () => {
+    const source = readFileSync(join(LIB, "scaffold", "ai-review-findings.ts"), "utf-8");
+    // The strongest form of the collision fix available this round: the
+    // consumer never looks a verdict up at all, by key OR by index. `JG-6b`
+    // is the behavioural half — a ballot voting a finding down leaves the
+    // run byte-identical to one with no ballot at all.
+    expect(source).not.toMatch(/withheld\[/);
+    expect(source).not.toMatch(/wouldWithhold\[/);
   });
 });
 
 // ── JG-5: the ledger carries the ballot, written at decision time ────────
 
 describe("JG-5: every verifier's vote and the disagreement flag reach the ledger", () => {
-  test("JG-5a: a withheld finding is on the ledger with its whole ballot", () => {
+  test("JG-5a: a finding the group votes down is on the ledger with its whole ballot", () => {
     const f = blocking();
-    const path = fixture(ballotPayload([[f, ballotFor(VERIFIER_QUORUM - 1)]]));
-    const rows = withLedger(() => void aiReviewJuryGate([f], path));
+    const dir = ballotDir([[f, VERIFIER_QUORUM - 1]]);
+    const rows = withLedger(() => void aiReviewJuryGate([f], dir));
 
     expect(rows).toHaveLength(1);
     expect(rows[0].jury).not.toBeNull();
+    expect(rows[0].jury?.ballot).toHaveLength(VERIFIER_GROUP_SIZE);
     expect(rows[0].jury?.ballot.map(v => v.verifier)).toEqual(
-      ballotFor(VERIFIER_QUORUM - 1).map(v => v.verifier as string),
+      Array.from({ length: VERIFIER_GROUP_SIZE }, (_, i) => `verifier-${i}`),
     );
     expect(rows[0].jury?.agree).toBe(VERIFIER_QUORUM - 1);
     expect(rows[0].jury?.disagreed).toBe(VERIFIER_QUORUM - 1 > 0);
+    // DROP on the row, and the finding still blocks. The ledger records what
+    // the group decided; the pull request records what the adjudicator did,
+    // and this round those are deliberately different.
     expect(rows[0].emitted).toBe(false);
   });
 
-  test("JG-5b: a surfaced finding is recorded too — the population is both", () => {
+  test("JG-5b: a finding the group upholds is recorded too — the population is both", () => {
     const f = blocking();
-    const path = fixture(ballotPayload([[f, ballotFor(VERIFIER_GROUP_SIZE)]]));
-    const rows = withLedger(() => void aiReviewJuryGate([f], path));
+    const rows = withLedger(() => void aiReviewJuryGate([f], ballotDir([[f, VERIFIER_GROUP_SIZE]])));
     expect(rows).toHaveLength(1);
     expect(rows[0].emitted).toBe(true);
     expect(rows[0].jury?.passed).toBe(true);
@@ -433,17 +482,27 @@ describe("JG-5: every verifier's vote and the disagreement flag reach the ledger
 
   test("JG-5c: a finding nobody voted on is on the ledger with a null reading", () => {
     const f = blocking();
-    const path = fixture(ballotPayload([]));
-    const rows = withLedger(() => void aiReviewJuryGate([f], path));
+    const rows = withLedger(() => void aiReviewJuryGate([f], ballotDir([])));
     expect(rows).toHaveLength(1);
     expect(rows[0].jury).toBeNull();
     expect(rows[0].emitted).toBe(true);
   });
+
+  test("JG-5d: every vote carries the verifier's own reason, not a summary", () => {
+    const f = blocking();
+    const rows = withLedger(() => void aiReviewJuryGate([f], ballotDir([[f, VERIFIER_QUORUM - 1]])));
+    for (const v of rows[0].jury?.ballot ?? []) {
+      expect(v.reason.length).toBeGreaterThan(0);
+    }
+    expect(new Set((rows[0].jury?.ballot ?? []).map(v => v.verifier)).size).toBe(
+      VERIFIER_GROUP_SIZE,
+    );
+  });
 });
 
-// ── JG-6: the deployed CLI consults the gate before a finding blocks ─────
+// ── JG-6: the deployed CLI records the vote and acts on nothing ──────────
 
-describe("JG-6: main withholds, blocks and refuses through the gate", () => {
+describe("JG-6: main records the quorum and changes no verdict", () => {
   test("JG-6a: with no ballot argument the reading is exactly what it was", () => {
     const payload = fixture(JSON.stringify({ findings: [blocking()], verdict: AI_REVIEW_BLOCK_VERDICT }));
     const { code, lines } = captureBoth(() => main([payload]));
@@ -451,51 +510,86 @@ describe("JG-6: main withholds, blocks and refuses through the gate", () => {
     expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} BLOCKED`))).toBe(true);
   });
 
-  test("JG-6b: a ballot the group voted down turns BLOCKED into CLEAN", () => {
+  /**
+   * THE CASE THAT GUARDS THE DECISION, not an omission.
+   *
+   * A group that votes a finding down changes nothing: the outcome, the exit
+   * code and the blocking count are byte-for-byte what they are with no
+   * ballot at all. Delete the two reasons in `main`'s CRC-B4 block — the
+   * denied `Task` grant and the head-checkout read — and this case is what
+   * has to be rewritten, which is the point of writing it as an equality
+   * against the no-ballot run rather than as an assertion about BLOCKED.
+   */
+  test("JG-6b: a ballot the group votes down does NOT un-block the finding", () => {
     const f = blocking();
-    // BLOCK, not PASS. The reviewer never saw the ballot, so its verdict is
-    // honest and being overruled by the group is not a contradiction —
-    // exactly the reasoning `wouldBlock` applies to CRC-B7's demotion.
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
-    const ballots = fixture(ballotPayload([[f, ballotFor(VERIFIER_QUORUM - 1)]]));
-    const { code, lines } = withLedgerResult(() => captureBoth(() => main([payload, "", ballots], aiReviewJuryGate)));
-    expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} CLEAN`))).toBe(true);
-    expect(code).toBe(0);
-    expect(lines.some(l => l.includes(AI_REVIEW_JURY_TITLE))).toBe(true);
+    const dir = ballotDir([[f, VERIFIER_QUORUM - 1]]);
+
+    const without = captureBoth(() => main([payload]));
+    const withBallot = withLedgerResult(() =>
+      captureBoth(() => main([payload, "", dir], aiReviewJuryGate)),
+    );
+
+    expect(withBallot.code).toBe(without.code);
+    expect(withBallot.lines[0]).toBe(without.lines[0]);
+    expect(withBallot.lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} BLOCKED`))).toBe(true);
+    // And it is not silent about having voted.
+    expect(withBallot.lines.some(l => l.includes(AI_REVIEW_JURY_TITLE))).toBe(true);
+    expect(withBallot.lines.join("\n")).toContain("RECORDED AND CHANGES");
   });
 
-  test("JG-6c: a ballot that clears the quorum still blocks", () => {
+  test("JG-6c: a ballot that clears the quorum also changes nothing", () => {
     const f = blocking();
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
-    const ballots = fixture(ballotPayload([[f, ballotFor(VERIFIER_GROUP_SIZE)]]));
-    const { code, lines } = withLedgerResult(() => captureBoth(() => main([payload, "", ballots], aiReviewJuryGate)));
+    const dir = ballotDir([[f, VERIFIER_GROUP_SIZE]]);
+    const { code, lines } = withLedgerResult(() =>
+      captureBoth(() => main([payload, "", dir], aiReviewJuryGate)),
+    );
     expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} BLOCKED`))).toBe(true);
     expect(code).not.toBe(0);
   });
 
-  test("JG-6d: a ballot path with no gate wired is UNMEASURED, not a silent pass", () => {
+  test("JG-6d: a ballot directory with no gate wired is announced UNMEASURED", () => {
     const f = blocking();
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
-    const { code, lines } = captureBoth(() => main([payload, "", "/nonexistent/ballot.json"]));
-    expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} UNMEASURED`))).toBe(true);
-    expect(code).not.toBe(0);
+    const { lines } = captureBoth(() => main([payload, "", "/nonexistent/ballots"]));
+    expect(lines.some(l => l.includes(AI_REVIEW_JURY_UNMEASURED_TITLE))).toBe(true);
+    expect(lines.some(l => l.includes("::warning"))).toBe(true);
   });
 
-  test("JG-6e: a named ballot file that cannot be read is UNMEASURED", () => {
+  test("JG-6e: a ballot directory that cannot be listed is UNMEASURED, not fatal", () => {
     const f = blocking();
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
+    const without = captureBoth(() => main([payload]));
     const { code, lines } = withLedgerResult(() =>
-      captureBoth(() => main([payload, "", join(SCRATCH, "absent-ballot.json")], aiReviewJuryGate)),
+      captureBoth(() => main([payload, "", join(SCRATCH, "absent-dir")], aiReviewJuryGate)),
     );
-    expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} UNMEASURED`))).toBe(true);
-    expect(code).not.toBe(0);
+    expect(lines.some(l => l.includes(AI_REVIEW_JURY_UNMEASURED_TITLE))).toBe(true);
+    // An unreadable quorum must not change a verdict in either direction.
+    expect(code).toBe(without.code);
   });
 
-  test("JG-6f: a withheld finding is demoted, never dropped", () => {
+  test("JG-6f: a CLEAN run is untouched by the quorum, whatever the ballot says", () => {
+    const payload = fixture(
+      JSON.stringify({
+        findings: [blocking({ severity: "info", summary: "a nit" })],
+        verdict: AI_REVIEW_PASS_VERDICT,
+      }),
+    );
+    const { code, lines } = withLedgerResult(() =>
+      captureBoth(() => main([payload, "", join(SCRATCH, "absent-dir")], aiReviewJuryGate)),
+    );
+    expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} CLEAN`))).toBe(true);
+    expect(code).toBe(0);
+  });
+
+  test("JG-6g: the finding is still reported — nothing is silently dropped", () => {
     const f = blocking();
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
-    const ballots = fixture(ballotPayload([[f, ballotFor(VERIFIER_QUORUM - 1)]]));
-    const { lines } = withLedgerResult(() => captureBoth(() => main([payload, "", ballots], aiReviewJuryGate)));
+    const dir = ballotDir([[f, VERIFIER_QUORUM - 1]]);
+    const { lines } = withLedgerResult(() =>
+      captureBoth(() => main([payload, "", dir], aiReviewJuryGate)),
+    );
     expect(lines.join("\n")).toContain(String(f.summary));
   });
 });

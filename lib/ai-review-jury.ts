@@ -13,7 +13,39 @@
  *
  * This is the deployed caller. It sits in the path
  * `bunx rungate ai-review-findings` runs on every scaffolded project's
- * pull request, between the reviewer's payload and the blocking decision.
+ * pull request, beside the blocking decision.
+ *
+ * ## IT RECORDS. IT DOES NOT SUBTRACT. (read this before the rest)
+ *
+ * CRC-B4 has two halves — *"a separate group of agents votes on each
+ * finding"*, and *"it is surfaced only if enough agree it is real"*. This
+ * ships the first and deliberately not the second, and the reason is not
+ * caution, it is that the second is **unsafe until two other things are
+ * true**:
+ *
+ *  - **Independence has to be structural, not textual.** The review action
+ *    runs with `AI_REVIEW_ALLOWED_TOOLS` = `Read,Grep,Glob,Write` and
+ *    `AI_REVIEW_DENY_RULES` denying `Task`. An instruction to spawn three
+ *    verifier subagents therefore cannot execute, and what comes back is
+ *    one model, in one context, emitting three votes. That ballot is
+ *    populated, plausible, well-formed and worth nothing — it is the
+ *    counterfeit the criterion names, reached by a prompt that could not
+ *    run. So the group is `VERIFIER_GROUP_SIZE` SEPARATE action
+ *    invocations, each writing its own file, merged here: independence is a
+ *    property of the generated workflow rather than of a sentence.
+ *  - **The verifier reads the head checkout.** A ballot that subtracted
+ *    from the blocking set would make the branch under review an input to
+ *    the gate on the branch under review: an author who can write code
+ *    could write code that argues itself clean. Fixing that means reading
+ *    the cited file at the base ref, which is not built.
+ *
+ * The half that is shipped is the half that is **permanently lost if it is
+ * not done now**: the criterion's own words are *"without them every
+ * threshold except the one actually used is permanently UNMEASURED, and
+ * re-running to recover the votes re-samples the thing being measured."* A
+ * verifier is a sampled instrument, so the second ballot is a second draw.
+ * Recording the first one is the prerequisite for CRC-B6's A/B, and it
+ * creates no bypass because nothing acts on it.
  *
  * ## Why here and not at the filing chokepoint
  *
@@ -48,26 +80,33 @@
  *    record at all. Re-running to recover it re-samples the thing being
  *    measured, because a verifier is a sampled instrument and the second
  *    ballot is a second draw.
- * 3. **A group that could not be convened is UNMEASURED, and the finding
- *    keeps blocking.** "Did not reach a quorum" and "did not have one" are
- *    different facts with different fixes, and only the first is a decision.
- *    The direction this is allowed to be wrong in is toward blocking.
- * 4. **A ballot source that was named and could not be read fails the run.**
- *    Not an empty ballot set, which would withhold nothing and look exactly
- *    like a group that unanimously agreed with every finding.
+ * 3. **A group that could not be convened is UNMEASURED, never a reading.**
+ *    "Did not reach a quorum" and "did not have one" are different facts
+ *    with different fixes, and only the first is a decision. The finding
+ *    keeps blocking either way — because nothing here withdraws one — so
+ *    the distinction is about what the ledger records, which is the whole
+ *    output.
+ * 4. **A ballot source that was named and could not be read is UNMEASURED
+ *    and announced**, never an empty ballot set. An empty set would record
+ *    a group that met and agreed with everything, which is a different and
+ *    false fact. It does not fail the run: nothing the quorum says changes
+ *    a verdict, so a quorum that could not be read must not either.
  *
  * ## What this does NOT do
  *
- * It does not convene the group. Spawning verifiers is the orchestrator's
- * job and `lib/finding-jury.ts`'s header says why: a library that spawned
- * them could not be tested without a model in the loop. The generated
- * `ai-review` workflow writes the ballot; this counts it.
+ * It does not convene the group. Spawning verifiers is the generated
+ * workflow's job and `lib/finding-jury.ts`'s header says why: a library
+ * that spawned them could not be tested without a model in the loop.
  *
- * Nor can it see whether the verifiers were independent. Three agent runs
- * behind three ids look exactly like three agents from in here.
+ * Nor can it see whether the verifiers were independent. What it CAN see is
+ * cardinality — `VERIFIER_GROUP_SIZE` ballot files, each contributing one
+ * vote per finding under its own id — and that is why the merge below is
+ * over files rather than over one file's array. A single file claiming
+ * three votes is exactly the shape one context produces.
  */
 
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
+import { join } from "path";
 
 import { symptomHash, UNFILED_ID, type ArbiterRefusal, type Finding } from "./finding-arbiter";
 import {
@@ -85,7 +124,11 @@ import {
   AI_REVIEW_JURY_NOTICE_TITLE,
   advisoryKey,
 } from "./scaffold/ai-review-findings";
-import { AI_REVIEW_BALLOT_KEY, AI_REVIEW_BALLOT_VOTES_KEY } from "./scaffold/ai-review-step";
+import {
+  AI_REVIEW_BALLOT_BASENAME,
+  AI_REVIEW_BALLOT_KEY,
+  AI_REVIEW_BALLOT_VOTES_KEY,
+} from "./scaffold/ai-review-step";
 
 /**
  * The key the ballot payload hangs its per-finding votes off.
@@ -121,7 +164,7 @@ export interface BallotReading {
   /** `null` when the source could not be read. Never an empty set standing in. */
   ballots: BallotSet | null;
   /** The sentence naming what went wrong, or `null`. */
-  unreadable: string | null;
+  unmeasured: string | null;
 }
 
 /**
@@ -146,18 +189,18 @@ export interface BallotReading {
  */
 export function readBallots(raw: string | null): BallotReading {
   if (raw === null) {
-    return { ballots: null, unreadable: `${BALLOT_UNREADABLE_PREFIX}: no ballot payload was produced` };
+    return { ballots: null, unmeasured: `${BALLOT_UNREADABLE_PREFIX}: no ballot payload was produced` };
   }
   let doc: unknown;
   try {
     doc = JSON.parse(raw);
   } catch (e) {
-    return { ballots: null, unreadable: `${BALLOT_UNREADABLE_PREFIX}: it is not JSON (${(e as Error).message})` };
+    return { ballots: null, unmeasured: `${BALLOT_UNREADABLE_PREFIX}: it is not JSON (${(e as Error).message})` };
   }
   if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
     return {
       ballots: null,
-      unreadable: `${BALLOT_UNREADABLE_PREFIX}: the payload is ${
+      unmeasured: `${BALLOT_UNREADABLE_PREFIX}: the payload is ${
         Array.isArray(doc) ? "an array" : String(doc)
       }, not an object`,
     };
@@ -166,7 +209,7 @@ export function readBallots(raw: string | null): BallotReading {
   if (!(AI_REVIEW_BALLOT_KEY in obj)) {
     return {
       ballots: null,
-      unreadable:
+      unmeasured:
         `${BALLOT_UNREADABLE_PREFIX}: it carries no '${AI_REVIEW_BALLOT_KEY}' key ` +
         `(it carries ${Object.keys(obj).join(", ") || "no keys at all"}). An absent key is not ` +
         `an empty ballot set, and an empty ballot set is not a group that agreed with everything`,
@@ -176,7 +219,7 @@ export function readBallots(raw: string | null): BallotReading {
   if (!Array.isArray(list)) {
     return {
       ballots: null,
-      unreadable:
+      unmeasured:
         `${BALLOT_UNREADABLE_PREFIX}: '${AI_REVIEW_BALLOT_KEY}' is ${
           list === null ? "null" : typeof list
         }, not a list of per-finding ballots`,
@@ -190,7 +233,7 @@ export function readBallots(raw: string | null): BallotReading {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
       return {
         ballots: null,
-        unreadable: `${BALLOT_UNREADABLE_PREFIX}: ballot ${at} is ${
+        unmeasured: `${BALLOT_UNREADABLE_PREFIX}: ballot ${at} is ${
           Array.isArray(entry) ? "an array" : String(entry)
         }, not an object`,
       };
@@ -204,7 +247,7 @@ export function readBallots(raw: string | null): BallotReading {
       if (typeof e[name] !== "string" || (e[name] as string).trim() === "") {
         return {
           ballots: null,
-          unreadable:
+          unmeasured:
             `${BALLOT_UNREADABLE_PREFIX}: ballot ${at} carries no '${name}', so it names no ` +
             `finding. The declared file and summary are how a ballot is matched to the ` +
             `finding it is about`,
@@ -214,7 +257,7 @@ export function readBallots(raw: string | null): BallotReading {
     if (!Array.isArray(e[AI_REVIEW_BALLOT_VOTES_KEY])) {
       return {
         ballots: null,
-        unreadable:
+        unmeasured:
           `${BALLOT_UNREADABLE_PREFIX}: ballot ${at} carries no '${AI_REVIEW_BALLOT_VOTES_KEY}' ` +
           `list. A ballot entry with no votes on it is not an abstention, it is a malformed entry`,
       };
@@ -225,7 +268,7 @@ export function readBallots(raw: string | null): BallotReading {
     if (key in ballots) {
       return {
         ballots: null,
-        unreadable:
+        unmeasured:
           `${BALLOT_UNREADABLE_PREFIX}: ballot ${at} is a second ballot for the finding at ` +
           `${JSON.stringify(e[f.file])}, and nothing here can choose between two readings of ` +
           `one question`,
@@ -233,7 +276,7 @@ export function readBallots(raw: string | null): BallotReading {
     }
     ballots[key] = e[AI_REVIEW_BALLOT_VOTES_KEY];
   }
-  return { ballots, unreadable: null };
+  return { ballots, unmeasured: null };
 }
 
 export interface JuryGateVerdict {
@@ -496,14 +539,90 @@ export function juryLedgerRow(
 
 /** What the adjudicator's `main` consumes. Plain data, so it can be injected. */
 export interface JuryGateOutcome {
-  /** One entry per blocking finding, in input order. See `JuryGateResult`. */
-  withheld: (string | null)[];
-  unreadable: string | null;
+  /**
+   * One entry per blocking finding, in input order — the sentence saying
+   * the group WOULD have withheld it, or `null`.
+   *
+   * "Would have". Nothing acts on this; see the module header.
+   */
+  wouldWithhold: (string | null)[];
+  /** Non-null when no countable ballot could be read. Never fatal. */
+  unmeasured: string | null;
   detail: string[];
 }
 
 /**
- * The deployed gate: read the ballot, count it, record it, report it.
+ * Collect the ballots one verifier directory per verifier, merged by finding.
+ *
+ * **The group is N files, and that is the only independence claim anything
+ * downstream can check.** One file carrying `VERIFIER_GROUP_SIZE` votes is
+ * the shape a single model in a single context produces, and once written
+ * it is indistinguishable from a real group — so the contract is one file
+ * per verifier, and the merge happens here where the count can be seen.
+ *
+ * A directory with fewer than `VERIFIER_GROUP_SIZE` ballot files produces
+ * short ballots, which `juryReading` refuses as `INCOMPLETE_GROUP`. That is
+ * the correct reading and not a workaround: a verifier that did not report
+ * is neither agreement nor dissent.
+ *
+ * Entries are merged in directory-name order, which is stable, so a given
+ * finding's votes arrive in the same sequence on every run.
+ */
+export function readBallotDirectory(ballotDir: string): BallotReading {
+  let entries: string[];
+  try {
+    entries = readdirSync(ballotDir).sort();
+  } catch (e) {
+    return {
+      ballots: null,
+      unmeasured:
+        `${BALLOT_UNREADABLE_PREFIX}: the verifier directory ${ballotDir} could not be listed ` +
+        `(${(e as Error).message}). A directory this run was told to read and could not is a ` +
+        `group that did not meet, not a group that upheld every finding`,
+    };
+  }
+
+  const merged: BallotSet = {};
+  let files = 0;
+  for (const entry of entries) {
+    const path = join(ballotDir, entry, AI_REVIEW_BALLOT_BASENAME);
+    let raw: string;
+    try {
+      raw = readFileSync(path, "utf-8");
+    } catch {
+      // A directory with no ballot in it is a verifier that did not report.
+      // That is not an error here — it shortens the ballot, and
+      // `INCOMPLETE_GROUP` is the reading that names it one level down.
+      continue;
+    }
+    files += 1;
+    const one = readBallots(raw);
+    if (one.ballots === null) {
+      return {
+        ballots: null,
+        unmeasured: `${one.unmeasured} (verifier ${JSON.stringify(entry)})`,
+      };
+    }
+    for (const [key, votes] of Object.entries(one.ballots)) {
+      const carried = merged[key];
+      merged[key] = [...(Array.isArray(carried) ? carried : []), ...(votes as unknown[])];
+    }
+  }
+
+  if (files === 0) {
+    return {
+      ballots: null,
+      unmeasured:
+        `${BALLOT_UNREADABLE_PREFIX}: no verifier under ${ballotDir} wrote a ` +
+        `${AI_REVIEW_BALLOT_BASENAME}, so no group met. An empty ballot set is not a group ` +
+        `that agreed with every finding`,
+    };
+  }
+  return { ballots: merged, unmeasured: null };
+}
+
+/**
+ * The deployed gate: read the ballots, count them, record them, report them.
  *
  * Injected into `main` rather than imported by it. `lib/scaffold/
  * ai-review-findings.ts` is copied into a scratch directory by three mutation
@@ -513,33 +632,21 @@ export interface JuryGateOutcome {
  * identically to a guard behaving differently
  * (`.claude/rules/self-referential-tests.md`, Tier 1, last row).
  *
- * The seam is not a loophole. `main` refuses a ballot path with no gate
- * wired, as UNMEASURED, so the two entry points cannot diverge into one that
- * silently ignores the ballot and passes.
+ * The seam is not a loophole, because there is nothing on the other side of
+ * it to bypass: the gate changes no verdict. An entry point that forgets to
+ * wire it records no votes and says so under
+ * `AI_REVIEW_JURY_UNMEASURED_TITLE`.
  *
- * **A ledger that cannot be written does not change the verdict.** The record
- * exists to measure the gate, and a measurement apparatus that blocks the
- * thing it measures is worse than no measurement — the same policy
- * `recordAdjudication` states. It is said out loud in `detail` instead.
+ * **A ledger that cannot be written does not change the verdict**, which is
+ * trivially true here and is said anyway, because it will stop being
+ * trivial the day the ballot is allowed to subtract. The record exists to
+ * measure the gate, and a measurement apparatus that blocks the thing it
+ * measures is worse than no measurement — `recordAdjudication`'s own policy.
  */
-export function aiReviewJuryGate(blocking: readonly unknown[], ballotPath: string): JuryGateOutcome {
-  let raw: string | null = null;
-  try {
-    raw = readFileSync(ballotPath, "utf-8");
-  } catch (e) {
-    return {
-      withheld: [],
-      unreadable:
-        `${BALLOT_UNREADABLE_PREFIX} at ${ballotPath}: ${(e as Error).message}. A ballot this ` +
-        `run was told to read and could not is a reading that failed, not a group that upheld ` +
-        `every finding`,
-      detail: [],
-    };
-  }
-
-  const source = readBallots(raw);
+export function aiReviewJuryGate(blocking: readonly unknown[], ballotDir: string): JuryGateOutcome {
+  const source = readBallotDirectory(ballotDir);
   if (source.ballots === null) {
-    return { withheld: [], unreadable: source.unreadable, detail: [] };
+    return { wouldWithhold: [], unmeasured: source.unmeasured, detail: [] };
   }
 
   const result = juryGate(blocking, source.ballots);
@@ -552,9 +659,9 @@ export function aiReviewJuryGate(blocking: readonly unknown[], ballotPath: strin
   if (unwritten > 0) {
     detail.push(
       `${unwritten} of ${result.verdicts.length} verifier ballots could not be appended to the ` +
-        `finding ledger, so those votes are UNMEASURED for every later threshold. The verdict ` +
-        `above stands: a record that cannot be written must not change what it records`,
+        `finding ledger, so those votes are UNMEASURED for every later threshold. Nothing else ` +
+        `changes: a record that cannot be written must not change what it records`,
     );
   }
-  return { withheld: result.withheld, unreadable: null, detail };
+  return { wouldWithhold: result.withheld, unmeasured: null, detail };
 }
