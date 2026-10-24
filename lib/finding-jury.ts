@@ -223,8 +223,15 @@ export function classifyCategory(finding: Pick<Finding, "title" | "body">): Find
  * nothing reachable from CI could name it. Its docblock there carries the
  * input on which this and `AI_REVIEW_SEVERITIES` must disagree.
  *
- * Re-exported rather than moved outright so `severityOf`, the arbiter, the
- * filing gate and `hooks/VerifyPhaseLock.hook.ts` keep naming it here.
+ * Re-exported rather than moved outright so `severityOf` and the three
+ * modules that name the vocabulary keep naming it here:
+ * `lib/finding-arbiter.ts`, `lib/ai-review-jury.ts` and
+ * `lib/issue-filing-gate.ts`. Measured 2026-10-24, not copied: #1587's own
+ * brief and the spec listed `lib/failure-intake.ts` and
+ * `hooks/VerifyPhaseLock.hook.ts` among them and NEITHER imports this module,
+ * directly or transitively. `scripts/arbitrate-finding.ts` does import from
+ * here — `parseVotes`, `renderComment`, `VerifierVote` — but never names
+ * `Severity` or `SEVERITY_RANK` itself.
  */
 export { SEVERITY_RANK };
 export type { Severity };
