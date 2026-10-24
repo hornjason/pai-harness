@@ -72,12 +72,14 @@ import { main } from "../lib/scaffold/ai-review-findings";
 import { AI_REVIEW_BALLOT_DIR_ENV } from "../lib/scaffold/ai-review-step";
 
 const ballotDir = process.env[AI_REVIEW_BALLOT_DIR_ENV];
+const jury =
+  ballotDir === undefined || ballotDir === ""
+    ? null
+    : (blocking: readonly unknown[]) => aiReviewJuryGate(blocking, ballotDir);
 
-process.exit(
-  main(
-    process.argv.slice(2),
-    ballotDir === undefined || ballotDir === ""
-      ? null
-      : blocking => aiReviewJuryGate(blocking, ballotDir),
-  ),
-);
+// One line, and `process.exit(main(` is load-bearing text: AC-4 in
+// `test/ai-review-findings-command.test.ts` reads it to prove this file
+// declares no exit code of its own. Wrapping the call across lines makes
+// that case red for a formatting reason, which is worth knowing before
+// reformatting it.
+process.exit(main(process.argv.slice(2), jury));
