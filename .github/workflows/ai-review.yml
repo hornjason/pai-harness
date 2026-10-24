@@ -1,4 +1,4 @@
-# generated-sha: e551aa3b7b732cb6
+# generated-sha: c564cb8d32af207b
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -3432,7 +3432,7 @@ jobs:
               # the reader, which is exactly the state before this step existed — so a
               # consumer whose prepare step did not reach its output keeps the reading
               # it had rather than acquiring a refusal from this change.
-              adjudication=$(cd "$(dirname "${AI_REVIEW_FINDINGS_PATH}")" && bunx rungate@0.8.4 ai-review-findings "${AI_REVIEW_FINDINGS_PATH}" "${AI_REVIEW_CHANGED_FILES_PATH:-}" 2>&1) || adjudicated=$?
+              adjudication=$(cd "$(dirname "${AI_REVIEW_FINDINGS_PATH}")" && bunx rungate@0.8.5 ai-review-findings "${AI_REVIEW_FINDINGS_PATH}" "${AI_REVIEW_CHANGED_FILES_PATH:-}" 2>&1) || adjudicated=$?
               printf '%s\n' "${adjudication}"
 
               # DID IT RUN, asked before WHAT IT SAID. Without this line a registry that
@@ -3480,7 +3480,7 @@ jobs:
                   # step out of a line the reader never escaped.
                   verdict="${adjudication#*ai-review findings outcome:}"
                   verdict="ai-review findings outcome:${verdict%%$'\n'*}"
-                  echo "::notice title=AI review adjudicated::$(escape_annotation "${verdict}") — read from the findings payload by 'bunx rungate@0.8.4 ai-review-findings', whose exit code is this step's. This annotation is the only one this job emits that an unread payload cannot produce — the branch is entered on the outcome line and nothing else — so a run carrying this title had a review AND a verdict on it. Its ABSENCE on a green run is not a clean review: it means no payload was written, or the action skipped itself on its own workflow-validation guard, or the step died before the reading — none of which measured anything."
+                  echo "::notice title=AI review adjudicated::$(escape_annotation "${verdict}") — read from the findings payload by 'bunx rungate@0.8.5 ai-review-findings', whose exit code is this step's. This annotation is the only one this job emits that an unread payload cannot produce — the branch is entered on the outcome line and nothing else — so a run carrying this title had a review AND a verdict on it. Its ABSENCE on a green run is not a clean review: it means no payload was written, or the action skipped itself on its own workflow-validation guard, or the step died before the reading — none of which measured anything."
                   if [ "${adjudicated}" = 0 ]; then
                     exit 0
                   fi
@@ -3492,7 +3492,7 @@ jobs:
               # this prints. A payload exists, so a review was attempted; "nobody read
               # it" is a failure on every tree, not an opt-in. The flag still governs
               # every branch above and below, where nothing was attempted at all.
-              echo "::error title=AI review UNMEASURED::The AI review completed and wrote a findings payload, and the step that adjudicates it produced no reading: 'bunx rungate@0.8.4 ai-review-findings' printed no 'ai-review findings outcome:' line, so it did not run. The payload is therefore UNMEASURED — not clean. Failing rather than reporting a green check for a review whose findings nobody read; a blocking finding and an adjudication that never happened look identical from outside this job. This is NOT the RUNGATE_REQUIRE_AI_REVIEW case: that flag is for a tree with no credential, where no review was attempted. One was attempted here and its result is sitting at the findings path unread. The usual causes are that rungate@0.8.4 is not on the registry, that bun is not on this runner, or that the registry was unreachable — the command's own output is printed above this line." >&2
+              echo "::error title=AI review UNMEASURED::The AI review completed and wrote a findings payload, and the step that adjudicates it produced no reading: 'bunx rungate@0.8.5 ai-review-findings' printed no 'ai-review findings outcome:' line, so it did not run. The payload is therefore UNMEASURED — not clean. Failing rather than reporting a green check for a review whose findings nobody read; a blocking finding and an adjudication that never happened look identical from outside this job. This is NOT the RUNGATE_REQUIRE_AI_REVIEW case: that flag is for a tree with no credential, where no review was attempted. One was attempted here and its result is sitting at the findings path unread. The usual causes are that rungate@0.8.5 is not on the registry, that bun is not on this runner, or that the registry was unreachable — the command's own output is printed above this line." >&2
               exit 1
             fi
 
