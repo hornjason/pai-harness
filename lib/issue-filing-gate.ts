@@ -109,6 +109,7 @@ import {
   type OpenIssuePage,
 } from "./github";
 import { branchOf, toplevel } from "./launch-base";
+import { readWorktreeRemote, repoSlug } from "./worktree-repo";
 import {
   duplicateCollisions,
   symptomHash,
@@ -283,6 +284,29 @@ export const NON_CHECKOUT_RUN = "NON_CHECKOUT";
  * Through `toplevel` from `lib/launch-base.ts`, so `/wt/x` and `/wt/x/lib`
  * are one run and there is one binding for "which checkout is this".
  *
+ * **A checkout counts as its own run only if it has an origin remote.**
+ * `toplevel` alone was not enough and the second review round said so: a
+ * bare `git -C <dir> rev-parse --show-toplevel` answers for a directory
+ * somebody `git init`ed a second ago, so `git init /tmp/x && cd /tmp/x`
+ * minted a fresh allowance for one command. Measured: two sibling `git
+ * init`s return two distinct toplevels and **no origin**. The remote is
+ * read through `readWorktreeRemote`/`repoSlug`, the same pair
+ * `lib/launch-base.ts` reads, so there is one opinion about what a
+ * repository is.
+ *
+ * **What this does NOT close, stated rather than left to be discovered.**
+ * `git worktree add` is one command, carries the parent's origin, and mints
+ * a fresh allowance. So does `git init` followed by `git remote add origin`.
+ * No identity derived from the filer's working directory can resist either,
+ * because the filer owns the directory — the only key that resists is one
+ * the filer cannot choose, and the target repository is the only such key in
+ * this gate's hand. It is not usable as the UNIT: 284 registered worktrees
+ * against a measured 64 issues a day makes one allowance per repository a
+ * 98% refusal rate, which is a gag and not a cap. As a SECOND key with its
+ * own measured ceiling, refusing when either is over, it would close the
+ * remaining routes — that is a number to pick from measurement, and it is
+ * deliberately not invented here.
+ *
  * **Every directory that is not a checkout is ONE run, `NON_CHECKOUT_RUN`.**
  * This read `resolve(projectRoot)` first, so each non-checkout directory was
  * its own run — and that made the allowance keyable by the filer: `mkdir
@@ -308,9 +332,21 @@ export const NON_CHECKOUT_RUN = "NON_CHECKOUT";
  * What this still does NOT defend against is a filing that never reaches
  * this chokepoint — `curl`, the MCP tools, another machine. This file's own
  * header lists those, and the cap governs the default.
+ *
+ * **One bound on the INPUT, which this function cannot fix.** `projectRoot`
+ * reaches here from `process.cwd()` in `hooks/VerifyPhaseLock.hook.ts`,
+ * which is the SESSION's directory and not necessarily the agent's
+ * worktree — a hook has no way to learn the latter when they differ. So
+ * several agents hosted by one session, working in different worktrees, can
+ * share one allowance. Recorded as a stated limit rather than left implicit
+ * (#1595, after the security review of PR #1597).
  */
 export function runIdFor(projectRoot: string): string {
-  return toplevel(projectRoot) ?? NON_CHECKOUT_RUN;
+  const top = toplevel(projectRoot);
+  if (top === null) return NON_CHECKOUT_RUN;
+  // A checkout nobody can name is not a run. `git init` makes a toplevel in
+  // one command; it does not make an origin.
+  return repoSlug(readWorktreeRemote(top).url) === null ? NON_CHECKOUT_RUN : top;
 }
 
 /**
@@ -805,10 +841,11 @@ export interface FilingLedgerRow {
    * `lib/ai-review-jury.ts` write — neither adjudicates a `gh issue create`
    * from a checkout — and on every row written before this column existed.
    * **Not on a chokepoint filing from a directory that is not a checkout:**
-   * `runIdFor` falls back to the resolved path rather than returning `null`,
-   * because a `null` there would merge every non-checkout filing on the
-   * machine into one allowance, and the fix for that gag would have been an
-   * exemption.
+   * `runIdFor` returns the `NON_CHECKOUT_RUN` bucket rather than `null`, so
+   * the row still names a run and is still counted. Merging every
+   * non-checkout filing on the machine into one allowance is deliberate and
+   * is the fail-closed direction — see `runIdFor`, which first did the
+   * opposite and was reversed.
    *
    * `emittedInRun` counts only rows whose `run` equals the run being
    * adjudicated, so a `null` row counts towards nothing. That is the honest

@@ -81,6 +81,7 @@ import {
   type FilingLedgerRow,
 } from "../lib/issue-filing-gate";
 import { DROPPED_CATEGORIES } from "../lib/finding-jury";
+import { toplevel } from "../lib/launch-base";
 import {
   readFindingOutcomes,
   summariseFindingOutcomes,
@@ -221,16 +222,50 @@ let runSeq = 0;
 function freshRun(): string {
   const dir = join(scratch, `run-${runSeq++}`);
   mkdirSync(dir, { recursive: true });
-  // A REAL checkout, because `runIdFor` buckets every non-checkout directory
-  // into one shared `NON_CHECKOUT` allowance — so without this every spawn in
-  // the file would be one run again, and the first case to file would cap the
-  // rest. It is also what an agent is in production: a worktree.
+  checkoutAt(dir);
+  return dir;
+}
+
+/** The origin a fixture checkout carries, so it is a run and not a bucket. */
+const FIXTURE_ORIGIN = "https://github.com/hornjason/pai-harness.git";
+
+/**
+ * Make `dir` a checkout `runIdFor` will treat as its own run.
+ *
+ * **`git init` alone is deliberately not enough, and the fixture says so
+ * rather than relying on it.** `runIdFor` buckets a checkout with no origin
+ * into `NON_CHECKOUT_RUN`, because `git init /tmp/x` is one command and
+ * would otherwise mint a fresh allowance — the bypass the security review
+ * of PR #1597 found in the first spelling of this fixture, where `git init`
+ * alone separated runs and the suite therefore ASSERTED that a scratch repo
+ * is a run. The contract these fixtures encode is *a checkout of a
+ * repository*, which is what an agent has in production.
+ */
+function checkoutAt(dir: string): void {
   // late-env-ok: the child is `git`, which reads none of the variables this
   // file writes — RUNGATE_OPEN_FINDINGS and the ledger session id are read by
   // the gate under test, in this process, never by a git subprocess.
-  const init = spawnSync("git", ["-C", dir, "init", "-q", "-b", "main"], { encoding: "utf-8" });
-  expect(init.status, `the fixture run at ${dir} must be a real checkout`).toBe(0);
-  return dir;
+  const git = (...args: string[]) =>
+    spawnSync("git", ["-C", dir, ...args], { encoding: "utf-8" });
+  expect(git("init", "-q", "-b", "main").status, `${dir} must be a real checkout`).toBe(0);
+  expect(git("remote", "add", "origin", FIXTURE_ORIGIN).status, `${dir} must have an origin`).toBe(
+    0,
+  );
+}
+
+/**
+ * `toplevel(dir)`, refusing rather than returning `null`.
+ *
+ * A case comparing a run id against `toplevel(dir)` is comparing against
+ * `string | null`, and `null === null` would hold for a directory that is not
+ * a checkout at all — i.e. the assertion would pass on a fixture that never
+ * ran `git init`. Refusing here keeps the premise of the fixture separate
+ * from the claim of the case.
+ */
+function checkoutTop(dir: string): string {
+  const top = toplevel(dir);
+  if (top === null) throw new Error(`${dir} is not a checkout, so the case proves nothing`);
+  return top;
 }
 
 function runHook(
@@ -3054,7 +3089,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
  * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
  * the half FG-91 surrendered. Nothing else in the file moved.
  */
-describe("FG-143..FG-162: a numeric cap, which no argument defeats", () => {
+describe("FG-143..FG-163: a numeric cap, which no argument defeats", () => {
   const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
   const AT = "2026-10-24T12:00:00.000Z";
 
@@ -3114,10 +3149,7 @@ describe("FG-143..FG-162: a numeric cap, which no argument defeats", () => {
     runB = join(scratch, "cap-run-b");
     for (const dir of [runA, runB]) {
       mkdirSync(dir, { recursive: true });
-      // late-env-ok: the child is `git`, which reads none of the variables
-      // this file writes — they are read by the gate under test, in process.
-      const init = spawnSync("git", ["-C", dir, "init", "-q", "-b", "main"], { encoding: "utf-8" });
-      expect(init.status, `${dir} must be a real checkout`).toBe(0);
+      checkoutAt(dir);
     }
     expect(runIdFor(runA), "two checkouts, two runs").not.toBe(runIdFor(runB));
   });
@@ -3392,6 +3424,67 @@ describe("FG-143..FG-162: a numeric cap, which no argument defeats", () => {
     expect(afterDup.rows[0].refiledAfter, "and the row names the refusal it answered").toBe(old);
   });
 
+  test("FG-163: a scratch `git init` does not mint an allowance", async () => {
+    // **The bypass my own first fix left open, and my own fixtures then
+    // asserted.** `resolve()` → `toplevel()` closed `mkdir /tmp/x` and left
+    // `git init /tmp/x` — one more command — producing a distinct toplevel
+    // and therefore a fresh allowance. I had demonstrated it in the same
+    // commit by adding `git init` to `freshRun()` SO THAT each spawn would
+    // be its own run. Found by the security review of PR #1597.
+    //
+    // Measured here rather than argued: two sibling inits, two toplevels,
+    // no origin on either. A checkout nobody can name is not a run.
+    const one = join(scratch, "scratch-init-one");
+    const two = join(scratch, "scratch-init-two");
+    for (const dir of [one, two]) {
+      mkdirSync(dir, { recursive: true });
+      // late-env-ok: the child is `git`, which reads no variable this file
+      // writes — the gate reads them in this process, never a subprocess.
+      expect(
+        spawnSync("git", ["-C", dir, "init", "-q", "-b", "main"], { encoding: "utf-8" }).status,
+      ).toBe(0);
+    }
+    // `checkoutTop` refuses a non-checkout, so these two lines are the
+    // fixture's premise — distinct toplevels — and not a claim about the gate.
+    expect(checkoutTop(one), "and the two really are distinct ones").not.toBe(checkoutTop(two));
+    expect(runIdFor(one), "yet both are the bucket, because neither has an origin").toBe(
+      NON_CHECKOUT_RUN,
+    );
+    expect(runIdFor(two)).toBe(NON_CHECKOUT_RUN);
+
+    const spentThere = [landed(NON_CHECKOUT_RUN)];
+    const second2 = await filingGate(second, {
+      projectRoot: two,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentThere,
+      readTarget: async () => onPr,
+    });
+    expect(second2.rows[0].refusal, "so a second scratch repo buys nothing").toBe("OVER_CAP");
+
+    // NEGATIVE CONTROL, one axis: the SAME directory with an origin added is
+    // its own run again. Without this the case above passes under a gate
+    // that had bucketed every checkout on the machine, which would be a gag
+    // rather than a cap — and it is the half that says what `git init` was
+    // missing rather than that git was the problem.
+    // late-env-ok: the child is `git`, which reads no variable this file
+    // writes — the gate reads them in this process, never in a subprocess.
+    expect(
+      spawnSync("git", ["-C", two, "remote", "add", "origin", FIXTURE_ORIGIN], {
+        encoding: "utf-8",
+      }).status,
+    ).toBe(0);
+    expect(runIdFor(two), "an origin is what makes a checkout nameable").toBe(checkoutTop(two));
+    const withOrigin = await filingGate(second, {
+      projectRoot: two,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentThere,
+      readTarget: async () => onPr,
+    });
+    expect(withOrigin.rows[0].refusal, "and a named checkout has its own allowance").toBeNull();
+  });
+
   test("FG-147: a REFUSED filing does not consume the allowance", async () => {
     // A gate that counted its own refusals would cap a run out for having
     // been stopped, which is the fastest way to build one that refuses
@@ -3458,9 +3551,10 @@ describe("FG-143..FG-162: a numeric cap, which no argument defeats", () => {
     // checkout is one run. Asserted on the repo this suite lives in, which
     // is the only checkout it can be sure of.
     expect(runIdFor(join(REPO, "lib"))).toBe(runIdFor(REPO));
-    // And a directory that is not a checkout is its own run, never `null`:
-    // one shared allowance for every non-checkout on the machine would be a
-    // permanent gag, and exempting them would be a bypass.
+    // And two DIFFERENT checkouts are two runs. `runA` and `runB` each carry
+    // an origin, which is what makes them nameable — the earlier version of
+    // this comment said a non-checkout was its own run too, which was the
+    // policy this branch reversed, and FG-160 now asserts the opposite.
     expect(runIdFor(runA)).not.toBe(runIdFor(runB));
   });
 
