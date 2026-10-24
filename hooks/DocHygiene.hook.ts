@@ -47,32 +47,8 @@ if (!filePath.endsWith('.md')) process.exit(0);
 // consumer than the doc index. A mutation record is identified by its one `# `
 // heading, so a stamp there is not a missing field being filled in, it is a
 // convention being broken one file at a time.
-//
-// EVERY ENTRY NAMES A CLASS OF MARKDOWN, NOT A PLACE TO WORK (#1432).
-// `.claude/worktrees/` was here and is gone. It was the one entry that named
-// a CHECKOUT rather than a content class, and it arrived with the #713
-// migration (83385d17) carrying no stated reason — the comment above argues
-// for four of the other entries and never reached it.
-//
-// It cost the hook most of its input. A doc in a worktree is on its way to
-// `main`: it is the same file it will be after the merge, and the worktree is
-// the only place this hook could stamp it before it is committed. Measured on
-// this machine, 152 of 266 registered worktrees sat under that prefix, and of
-// the docs on `main` that transcripts show were only ever written from such a
-// path, 50% were missing at least one of the three fields against 14.1% for
-// docs only ever written from a plain checkout.
-//
-// Removing it is narrow because every remaining entry is a SUBSTRING test: a
-// `.claude/agents/` or `.claude/rules/mutations/` file nested inside a
-// worktree checkout is still skipped by its own entry, and markdown that is a
-// payload still goes to `/tmp/` or `~/.rungate/` wherever it is written from.
-// `test/product-hook-migration.test.ts` asserts both halves.
-//
-// There is no walk here to make expensive, which is the usual reason a
-// worktree prefix is excluded in this repo (`specs/SCAFFOLD-DECOMPOSITION-SPEC.md`
-// records a scan that `.claude/worktrees/` took to twelve seconds). This hook
-// is handed one path and tests it against this list. Measured cost of the
-// change: +10 ms per markdown write that previously exited here.
+// Every entry names a CLASS of markdown, never a place to work, which is why
+// `.claude/worktrees/` left in #1432 — see DOC-HYGIENE-ARCHITECTURE-SPEC.md.
 const SKIP_PATTERNS = [
   '/archive/',
   '/MEMORY/WORK/',
