@@ -1,7 +1,7 @@
 /**
  * bun-test-path-guard.test.ts — #1544
  *
- * Covers SC-2540, SC-2541, SC-2542, SC-2543, SC-2544 (HOOK-ARCHITECTURE-SPEC.md).
+ * Covers SC-2540, SC-2541, SC-2542, SC-2543, SC-2544, SC-2545 (HOOK-ARCHITECTURE-SPEC.md).
  *
  * `bun test <path>` treats a path argument that matches no file as a name
  * FILTER. On bun 1.3.14, measured in this tree:
@@ -265,6 +265,95 @@ describe("#1544 AC-3: the control — the guard does NOT fire on a clean command
       ).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-7 — the tree bun will actually run in. Raised by the AI review on PR
+// #1562, verified in both directions, and it was right.
+//
+// `splitTopLevel` does not track parenthesis depth, and this project MANDATES
+// `( cd <dir> && … )` for every command that works outside the session's own
+// directory. So the guard was resolving path arguments against the session's
+// cwd while bun would run in the cd'd tree. Measured before the fix:
+//
+//   `( cd <target> && bun test test/real.test.ts )`  →  REFUSED a correct
+//   command, naming a path that exists exactly where bun would have looked.
+//
+// The fix does not try to model subshell scoping. A path argument is refused
+// only when it is absent under EVERY candidate root — the tool call's cwd and
+// every `cd` target the command names. A typo is absent under all of them; a
+// correct path exists under at least one. That makes the scoping question
+// stop mattering, which is better than answering it with a depth counter that
+// the next spelling defeats.
+// ---------------------------------------------------------------------------
+
+describe("#1544 AC-7: paths resolve against the tree bun will run in", () => {
+  test("AC-7a: `( cd <dir> && bun test <path> )` is NOT refused when the path exists there", () => {
+    const session = scratchProject(0);
+    const target = scratchProject(1);
+    try {
+      const cmd = `( cd ${target.dir} && bun test ${target.present[0]} )`;
+      // Before the fix this refused, naming a path that exists exactly where
+      // bun would have looked. It is the form this project mandates.
+      expect(bunTestPathRefusal(cmd, session.dir)).toBeNull();
+    } finally {
+      rmSync(session.dir, { recursive: true, force: true });
+      rmSync(target.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-7b: a flat `cd <dir> && bun test <path>` chain resolves there too", () => {
+    const session = scratchProject(0);
+    const target = scratchProject(1);
+    try {
+      const cmd = `cd ${target.dir} && bun test ${target.present[0]}`;
+      expect(bunTestPathRefusal(cmd, session.dir)).toBeNull();
+    } finally {
+      rmSync(session.dir, { recursive: true, force: true });
+      rmSync(target.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-7c: a typo inside a cd'd subshell is still refused — absent under EVERY root", () => {
+    // The guard must not be bought off by widening the roots: this is the
+    // #1536 shape wearing the mandated command form.
+    const session = scratchProject(0);
+    const target = scratchProject(1);
+    try {
+      const cmd = `( cd ${target.dir} && bun test ${target.present[0]} test/zz-absent.test.ts )`;
+      const refusal = bunTestPathRefusal(cmd, session.dir);
+      expect(refusal).not.toBeNull();
+      expect(refusal!.missing.map(m => m.argument)).toEqual(["test/zz-absent.test.ts"]);
+    } finally {
+      rmSync(session.dir, { recursive: true, force: true });
+      rmSync(target.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-7d: an unresolvable cd target skips the command rather than guessing", () => {
+    const session = scratchProject(0);
+    try {
+      // The roots cannot be enumerated, so nothing can be said about the paths.
+      expect(bunTestPathRefusal("( cd $WORKTREE && bun test test/zz-absent.test.ts )", session.dir)).toBeNull();
+    } finally {
+      rmSync(session.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-7e: the refusal names every root it searched", () => {
+    const session = scratchProject(0);
+    const target = scratchProject(1);
+    try {
+      const cmd = `( cd ${target.dir} && bun test test/zz-absent.test.ts )`;
+      const refusal = bunTestPathRefusal(cmd, session.dir);
+      // A refusal that names one root while bun would have used another is
+      // the thing that made this finding hard to see from the outside.
+      expect(refusal!.message).toContain(target.dir);
+    } finally {
+      rmSync(session.dir, { recursive: true, force: true });
+      rmSync(target.dir, { recursive: true, force: true });
     }
   });
 });

@@ -101,6 +101,57 @@ const UNRESOLVABLE_SEGMENT = /\$\(|`|\$\{/;
 /** Shell syntax that makes a single ARGUMENT unresolvable. */
 const UNRESOLVABLE_ARGUMENT = /[*?\[\]$~]/;
 
+/**
+ * A segment whose first command is `cd <target>`, optionally opening a
+ * subshell. `( cd /x && bun test … )` and `cd /x && bun test …` both match.
+ */
+const LEADING_CD = /^\s*\(?\s*cd\s+(\S+)/;
+
+/**
+ * Every directory `bun test` might run in: the tool call's cwd, plus every
+ * `cd` target the command names. Null when a `cd` target cannot be resolved,
+ * because then the set cannot be enumerated and nothing can be said.
+ *
+ * ## Why a SET of roots and not the one true cwd
+ *
+ * Raised by the AI review on PR #1562 and it was right in both directions.
+ * `splitTopLevel` does not track parenthesis depth, and this project mandates
+ * `( cd <dir> && … )` for any command working outside the session's own
+ * directory — so the first implementation resolved against the session cwd
+ * while bun would run in the cd'd tree. Measured: it REFUSED
+ * `( cd <target> && bun test test/real.test.ts )` naming a path that exists
+ * exactly where bun would have looked, and ALLOWED a path absent there but
+ * present in the session cwd.
+ *
+ * Modelling subshell scoping properly needs a depth counter, and a depth
+ * counter is a detector the next spelling defeats — the second shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`. Refusing only when a path
+ * is absent under EVERY candidate root makes the scoping question stop
+ * mattering instead of answering it: a typo is absent under all of them, and
+ * a correct path exists under at least one.
+ *
+ * The cost is declared rather than hidden: a path that exists under one root
+ * and not under the one bun actually uses is ALLOWED. That is the direction
+ * this guard is allowed to be wrong in, it is strictly better than the
+ * single-root reading it replaces, and it is not the #1536 shape — a typo'd
+ * filename exists nowhere.
+ */
+function candidateRoots(command: string, cwd: string): string[] | null {
+  const roots = [cwd];
+  for (const { segment } of suitePathArgumentsBySegment(command)) {
+    const cd = LEADING_CD.exec(segment);
+    if (!cd) continue;
+    const target = cd[1];
+    // `cd $WORKTREE`, `cd "$(git rev-parse …)"`, `cd -`: the set of roots
+    // cannot be enumerated, so the command is not judged at all.
+    if (UNRESOLVABLE_SEGMENT.test(target) || UNRESOLVABLE_ARGUMENT.test(target) || target === "-") {
+      return null;
+    }
+    roots.push(isAbsolute(target) ? target : resolve(cwd, target));
+  }
+  return roots;
+}
+
 export interface MissingTestPath {
   /** The argument exactly as it was typed. */
   argument: string;
@@ -113,11 +164,14 @@ export interface BunTestPathRefusal {
   message: string;
 }
 
-function refusalMessage(missing: MissingTestPath[], cwd: string): string {
+function refusalMessage(missing: MissingTestPath[], roots: string[]): string {
   const names = missing.map((m) => `  ${m.argument}  →  ${m.resolved}`).join("\n");
   const plural = missing.length === 1 ? "a path that matches" : "paths that match";
+  // Every root is named. A refusal naming one directory while bun would have
+  // run in another is what made the first implementation's defect invisible.
+  const where = roots.length === 1 ? roots[0] : `any of ${roots.join(", ")}`;
   return (
-    `This \`bun test\` names ${plural} no file under ${cwd}:\n${names}\n\n` +
+    `This \`bun test\` names ${plural} no file under ${where}:\n${names}\n\n` +
     `Bun treats an unmatched path argument as a NAME FILTER. It exits non-zero only ` +
     `when NOTHING matched; with at least one real path alongside, the run exits 0 and ` +
     `reports a pass total, so the argument above would contribute nothing and nobody ` +
@@ -140,18 +194,29 @@ function refusalMessage(missing: MissingTestPath[], cwd: string): string {
 export function bunTestPathRefusal(command: unknown, cwd: string): BunTestPathRefusal | null {
   if (typeof command !== "string" || command.trim() === "") return null;
 
+  const roots = candidateRoots(command, cwd);
+  // A command naming a `cd` target this cannot resolve is not judged.
+  if (roots === null) return null;
+
   const missing: MissingTestPath[] = [];
   for (const { segment, paths } of suitePathArgumentsBySegment(command)) {
     if (UNRESOLVABLE_SEGMENT.test(segment)) continue;
     for (const argument of paths) {
       if (UNRESOLVABLE_ARGUMENT.test(argument)) continue;
-      const resolved = isAbsolute(argument) ? argument : resolve(cwd, argument);
-      if (!existsSync(resolved)) missing.push({ argument, resolved });
+      if (isAbsolute(argument)) {
+        if (!existsSync(argument)) missing.push({ argument, resolved: argument });
+        continue;
+      }
+      // Absent under EVERY root, or it is not missing. See `candidateRoots`.
+      const tried = roots.map((root) => resolve(root, argument));
+      if (tried.every((p) => !existsSync(p))) {
+        missing.push({ argument, resolved: tried.join(", ") });
+      }
     }
   }
 
   if (missing.length === 0) return null;
-  return { missing, message: refusalMessage(missing, cwd) };
+  return { missing, message: refusalMessage(missing, roots) };
 }
 
 export type BunTestPathGuardMode = "warn" | "block" | "off";
