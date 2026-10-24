@@ -45,7 +45,10 @@ one before it — why, per shape:
 - **Two deciders that agree.** Two guards answering the same question about the
   same input are behaviourally ONE guard, so no behavioural test can tell them
   apart — and a mutation of either leaves the other holding the case up. Both
-  read as covered; one of them is dead and nobody can see which.
+  read as covered; one of them is dead and nobody can see which. At N sites
+  rather than two, **a behavioural suite catches only the last one to
+  regress**, so assert the property across the sites instead of repairing
+  them one at a time.
 - **A case that goes green under the WRONG fix.** It fails today, for a true
   reason, against exactly what it is pointed at. It also stops failing under
   the cheapest repair somebody reaches for — so it certifies the regression
@@ -69,7 +72,9 @@ counts and the pair or spelling that produced them. The operative half:
 **a mutation battery is the only instrument that finds the fourth**, the
 sixth is byte-identical to success on the channel you are watching, and
 for the seventh **predict the membership, not just the total**. All three,
-in full: `reference/check-failure-worked-instances.md`.
+in full: `reference/check-failure-worked-instances.md`. The fourth at N=3:
+`reference/self-referential-tests-worked-instances.md`, *three rounds, three
+sites, one rule*.
 
 ## Before you report one: a duration is not a mechanism
 
