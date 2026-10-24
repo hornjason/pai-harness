@@ -38,7 +38,7 @@
  *   - **Green and red are compared by name**, never as "2 of 3".
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync, rmSync } from "fs";
 import { join } from "path";
 import {
   DERIVED_KEY,
@@ -385,24 +385,124 @@ describe("#1286: the prose detector is too narrow to eat an authored spec", () =
 
 describe("#1286: the guard is one binding, not a check local to audit-specs", () => {
   /**
-   * Every rungate path that edits a spec IN PLACE. `convert-spec.ts` and
-   * `migrate-specs.ts` are absent on purpose — they write a NEW output rather
-   * than editing a spec a generator owns.
+   * Every rungate path that edits an EXISTING spec's own bytes.
    *
-   * This is a declared list, not a computed census: a future in-place writer
-   * has to be added here by hand. That gap is real and is recorded in #1286.
+   * `scripts/convert-spec.ts` is the only exclusion, and it is excluded on
+   * evidence rather than by category: it writes `outputPath`, a file it
+   * names itself, and never reopens its input.
+   *
+   * The last two arrived from the AI review on this PR and both were real.
+   * The PR body originally claimed `migrate-specs.ts` "writes a new output",
+   * which was wrong — `writeFileSync(srcPath, content)` rewrites the source
+   * file's own bytes before `git mv` moves it. `split-spec.ts` was missed
+   * entirely by the discovery grep. **The lesson is in the shape of the
+   * miss**: both were found by reading write sites, not by reading
+   * filenames, and a category argument ("migration tools write new files")
+   * is what let the first one through.
+   *
+   * This is a declared list, not a computed census, so a future in-place
+   * writer still has to be added by hand. That gap is recorded in #1286.
    */
   const IN_PLACE_SPEC_WRITERS = [
     "scripts/audit-specs.ts",
     "scripts/sync-sc-status.ts",
     "scripts/create-sc.ts",
+    "scripts/migrate-specs.ts",
+    "scripts/split-spec.ts",
+    "scripts/generate-governs.ts",
+    "scripts/generate-spec-template-patterns.ts",
+    "lib/conformity.ts",
+    "lib/organize.ts",
+    "lib/spec-updater.ts",
+    "lib/validators/spec-validators.ts",
   ];
+
+  /**
+   * Read-then-write sites that are NOT spec writers, each with why.
+   *
+   * Classified rather than filtered: the sweep below cannot tell a spec path
+   * from any other path, so every member of the population must be named on
+   * one list or the other. An unclassified file fails — which is the whole
+   * point, because both misses on this PR were files nobody had looked at.
+   */
+  const NOT_SPEC_WRITERS: Record<string, string> = {
+    "lib/behavioral-cache.ts": "a JSON cache under the work dir",
+    "lib/config-trackable.ts": "the project .gitignore",
+    "lib/test-suite-lock.ts": "the suite lock file",
+    "lib/scaffold/steps.ts":
+      "scaffold-owned files (AGENTS.md, CLAUDE.md, rules, workflows, package.json); " +
+      "its spec writes go through auditSpecs, which is guarded",
+    "scripts/check-installed-hook-currency.ts": "installed hook scripts",
+    "scripts/claim-files.ts": "the file-claim manifest",
+    "scripts/extract-constraints.ts": "AGENTS.md",
+    "scripts/record-harness-provenance.ts": "a provenance JSON artefact",
+    "scripts/regrade-historical.ts": "historical grading JSON",
+    "scripts/typecheck.ts": "the typecheck error baseline",
+    "scripts/update-project-state.ts": "DA-owned session state (#296)",
+  };
+
+  /**
+   * Every `lib/` or `scripts/` file that writes a path it also read.
+   *
+   * Deliberately a crude identifier match rather than a parse: it is allowed
+   * to over-report, because an over-report costs one line in
+   * `NOT_SPEC_WRITERS` and an under-report is how `migrate-specs.ts` and
+   * `split-spec.ts` reached review unguarded.
+   */
+  function readThenWriteFiles(): string[] {
+    const out: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(join(REPO, dir), { withFileTypes: true }).sort((a, b) =>
+        a.name.localeCompare(b.name),
+      )) {
+        const rel = `${dir}/${e.name}`;
+        if (e.isDirectory()) {
+          walk(rel);
+        } else if (e.name.endsWith(".ts") && !e.name.endsWith(".test.ts")) {
+          const src = readFileSync(join(REPO, rel), "utf-8");
+          const ids = (re: RegExp) =>
+            new Set([...src.matchAll(re)].map((m) => m[1]));
+          const written = ids(/writeFileSync\(\s*([A-Za-z_][A-Za-z0-9_]*)/g);
+          const read = ids(/readFileSync\(\s*([A-Za-z_][A-Za-z0-9_]*)/g);
+          if ([...written].some((v) => read.has(v))) out.push(rel);
+        }
+      }
+    };
+    walk("lib");
+    walk("scripts");
+    return out;
+  }
+
+  test("every read-then-write site is classified as a spec writer or not", () => {
+    const population = readThenWriteFiles();
+    // Vacuity control, read first: an empty sweep classifies perfectly.
+    expect(population.length, "the sweep found no read-then-write sites at all").toBeGreaterThan(15);
+    const unclassified = population.filter(
+      (f) => !IN_PLACE_SPEC_WRITERS.includes(f) && !(f in NOT_SPEC_WRITERS),
+    );
+    expect(
+      unclassified,
+      "a file writes a path it also read and is on neither list. If it can edit an " +
+        "existing spec, guard it with mayWrite and add it to IN_PLACE_SPEC_WRITERS; " +
+        "otherwise add it to NOT_SPEC_WRITERS with what it writes instead (#1286)",
+    ).toEqual([]);
+  });
+
+  test("no entry on either list has gone stale", () => {
+    const population = new Set(readThenWriteFiles());
+    const gone = [...IN_PLACE_SPEC_WRITERS, ...Object.keys(NOT_SPEC_WRITERS)]
+      .filter((f) => !population.has(f))
+      .sort();
+    expect(gone, "these no longer read-then-write — delete the entry").toEqual([]);
+  });
 
   for (const file of IN_PLACE_SPEC_WRITERS) {
     test(`${file} consults the single binding`, () => {
       const src = readFileSync(join(REPO, file), "utf-8");
-      expect(src, `${file} must import the guard from lib/derived-spec`).toContain(
-        GUARD_SPECIFIER,
+      // The specifier is relative to the importing file, so match the module
+      // name rather than one spelling of the path.
+      expect(src, `${file} must import the guard from lib/derived-spec`).toMatch(
+        /from "\.[^"]*\/derived-spec"/,
       );
       expect(src, `${file} must call mayWrite — importing it is not consulting it`).toContain(
         "mayWrite(",

@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { localCalendarDay } from "../lib/local-calendar-day";
+import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
 
 export interface SplitBoundary {
   heading: string;
@@ -257,6 +258,17 @@ if (import.meta.main) {
 
   const specPath = args[0];
   const content = readFileSync(specPath, "utf-8");
+
+  // #1286: asked before ANYTHING is written, not beside the overwrite at the
+  // end. Splitting replaces the original with a redirect stub, so a spec a
+  // generator owns would lose its entire body to a stub the generator then
+  // overwrites — and refusing after the split files are on disk leaves the
+  // tree half-migrated.
+  const reading = readDerivedDeclaration(content);
+  if (!mayWrite(reading)) {
+    console.error(skipLine(specPath, reading));
+    process.exit(1);
+  }
 
   // Check if split needed
   if (!shouldSplit(content)) {

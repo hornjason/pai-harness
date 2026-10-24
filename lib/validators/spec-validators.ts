@@ -8,6 +8,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { localCalendarDay } from "../local-calendar-day";
 import { SC_ID_SOURCE } from "../sc-ids";
+import { mayWrite, readDerivedDeclaration, skipLine } from "../derived-spec";
 
 /**
  * SC-278: Detect specs that exceed 500 lines and suggest splitting.
@@ -61,6 +62,15 @@ export function addFrontmatterToSpecs(specsDir: string, actions: string[]): void
   for (const file of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
     const filePath = join(specsDir, file);
     const content = readFileSync(filePath, "utf-8");
+
+    // #1286: both writes below rewrite this spec's own bytes. On a spec a
+    // generator owns, the frontmatter belongs in the generator — injecting
+    // it here is discarded at the next run after breaking what pins it.
+    const derived = readDerivedDeclaration(content);
+    if (!mayWrite(derived)) {
+      actions.push(skipLine(`specs/${file}`, derived));
+      continue;
+    }
 
     if (!content.startsWith("---\n")) {
       const frontmatter = `---\ndoc-type: spec\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\ngoverns: TODO — describe what this spec governs\ntestable: false\n---\n\n`;

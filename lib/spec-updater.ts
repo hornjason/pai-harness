@@ -5,6 +5,7 @@
  * Project-agnostic: never hardcodes any specific spec filename.
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import { mayWrite, readDerivedDeclaration, skipLine } from "./derived-spec";
 
 export interface SpecUpdateInput {
   goalRecord: {
@@ -77,6 +78,21 @@ export async function updateSpecStatus(input: SpecUpdateInput): Promise<SpecUpda
       content = content.replace(pattern, `$1 **SHIPPED** (#${issueNumber}) |`);
       rowsUpdated++;
     }
+  }
+
+  // #1286: marking a decision row SHIPPED is an in-place spec edit. On a
+  // spec a generator owns it is discarded at the next regeneration, after
+  // breaking whatever pins the file.
+  const derived = readDerivedDeclaration(content);
+  if (rowsUpdated > 0 && !mayWrite(derived)) {
+    console.warn(skipLine(specPath, derived));
+    return {
+      updated: false,
+      skipped: true,
+      specPath,
+      rowsUpdated: 0,
+      reason: skipLine(specPath, derived),
+    };
   }
 
   if (rowsUpdated > 0) {
