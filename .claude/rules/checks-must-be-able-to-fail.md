@@ -17,13 +17,10 @@ rule, a ratchet, a CI step.
 
 ## Why
 
-This is the single most common defect in this codebase's own tooling. Not a
-hypothetical — a count. On 2026-10-06, five of eight issues shipped in one day
-were the same bug wearing different clothes: **a check that passed because of
-what it never looked at.** All five are in
-`reference/check-failure-worked-instances.md`, *Why*. Every one was green, and
-every one was green for a reason that had nothing to do with the code being
-correct.
+This is the single most common defect in this codebase's own tooling — a
+count, not a hypothetical. On 2026-10-06 **five of eight issues shipped in
+one day** were the same bug: a check that passed because of what it never
+looked at. All five: `reference/check-failure-worked-instances.md`, *Why*.
 
 ## What makes this hard to notice
 
@@ -31,14 +28,9 @@ A failing check announces itself. A check that cannot fail looks exactly like a
 check that is satisfied — and it looks *better* over time, because it never
 flakes and never blocks anyone. The quieter it is, the more it is trusted.
 
-Seven shapes to watch for. The first three are taken from the list above. The
-fourth is the one that list could not contain, because it is invisible to
-exactly the kind of after-the-fact reading that produced the list. The fifth
-is invisible to the question this whole file asks — *can this check fail?* —
-because the honest answer is yes, today. The sixth is invisible to the test's
-own output. The seventh is invisible to the mutation battery the fourth one
-requires, because the battery is the instrument and no instrument reports its
-own range.
+Seven shapes to watch for, each invisible to the instrument that finds the
+one before it — why, per shape:
+`reference/check-failure-worked-instances.md`.
 
 - **Fail-open error handling.** A `catch` that returns "no problems found", or
   a parse failure that defaults to an empty violation list. Anything that can
@@ -70,52 +62,19 @@ own range.
   match their predictions because the prediction and the battery share a blind
   spot. Name what every row holds fixed, then write the row that does not.
 
-### On the fourth shape
+### On the fourth, sixth and seventh shapes
 
-It is the only one of the four you cannot find by reading. Both deciders are
-real code, both are called, both are correct, and the test that exercises them
-passes for a true reason — just not for the reason it claims. **A mutation
-battery is the only thing that surfaces it**, and only if you predict each
-count before running: the signature is a row that comes back lower than you
-expected, not a row that comes back zero.
-
-Measured six times across #415, #420, #436 and #445, with the pair and the
-count for each: `reference/check-failure-worked-instances.md`, *On the fourth
-shape*.
-
-### On the sixth shape
-
-Reading the test cannot find it — the failure is byte-identical to the success
-on the channel being observed. The worked instance (#1236/#1259), where
-`bash -e` aborted a step before its own refusal and produced the refusal's
-exact exit status with empty stderr, is in
-`reference/check-failure-worked-instances.md`, *On the sixth shape*.
-
-### On the seventh shape
-
-**Predict the membership, not just the total.** A matching count is necessary
-and not sufficient. A row that reddens because **the mutation did not apply**
-— a mutant that failed to load, or one that deleted the string another case
-rewrites — reads identically to the guard behaving differently. And **a
-mutation is a thing you spell**: two defensible spellings are two
-experiments, and one row of #1246 gave 6 then 5, the 5 matching the predicted
-count while differing from the predicted set.
-
-Same family as *a battery whose fixtures all meet a precondition* next door —
-there the fixed axis is a precondition, here the input. Both, with the
-numbers: `reference/check-failure-worked-instances.md`, *The same blindness
-with the axes swapped*.
+Each of the three has a worked record naming the issues, the mutation
+counts and the pair or spelling that produced them. The operative half:
+**a mutation battery is the only instrument that finds the fourth**, the
+sixth is byte-identical to success on the channel you are watching, and
+for the seventh **predict the membership, not just the total**. All three,
+in full: `reference/check-failure-worked-instances.md`.
 
 ## Before you report one: a duration is not a mechanism
 
-**Read the `kind`.** `perTestTimeoutDeclarations` reports `"per-test"`
-separately from `"file-default"`, so a `file-default` filter answering
-"declares nothing" does **not** mean no budget governs the case.
-
-#1268 was filed because one agent inferred a mechanism from a duration and
-the next relayed it without re-deriving it. It is already falsified — bun
-1.3.14 **does** kill a blocking `execFileSync` at the budget — so do not
-re-file it. Both readings, and the six variations behind the second:
+**Read the `kind`** before inferring a mechanism from a timing, and do not
+re-file #1268 — it is already falsified. Both readings:
 `reference/check-failure-worked-instances.md`, *a duration is not a
 mechanism*.
 
@@ -127,12 +86,9 @@ run against itself, which this now catches." That sentence is cheap to write,
 and it is the only evidence that separates a real check from a decorative one.
 
 **And write it as an assertion, not as a comment.** A docblock saying a
-property is tested is the reason nobody tests it — it answers, in the right
-file, the question that would have prompted a check. `lib/cli-commands.ts`
-carried *"`test/cli-contract.test.ts` runs every command for real"* while
-that test ran one command of ten, and three CLI commands exited 0 having
-executed nothing. Worked instance: *When the reason nobody checked is a
-comment saying it was checked* (#1322).
+property is tested is the reason nobody tests it. Worked instance:
+`reference/check-failure-worked-instances.md`, *When the reason nobody
+checked is a comment saying it was checked* (#1322).
 
 When a guard has to ship red — a known-violations ratchet — bank progress in
 the same commit that earns it, and write down what the number means. A ratchet

@@ -103,12 +103,7 @@ and on `test/config-access-adoption.test.ts`, which asserts malformed throws.
 
 ## Why this file exists
 
-ADR-001 (2026-10-05) specified this rule and the check that enforces it. The
-rule was never written and the check was never built, so six days later the
-violation count had tripled. ADR-002 (2026-10-11) specified both again. The
-check shipped in #309; this file shipped in #214, two ADRs after it was first
-asked for.
-
-That is the argument for writing it down somewhere that loads, rather than in
-a document nobody reads: *a rule nothing executes is not a rule*, and a rule
-in an ADR is a rule nothing executes.
+Two ADRs specified this rule and the check behind it before either was
+built, and the violation count tripled in between: *a rule nothing
+executes is not a rule*. The dates and the counts are in
+`reference/config-access-worked-instances.md`.

@@ -181,3 +181,21 @@ it: they assert the STATE the run reported, and a fallback that applies would
 have to report `applied`, so the no-section case goes red rather than green.
 Deciding whether that fallback is the right behaviour is a separate question
 from whether the run is allowed to stay silent about it.
+
+## Moved out of the always-loaded rule by #1520
+
+This block left `.claude/rules/config-access.md` verbatim when the instruction
+surface reached 37 bytes of headroom. The rule routes to it. Nothing was
+rewritten and nothing was deleted — same reasoning as #1009.
+
+## Why the rules file exists — two ADRs and a tripled count (#214, #309, moved by #1520)
+
+ADR-001 (2026-10-05) specified this rule and the check that enforces it. The
+rule was never written and the check was never built, so six days later the
+violation count had tripled. ADR-002 (2026-10-11) specified both again. The
+check shipped in #309; this file shipped in #214, two ADRs after it was first
+asked for.
+
+That is the argument for writing it down somewhere that loads, rather than in
+a document nobody reads: *a rule nothing executes is not a rule*, and a rule
+in an ADR is a rule nothing executes.

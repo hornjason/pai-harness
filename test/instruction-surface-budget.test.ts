@@ -41,9 +41,11 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
   MAX_EXPANDED_PATTERNS,
+  ORDINARY_ROW_BYTES,
   SURFACE_BUDGET_BYTES,
   SurfaceUnmeasured,
   WARN_AT_FRACTION,
+  ceiling,
   expandBraces,
   headroom,
   isPathScoped,
@@ -168,6 +170,28 @@ describe("SC-2440: the refusal has one site, and the mutant can reach it", () =>
       "a second declaration of the budget is a second number to disagree with the first",
     ).toBe(1);
   });
+
+  test("#1520: the reserved row has exactly one declaring position", () => {
+    // Same property as the budget's, and for the same reason: the cases below
+    // prove the floor by mutating this constant, and a second spelling of 230
+    // would survive the mutation and hold them up.
+    const decls = source.match(/ORDINARY_ROW_BYTES\s*=/g) || [];
+    expect(
+      decls.length,
+      "a second declaration of the reserved row is a second number to disagree with the first",
+    ).toBe(1);
+  });
+
+  test("#1520: nothing compares the peak against the bare budget any more", () => {
+    // The floor REPLACED the ceiling rather than joining it. A surviving
+    // `peakBytes > budgetBytes` would be the weaker of two deciders over one
+    // measurement — it could never fail again, and mutating it would be 0 red.
+    const bare = source.match(/peakBytes\s*>\s*\w*\.?budgetBytes/g) || [];
+    expect(
+      bare,
+      "a bare budget comparison is subsumed by the ceiling() comparison and can never fail",
+    ).toEqual([]);
+  });
 });
 
 // ── UNMEASURED fails; it does not skip and it does not pass ──────────────
@@ -234,6 +258,69 @@ describe("SC-2442: over the declared budget is a refusal carrying the measuremen
     // the peak. A single total can no longer say which was compared.
     expect(r.out).toContain("LAUNCH");
     expect(r.out).toContain("PEAK");
+  });
+});
+
+// ── #1520: the budget reserves one ordinary row ──────────────────────────
+//
+// #1069's warning was the control for exactly this and it did not work: it
+// was in place, it fired on every run, and the tree still reached 37 bytes of
+// headroom before anybody acted. These cases bind the refusal that replaced
+// it. Each is paired with the input on which the new threshold and the old
+// bare budget comparison DISAGREE — without that pair the floor would be
+// indistinguishable from the ceiling it replaced.
+describe("#1520: a tree with less than one ordinary row of headroom is refused", () => {
+  /** Peak sits under the budget and inside the reserved row. */
+  const insideTheRow = () => plantedRoot({ "big.md": filler(SURFACE_BUDGET_BYTES - 120) });
+
+  test("under budget but inside the reserved row REFUSES, and the mutant does not", () => {
+    const root = insideTheRow();
+    const reading = measureConcurrentLoad(root);
+    // The disagreement, asserted rather than assumed: the old comparison
+    // passes this tree and the new one refuses it. If this fixture ever drifts
+    // out of the band the case below would be testing the ordinary over-budget
+    // refusal while claiming to test the floor.
+    expect(reading.peakBytes, "the fixture is over budget, so it proves nothing new").toBeLessThanOrEqual(
+      SURFACE_BUDGET_BYTES,
+    );
+    expect(
+      SURFACE_BUDGET_BYTES - reading.peakBytes,
+      "the fixture is not inside the reserved row",
+    ).toBeLessThan(ORDINARY_ROW_BYTES);
+
+    const real = refusesAndMutantDoesNot(["--root", root]);
+    expect(real.err).toContain("ordinary rule table row");
+    expect(real.err, "the refusal must name the ceiling it compared against").toContain(
+      ceiling(SURFACE_BUDGET_BYTES).toLocaleString(),
+    );
+  });
+
+  test("one row of headroom more PASSES — the refusal is the band, not the fixture", () => {
+    // The positive control. Without it a script that refused every large tree
+    // would satisfy the case above.
+    const root = plantedRoot({ "big.md": filler(SURFACE_BUDGET_BYTES - 600) });
+    const reading = measureConcurrentLoad(root);
+    expect(SURFACE_BUDGET_BYTES - reading.peakBytes).toBeGreaterThan(ORDINARY_ROW_BYTES);
+    const r = run(SCRIPT, ["--root", root]);
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+  });
+
+  test("setting the reserved row to 0 stops the refusal — so the constant is load-bearing", () => {
+    // The mutation that matters here is not REFUSE_EXIT (the case above runs
+    // it) but ORDINARY_ROW_BYTES itself. At 0 the ceiling collapses back onto
+    // the budget and this tree is legal again, which is the pre-#1520
+    // behaviour. A case that stayed red under this mutation would be
+    // witnessing the ordinary over-budget refusal.
+    const mutantSrc = source.replace(/ORDINARY_ROW_BYTES = 230\b/, "ORDINARY_ROW_BYTES = 0");
+    expect(mutantSrc, "the ORDINARY_ROW_BYTES declaration moved — the mutation is not applied").not.toBe(
+      source,
+    );
+    const p = join(MUTANT_DIR, "row-mutant.ts");
+    writeFileSync(p, mutantSrc);
+    const root = insideTheRow();
+    expect(run(SCRIPT, ["--root", root]).code, "the real script does not refuse this tree").toBe(1);
+    const m = run(p, ["--root", root]);
+    expect(m.code, `the row-0 mutant still refused:\n${m.err}`).toBe(0);
   });
 });
 
@@ -341,14 +428,18 @@ describe("SC-2446: this repository is inside its own budget", () => {
     // while editing any file under `.claude/agents/**` or `.claude/rules/**`
     // cost 66,124 bytes. The peak is what an agent pays; the floor is what it
     // pays before it does anything.
+    // #1520: against `ceiling(...)`, not the bare budget. One threshold, the
+    // same one `main()` compares against — a second, weaker assertion here
+    // would be a decider that can never fail.
     const reading = measureConcurrentLoad(REPO_ROOT);
     expect(
       reading.peakBytes,
       `the peak surface is ${reading.peakBytes} bytes on ${reading.peakFile} against a budget ` +
-        `of ${SURFACE_BUDGET_BYTES}. Narrow a glob, or move a record into reference/ and route ` +
-        `to it from .claude/rules/docs-routing.md — see #1009 and #544. Raising the budget is ` +
-        `a decision, not a fix.`,
-    ).toBeLessThanOrEqual(SURFACE_BUDGET_BYTES);
+        `of ${SURFACE_BUDGET_BYTES} less ${ORDINARY_ROW_BYTES} bytes reserved for one ordinary ` +
+        `rule table row. Narrow a glob, or move a record into reference/ and route to it from ` +
+        `.claude/rules/docs-routing.md — see #1009, #544 and #1520. Raising the budget is a ` +
+        `decision, not a fix.`,
+    ).toBeLessThanOrEqual(ceiling(SURFACE_BUDGET_BYTES));
   });
 
   test("the reading is not vacuously small", () => {

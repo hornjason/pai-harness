@@ -91,3 +91,85 @@ correct one made the document better and the ratchet entry unnecessary.
 
 And the failure message is genuinely good — it names the file, the count, the
 ratchet, and the policy. It belongs with `SC-1466` as a model, not with Tier 1.
+
+## Moved out of the always-loaded rule by #1520
+
+These blocks left `.claude/rules/self-referential-tests.md` verbatim when the
+instruction surface reached 37 bytes of headroom. The rule routes to each of
+them. Nothing was rewritten and nothing was deleted — same reasoning as #1009.
+
+## Why a merged removal reddens a branch that is behind (DRIFT-3, moved by #1520)
+
+One consequence worth knowing, and the direction is the opposite of the
+obvious one: DRIFT-3 computes `allowlistAdditions(origin/main, yours)` and
+refuses entries **yours has that main lacks**. So somebody else's merged
+*addition* cannot redden a branch that is behind — your copy is the smaller
+one — but somebody else's merged *removal* can, because an entry main has
+dropped and your branch still carries reads as one you added. Rebase before
+you debug.
+
+## What the mutant-load row cost PR #1024 (moved by #1520)
+
+The last row cost PR #1024 three CI shards, and turned around it is the
+UNMEASURED shape rather than a noisy one: a battery whose mutant fails to
+load can go **green while witnessing nothing**. Why, in full:
+`reference/self-referential-tests-worked-instances.md`, *adding an import*.
+
+## The #990 tick — why the router reads the diff and not the file list (moved by #1520)
+
+It reads the diff, not the file list, and that is the whole of #990: **an edit
+to a spec and a tick inside one are the same path and different events.** A
+criterion went `- [ ]` to `- [x]`, every targeted suite was green locally, and
+CI went red in a census file the change does not touch and the list here did
+not name. A router that sees only `git diff --name-only` cannot tell those two
+apart, so this one carries the added and removed lines.
+
+## What the router does not do, and the selector that complements it (#1004, moved by #1520)
+
+Bounded and cheap. The point is not to run everything; it is that the file you
+changed is never the only file with an opinion about your change.
+
+**What this does not do: enforce.** It prints a command, and an agent who
+reads neither the rule nor the script is unaffected by both. The mechanical
+version is a check that refuses a diff whose census tests were not in the same
+run's measured set, and that needs a notion of "what this session ran" which
+does not exist here.
+
+**A ship run no longer depends on you reading this** (#1004):
+`scripts/select-affected-tests.ts` unions `censusTestsFor` into its SELECTED
+result. It runs only inside a ship run, so this table is still what you run
+by hand. What it missed before, and why the two routers are complements:
+`reference/self-referential-tests-worked-instances.md`, *the selector*.
+
+## Why `remedyMessage` has no default fix and a derived pointer (#813, moved by #1520)
+
+Two things about it are deliberate. The `fix` has no default, because a
+default would let a check look as though it had a remedy when it had none.
+And the pointer to this file is DERIVED — emitted only when this file exists
+under the project root — because `lib/conformity.ts` is published and this
+document has no template copy, so a hardcoded path would send every consumer
+to something they do not have.
+
+Every Tier 1 check above now carries one, and `test/check-remedy.test.ts`
+holds the population: delete a remedy and that test goes red naming the check
+that lost it. Adding a Tier 1 check means adding its row there too.
+
+Before #813 none of them did, and the number is worth keeping: two references
+to this file from the whole executable tree, both prose inside a docblock,
+against 321 for `checks-must-be-able-to-fail`. A document the stuck agent
+cannot reach from the thing that stopped them is not reaching anyone.
+
+## This file tripped three of its own checks while it was being written (moved by #1520)
+
+The demonstration is kept verbatim in
+`reference/self-referential-tests-worked-instances.md`: a routed-to rules file
+that did not exist, the repair that left the path in the prose and was counted
+again, and ten `file.ts:NNN` citations that the ratchet refused. The third is
+the one that matters, and the short version is the row in Tier 2 above:
+**cite a stable symbol, never a line number** — the cheap fix was one JSON
+entry, the correct one made the ratchet entry unnecessary.
+
+## The 2026-10-19 swarm measurement, as the rule stated it (moved by #1520)
+
+Measured 2026-10-19: three of eight PRs from one swarm were red, all three like
+this, none a flake. Every fixer ran its targeted suite, saw green, and pushed.

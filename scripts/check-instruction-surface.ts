@@ -155,6 +155,38 @@ export const SURFACE_BUDGET_BYTES = 64_000;
  */
 export const WARN_AT_FRACTION = 0.95;
 
+/**
+ * One ordinary rule table row, in bytes, and this is its ONE declaring
+ * position. The figure is the one `headroomWarning` has always quoted.
+ *
+ * #1520: the warning above is not enough, and that is measured rather than
+ * argued. #1069 added it precisely so the approach would be visible, and the
+ * tree still walked to **37 bytes** of headroom with the warning firing on
+ * every run — a control that was in place and did not work. What finally
+ * reported the problem was a red CI shard on `.claude/agents/aditi.md`,
+ * raised against an agent who had never opened that file, for a row somebody
+ * else had added weeks earlier.
+ *
+ * So the budget now has to accommodate the tree PLUS one more ordinary row.
+ * The red then lands on the change that consumes the last row, naming the
+ * budget, instead of on the next unrelated change.
+ */
+export const ORDINARY_ROW_BYTES = 230;
+
+/**
+ * The largest peak that still leaves room for one ordinary row.
+ *
+ * Declared as a function over the budget rather than as a second constant,
+ * and it REPLACES the bare `peak > budget` comparison instead of joining it.
+ * A floor beside a ceiling is the "two deciders that agree" shape from
+ * `.claude/rules/checks-must-be-able-to-fail.md`: the floor is strictly
+ * stronger, so the ceiling could never fail again and a mutation of it would
+ * leave the floor holding every case up. There is one comparison, here.
+ */
+export function ceiling(budgetBytes: number): number {
+  return budgetBytes - ORDINARY_ROW_BYTES;
+}
+
 /** Loaded at launch regardless of what is touched. */
 const ALWAYS_LOADED = ["CLAUDE.md", "AGENTS.md"] as const;
 
@@ -551,12 +583,16 @@ export function overPeakReport(reading: ConcurrentLoadReading): string {
   const loaded = reading.launch.entries
     .filter(e => !e.excluded)
     .sort((a, b) => b.bytes - a.bytes);
-  const over = reading.peakBytes - reading.budgetBytes;
+  const limit = ceiling(reading.budgetBytes);
+  const over = reading.peakBytes - limit;
   const lines = [
     `The peak instruction surface is ${reading.peakBytes.toLocaleString()} bytes ` +
       `(~${Math.round(reading.peakBytes / 4).toLocaleString()} tokens), ` +
-      `${over.toLocaleString()} over the ${reading.budgetBytes.toLocaleString()}-byte budget ` +
-      `declared as SURFACE_BUDGET_BYTES in scripts/check-instruction-surface.ts.`,
+      `${over.toLocaleString()} over the ${limit.toLocaleString()}-byte ceiling: the ` +
+      `${reading.budgetBytes.toLocaleString()}-byte SURFACE_BUDGET_BYTES declared in ` +
+      `scripts/check-instruction-surface.ts, less the ${ORDINARY_ROW_BYTES} bytes kept free ` +
+      `for one ordinary rule table row so the next agent to add one does not go red on a ` +
+      `file they never opened (#1520).`,
     "",
     `Worst file: ${reading.peakFile ?? "(launch surface alone — no scoped rule matches any file)"}`,
     "",
@@ -626,7 +662,8 @@ export function headroomWarning(reading: ConcurrentLoadReading): string {
   return (
     `HEADROOM: the peak instruction surface is ${reading.peakBytes.toLocaleString()} bytes, ` +
     `${Math.round(h.used * 100)}% of the ${reading.budgetBytes.toLocaleString()}-byte budget — ` +
-    `${h.bytes.toLocaleString()} left, and an ordinary rule table row is about 230. The next ` +
+    `${h.bytes.toLocaleString()} left, and an ordinary rule table row is about ` +
+    `${ORDINARY_ROW_BYTES}. The next ` +
     `agent to add one will go red on ${reading.peakFile ?? "the launch surface"}, which has ` +
     `nothing to do with their change. Move a worked record into reference/ and route to it ` +
     `from .claude/rules/docs-routing.md now, rather than making them discover this (#1069).`
@@ -724,7 +761,12 @@ function main(argv: string[]): number {
   // One comparison, against the peak. The launch surface is the peak's floor,
   // so `peak <= budget` implies `launch <= budget` and a second comparison
   // would be a second decider that can only ever agree.
-  if (peak.peakBytes > peak.budgetBytes) {
+  //
+  // #1520 moved the threshold from the budget to `ceiling(budget)` rather
+  // than adding a second test below it, for the same reason: a floor and a
+  // ceiling over one measurement are two deciders, and the stronger one would
+  // mask every mutation of the weaker.
+  if (peak.peakBytes > ceiling(peak.budgetBytes)) {
     console.error("");
     console.error(overPeakReport(peak));
     return REFUSE_EXIT;
