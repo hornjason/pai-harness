@@ -187,6 +187,20 @@ export interface SessionSelection<T> {
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})\b/;
 
 /**
+ * The session number inside a free-form `date` — `2026-10-24 session 62`.
+ *
+ * This is the only field in the entry that tells two sessions on one calendar
+ * day apart, so it is the second sort key (#1517). 50 of the live file's 51
+ * entries carry one; the exception is `2026-10-06 AFK pipeline-readiness run`,
+ * which is dated and unnumbered and therefore ranks below every numbered
+ * session on its day rather than being treated as unorderable.
+ */
+const SESSION_NUMBER = /\bsession\s+(\d+)/i;
+
+/** Ranks below every real session number. No session is numbered below 1. */
+const UNNUMBERED = -1;
+
+/**
  * The `limit` NEWEST sessions, chosen by date (#572).
  *
  * The renderer used to take `[...sessions].reverse().slice(0, 3)` — "the
@@ -204,8 +218,38 @@ const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})\b/;
  * position. Choosing by date removes the position from the question
  * entirely, so where an entry is written stops mattering.
  *
- * Ties keep array order with the later index first, which is the only
- * information left when two entries share a day — and several do.
+ * Two sessions on one day are ordered by their session number, not by where
+ * they sit in the array (#1517). The date alone tied them, and the tie-break
+ * was `b.i - a.i` — later index first — so `main` rendered `session 61` above
+ * `session 62`.
+ *
+ * **Fixing the tie-break instead was considered and rejected.** `a.i - b.i`
+ * is one character and it repairs the reported case, but it reinstates the
+ * defect this function was written to remove: it makes correctness depend on
+ * the array having one direction, and the array does not have one. Measured
+ * on the live file at `edb12c93`: 16 adjacent pairs descend, 13 ascend, and
+ * the direction flips at index 26 — the head is newest-first as the DA writes
+ * it, the tail is append order. The case that settles it is 2026-10-23, which
+ * holds sessions 60, 58 and 59 at indices 2, 49 and 50: no function of the
+ * index alone can order that group, in either direction. It would also
+ * contradict SC-1961 — "the position in the array decides nothing" — by
+ * making position decide exactly the case that criterion never exercises.
+ *
+ * Ordering, in full:
+ *
+ * 1. ISO date, newest first.
+ * 2. Session number, highest first. An entry with a date but no number ranks
+ *    below every numbered entry on its day.
+ * 3. Later array index first — the original tie-break, unchanged. It is kept,
+ *    not reverted to, and only where the first two tiers have nothing to say:
+ *    entries tying on date AND number, and entries that are wholly undated.
+ *    It is right there for the same reason it was wrong above. Every real
+ *    same-number group in the live file — `session 32`/`32b`, three rows
+ *    numbered 34, two numbered 39 — is one session recorded as several rows,
+ *    and all of them sit in the array's append-ordered tail, where the later
+ *    index genuinely is the newer row. Making this tier stable instead breaks
+ *    all four, and `sessions capped at 3, newest first` in
+ *    test/update-project-state.test.ts catches it.
  */
 export function selectRecentSessions<T extends { date: string }>(
   sessions: readonly T[],
@@ -213,13 +257,20 @@ export function selectRecentSessions<T extends { date: string }>(
 ): SessionSelection<T> {
   const undated: T[] = [];
   const ranked = sessions.map((s, i) => {
-    const m = ISO_DATE.exec(s.date ?? "");
+    const date = s.date ?? "";
+    const m = ISO_DATE.exec(date);
     if (m === null) undated.push(s);
+    const n = SESSION_NUMBER.exec(date);
     // An undated entry sorts below every dated one. `""` is less than any
     // ISO date, so the comparison needs no second branch — and a branch
     // that exists only for the empty case is a branch no fixture reaches.
-    return { s, key: m === null ? "" : m[0], i };
+    // That still holds with the number tier below it: the date is compared
+    // first, so no session number can promote an undated entry past a dated
+    // one. Asserted, not reasoned about, in test/project-state-shape.test.ts.
+    return { s, key: m === null ? "" : m[0], seq: n === null ? UNNUMBERED : Number(n[1]), i };
   });
-  ranked.sort((a, b) => (a.key === b.key ? b.i - a.i : a.key < b.key ? 1 : -1));
+  ranked.sort((a, b) =>
+    a.key !== b.key ? (a.key < b.key ? 1 : -1) : a.seq !== b.seq ? b.seq - a.seq : b.i - a.i,
+  );
   return { rendered: ranked.slice(0, limit).map(d => d.s), undated };
 }
