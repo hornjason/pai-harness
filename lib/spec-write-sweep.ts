@@ -18,10 +18,16 @@
  *
  * ## The detector's view, stated so it can be argued with
  *
- * For each call to a write primitive, the sweep reads the **first argument
- * expression**, and — when that argument is a bare identifier — one level of
- * its local `const`/`let`/`var` initialiser in the same file. A site is
- * spec-targeting when that text matches `/spec/i`.
+ * For each call to a write primitive, the sweep reads the **written argument
+ * expression** and resolves the identifiers in it against the real scope
+ * chain. A site is spec-targeting when the resolved text matches `SPEC_TARGET`.
+ *
+ * The resolution lives in `lib/spec-write-ast.ts` and goes through `acorn` via
+ * `lib/ts-ast.ts`. It replaces a hand-rolled lexer whose `initialiserOf` was a
+ * file-global name scan (#1566): four AI-review rounds on #1557 found four
+ * separate edge cases in that lexer and a fifth was found by its own negative
+ * control. The question it was answering — "which binding does this identifier
+ * resolve to" — is scope and position, and no name scan answers it.
  *
  * Two deliberate properties:
  *
@@ -29,11 +35,28 @@
  *     spec, and it matches. An over-report costs one classified line in
  *     `NOT_A_SPEC_PATH`; an under-report is how three unguarded writers
  *     reached review across #1286 and #1549.
- *   - **One level of expansion, not a resolver.** `const outputPath =
- *     join(specsDir, filename)` is seen; a path assembled across three
- *     statements is not. That bound is a real hole and it is named here rather
- *     than left for someone to discover — `writeSpec` is what closes it, and
- *     this sweep is what makes skipping `writeSpec` expensive.
+ *   - **It names what it cannot resolve.** A parameter, an import and a
+ *     destructured binding carry no readable value, and each is reported as
+ *     UNRESOLVED rather than resolving to something plausible. A site whose
+ *     target shows no string literal AND has an unresolved identifier is
+ *     `opaque`: the path is entirely invisible, so the sweep cannot claim it is
+ *     not a spec.
+ *
+ * ## Which directories are in scope, decided rather than inherited
+ *
+ * The TypeScript half sweeps five directories — `lib scripts gates bin hooks`.
+ * `workflows/` and `.github/` are ALSO swept, for `.js`, and that is a
+ * deliberate inclusion rather than the default:
+ *
+ *   - MEASURED 2026-10-24, `grep -rnE '(writeFileSync|writeFile|appendFileSync|
+ *     appendFile|renameSync|copyFileSync|truncateSync|Bun\.write)\s*\(' workflows
+ *     .github` → **2** call sites, **0** of them naming a spec or an ADR. So
+ *     including them changes no reading today.
+ *   - They are included anyway because **`workflows/*.js` cannot import**
+ *     (#69). That makes them the one region where the chokepoint is not
+ *     merely skipped but *unavailable*, so a future spec write there would be
+ *     unguarded with no local remedy — it would have to call the CLI. A
+ *     region a guard cannot reach is exactly the region worth watching.
  *
  * ## Shell is covered, and the population is zero
  *
@@ -46,42 +69,60 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { join, relative, sep } from "path";
+import {
+  resolveLines,
+  SIMPLE_PRIMITIVES,
+  specTargetingOf,
+  writeSitesIn,
+} from "./spec-write-ast";
 
 /** The module every spec write must route through. Excluded from the sweep. */
 export const CHOKEPOINT = "lib/write-spec.ts";
 
 /**
  * Everything that can put bytes on disk, including the non-`fs` spellings.
- * Spelled apart from the pattern so this file's own source does not read as a
- * call site when the sweep walks `lib/`.
+ *
+ * Derived from `SIMPLE_PRIMITIVES` rather than restated, so there is ONE list
+ * to extend. A second copy here would drift from the one the detector reads
+ * and the sweep would go green on a primitive it no longer looks for.
  */
-export const WRITE_PRIMITIVES = [
-  "writeFileSync",
-  "writeFile",
-  "appendFileSync",
-  "appendFile",
-  "renameSync",
-  "copyFileSync",
-  "truncateSync",
-  "Bun.write",
-] as const;
+export const WRITE_PRIMITIVES = [...SIMPLE_PRIMITIVES, "Bun.write"] as const;
 
 /** Directories whose TypeScript sources are swept. */
 export const SWEPT_DIRS = ["lib", "scripts", "gates", "bin", "hooks"] as const;
 
+/**
+ * Directories swept for `.js` instead. See the scope note in the module
+ * docblock: these are included because `workflows/*.js` cannot import (#69),
+ * so the chokepoint is unavailable rather than merely skipped there.
+ */
+export const SWEPT_JS_DIRS = ["workflows", ".github"] as const;
+
 export interface WriteSite {
   /** Repo-relative path, forward-slashed. */
   file: string;
-  /** 1-based line of the call. */
-  line: number;
+  /**
+   * 1-based line of the call, or `null` when it could not be established.
+   *
+   * AST node positions index the TRANSPILED text — `Bun.Transpiler` drops
+   * comments and blank lines — so the line is resolved by ordinal against the
+   * original and refused when the counts disagree. `NOT_A_SPEC_PATH` is keyed
+   * on the target expression and never on a line, so a null costs a reader
+   * some context and costs the check nothing.
+   */
+  line: number | null;
   /** Which primitive was called. */
   primitive: string;
-  /** The first argument's source text, whitespace-collapsed. */
+  /** The written argument's source text, whitespace-collapsed. */
   target: string;
   /** The text the detector actually read — target plus any expansion. */
   view: string;
   /** Whether `view` names a spec. */
   specTargeting: boolean;
+  /** `name: reason` for each identifier in the target carrying no value. */
+  unresolved?: string[];
+  /** True when the target's path is entirely invisible to the resolver. */
+  opaque?: boolean;
 }
 
 /**
@@ -102,408 +143,10 @@ export const NOT_A_SPEC_PATH: Record<string, string> = {
   // decorative, which is the whole failure mode #1552 exists to end.
 };
 
-// ── Lexing ────────────────────────────────────────────────────────
-
-/**
- * Blank out comments, preserving every byte offset and newline.
- *
- * Offsets are preserved because the line number and the argument scan are both
- * taken from this string, and a shifted offset would report the wrong call.
- * String, template and regex literals are tracked so that a `//` inside a URL
- * and a `["']` inside a regex do not open or close the wrong state — this
- * repository contains both.
- */
-export function blankComments(src: string): string {
-  const out = src.split("");
-  let i = 0;
-  let prevSignificant = "";
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
-  };
-  while (i < src.length) {
-    const c = src[i];
-    const d = src[i + 1];
-    if (c === "/" && d === "/") {
-      const end = src.indexOf("\n", i);
-      blank(i, end === -1 ? src.length : end);
-      i = end === -1 ? src.length : end;
-      continue;
-    }
-    if (c === "/" && d === "*") {
-      const end = src.indexOf("*/", i + 2);
-      blank(i, end === -1 ? src.length : end + 2);
-      i = end === -1 ? src.length : end + 2;
-      continue;
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      i = skipQuoted(src, i, c);
-      prevSignificant = c;
-      continue;
-    }
-    if (c === "/" && regexCanStartAfter(prevSignificant)) {
-      i = skipRegex(src, i);
-      prevSignificant = "/";
-      continue;
-    }
-    if (!/\s/.test(c)) prevSignificant = c;
-    i++;
-  }
-  return out.join("");
-}
-
-/**
- * Index just past the literal opened at `start`, or `start + 1` if it never
- * closes.
- *
- * **An unterminated literal is not a literal.** Returning `src.length`
- * instead makes every scanner here silently blind from that byte to the end
- * of its input, and `identifiersIn` runs over a VIEW — a concatenation of
- * initialiser fragments, not well-formed source — where a lone backtick
- * really does occur: `initialiserOf` correctly captures
- * `raw.replace(/` + "`" + `/g, "")` with the backtick intact, and everything
- * appended after it was being dropped, so an identifier whose initialiser
- * named a spec path was never chased. Found by the AI review on this PR, as
- * the third instance of this one defect class. On well-formed source nothing
- * changes: there are no unterminated literals in a file that parses.
- */
-function skipQuoted(src: string, start: number, quote: string): number {
-  let i = start + 1;
-  while (i < src.length) {
-    if (src[i] === "\\") {
-      i += 2;
-      continue;
-    }
-    if (quote === "`" && src[i] === "$" && src[i + 1] === "{") {
-      let depth = 1;
-      i += 2;
-      while (i < src.length && depth > 0) {
-        if (src[i] === "{") depth++;
-        else if (src[i] === "}") depth--;
-        else if (src[i] === '"' || src[i] === "'" || src[i] === "`") {
-          i = skipQuoted(src, i, src[i]);
-          continue;
-        }
-        i++;
-      }
-      continue;
-    }
-    if (src[i] === quote) return i + 1;
-    i++;
-  }
-  // Never closed: consume the opener only, so the rest of the input is still
-  // read. See the docstring — this is the whole point of the function.
-  return start + 1;
-}
-
-/** A `/` opens a regex only where a value cannot already have ended. */
-function regexCanStartAfter(prev: string): boolean {
-  return prev === "" || "(,=:[!&|?{};+-*%~^<>".includes(prev);
-}
-
-function skipRegex(src: string, start: number): number {
-  let i = start + 1;
-  let inClass = false;
-  while (i < src.length) {
-    const c = src[i];
-    if (c === "\\") {
-      i += 2;
-      continue;
-    }
-    if (c === "\n") return i; // not a regex after all; give up at the line end
-    if (c === "[") inClass = true;
-    else if (c === "]") inClass = false;
-    else if (c === "/" && !inClass) return i + 1;
-    i++;
-  }
-  // Same rule as `skipQuoted`: an unclosed regex is not a regex.
-  return start + 1;
-}
-
-// ── Argument extraction ───────────────────────────────────────────
-
-/**
- * Walk `src` from `at`, tracking bracket depth, and stop where `done` says.
- *
- * Shared by both argument scanners because both have to skip regex literals,
- * and only one of them did. `match[1].replace(/`/g, "")` holds a BACKTICK
- * inside a regex: read as a template-literal opener it swallows every line up
- * to the next backtick, and the scanner returns an initialiser spanning
- * unrelated statements. That put two `lib/conformity.ts` writes on the
- * violation list for the word "spec" in prose four hundred lines away.
- */
-function scanExpression(
-  src: string,
-  at: number,
-  done: (c: string, depth: number) => boolean,
-): number {
-  let depth = 0;
-  let i = at;
-  let prevSignificant = "";
-  while (i < src.length) {
-    const c = src[i];
-    if (c === '"' || c === "'" || c === "`") {
-      i = skipQuoted(src, i, c);
-      prevSignificant = c;
-      continue;
-    }
-    if (c === "/" && regexCanStartAfter(prevSignificant)) {
-      i = skipRegex(src, i);
-      prevSignificant = "/";
-      continue;
-    }
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") depth--;
-    if (done(c, depth)) return i;
-    if (!/\s/.test(c)) prevSignificant = c;
-    i++;
-  }
-  return src.length;
-}
-
-/**
- * The arguments of the call whose `(` is at `open`, as source text.
- *
- * ONE pass. Restarting `scanExpression` at each comma loses the depth the
- * open paren contributed, so the second argument's scan never sees itself as
- * nested and runs to the end of the file — measured, on this repository's
- * own `renameSync` sites, while fixing the AI review's second finding.
- */
-export function callArguments(src: string, open: number): string[] {
-  const args: string[] = [];
-  let start = open + 1;
-  let depth = 0;
-  let i = open;
-  let prevSignificant = "";
-  while (i < src.length) {
-    const c = src[i];
-    if (c === '"' || c === "'" || c === "`") {
-      i = skipQuoted(src, i, c);
-      prevSignificant = c;
-      continue;
-    }
-    if (c === "/" && regexCanStartAfter(prevSignificant)) {
-      i = skipRegex(src, i);
-      prevSignificant = "/";
-      continue;
-    }
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") {
-      depth--;
-      if (depth === 0) {
-        args.push(src.slice(start, i).trim());
-        return args;
-      }
-    } else if (c === "," && depth === 1) {
-      args.push(src.slice(start, i).trim());
-      start = i + 1;
-    }
-    if (!/\s/.test(c)) prevSignificant = c;
-    i++;
-  }
-  args.push(src.slice(start).trim());
-  return args;
-}
-
-/** Argument `index` (0-based), or `""` when the call has no such argument. */
-export function argumentAt(src: string, open: number, index: number): string {
-  return callArguments(src, open)[index] ?? "";
-}
-
-/** The first argument of the call whose `(` is at `open`, as source text. */
-export function firstArgument(src: string, open: number): string {
-  return argumentAt(src, open, 0);
-}
-
-/**
- * Which argument of each primitive names the path that gets WRITTEN.
- *
- * `renameSync(src, dest)` and `copyFileSync(src, dest)` write their SECOND
- * argument. Reading the first means a `copyFileSync(join(assetsDir,
- * "blank.md"), join(specsDir, "NEW-SPEC.md"))` is invisible — the sweep
- * answering a weaker question than the one it is named for. Found by the AI
- * review on #1552; today's population is zero, so nothing live was hidden
- * and the next one would have been.
- */
-const WRITTEN_ARGUMENT: Record<string, number> = {
-  renameSync: 1,
-  copyFileSync: 1,
-};
-
-/**
- * EVERY local initialiser of a bare identifier in the file, joined, or `""`.
- *
- * Every, not the first. This has no function-scope awareness — resolving one
- * properly needs a parser, which this sweep deliberately is not — so the only
- * question is which way it is allowed to be wrong. Reading the FIRST
- * declaration is wrong in the **unsafe** direction: a file with
- * `const filePath = join(outDir, "report.json")` in one function and
- * `const filePath = join(specsDir, "NEW-SPEC.md")` in another would have its
- * real spec write read through the report path, match nothing, and be
- * silently omitted — the exact shape of miss #1552 exists to end, rebuilt
- * inside the detector meant to catch it. Found by the AI review on this PR.
- *
- * Taking the union over-reports instead: a site is spec-targeting if ANY
- * same-named binding in the file names a spec. An over-report costs one line
- * in `NOT_A_SPEC_PATH` with a reason; an under-report costs an unguarded
- * writer nobody can see.
- */
-export function initialiserOf(src: string, name: string): string {
-  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) return "";
-  const decl = new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*(?::[^=\\n]+)?=\\s*`, "g");
-  const parts: string[] = [];
-  for (const m of src.matchAll(decl)) {
-    const init = firstArgumentFromAssignment(src, m.index + m[0].length);
-    if (init) parts.push(init);
-  }
-  return parts.join(" ");
-}
-
-/**
- * Identifiers whose expansion would swamp the view without naming a path.
- * `join` and friends are calls, not variables; `file` and `e` are loop
- * bindings a `const` search would never find anyway.
- */
-const NOT_A_PATH_BINDING = /^(join|resolve|dirname|basename|relative|String|JSON|Bun|process)$/;
-
-/** Maximum links of a `const a = f(b); const b = f(c)` chain the view follows. */
-export const EXPANSION_DEPTH = 3;
-
-/**
- * Identifiers in an expression, with quoted spans removed first.
- *
- * Without the removal, `join(root, "AGENTS.md")` yields `md`, and
- * `initialiserOf` then finds some unrelated `const md = …` elsewhere in the
- * file and splices its text into the view. Measured: that alone put four
- * `AGENTS.md` and `CLAUDE.md` writes in `lib/scaffold/steps.ts` on the
- * violation list, each for a word inside a filename.
- */
-export function identifiersIn(text: string): string[] {
-  let bare = "";
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i];
-    if (c === '"' || c === "'") {
-      const end = skipQuoted(text, i, c);
-      bare += " ".repeat(end - i);
-      i = end;
-      continue;
-    }
-    if (c === "`") {
-      // A template's LITERAL text is blanked for the reason above, but its
-      // `${…}` holes are code and are kept. Blanking the whole span loses
-      // `outDir` out of `` `${outDir}/REPORT.md` ``, so the view has no
-      // identifier to chase, the literal text names no spec, and a raw write
-      // straight to a spec path reports nothing. Found by the AI review on
-      // this PR; `blankComments` never had the bug because it keeps the
-      // literal, and only this harvester erases it.
-      const end = skipQuoted(text, i, c);
-      bare += templateHoles(text.slice(i, end));
-      i = end;
-      continue;
-    }
-    bare += c;
-    i++;
-  }
-  return [...bare.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)].map((m) => m[0]);
-}
-
-/** A template literal with everything outside its `${…}` holes blanked. */
-function templateHoles(span: string): string {
-  const out: string[] = span.split("").map(() => " ");
-  let i = 1;
-  while (i < span.length) {
-    if (span[i] === "\\") {
-      i += 2;
-      continue;
-    }
-    if (span[i] === "$" && span[i + 1] === "{") {
-      let depth = 1;
-      let j = i + 2;
-      while (j < span.length && depth > 0) {
-        const ch = span[j];
-        if (ch === "`") {
-          const e = skipQuoted(span, j, "`");
-          const inner = templateHoles(span.slice(j, e));
-          for (let k = 0; k < inner.length; k++) out[j + k] = inner[k];
-          j = e;
-          continue;
-        }
-        if (ch === '"' || ch === "'") {
-          j = skipQuoted(span, j, ch);
-          continue;
-        }
-        if (ch === "{") depth++;
-        else if (ch === "}" && --depth === 0) break;
-        out[j] = ch;
-        j++;
-      }
-      i = j + 1;
-      continue;
-    }
-    i++;
-  }
-  return out.join("");
-}
-
-/**
- * The text the detector reads: the target expression plus the transitive local
- * initialisers of every bare identifier in it, to `EXPANSION_DEPTH` links.
- *
- * Depth matters and the number is measured, not chosen for roundness.
- * `scripts/split-spec.ts` builds `filePath` from `splitDir` from `parentDir`
- * from `dirname(specPath)` — three links before the word "spec" appears. At
- * depth 1 that write is invisible, which is the shape of miss this whole issue
- * exists to stop.
- */
-export function expandView(src: string, expr: string): string {
-  const seen = new Set<string>();
-  let view = expr;
-  for (let depth = 0; depth < EXPANSION_DEPTH; depth++) {
-    const names = identifiersIn(view).filter(
-      (n) => !seen.has(n) && !NOT_A_PATH_BINDING.test(n),
-    );
-    if (names.length === 0) break;
-    let grew = false;
-    for (const n of names) {
-      seen.add(n);
-      const init = initialiserOf(src, n);
-      if (init) {
-        view += ` ${init}`;
-        grew = true;
-      }
-    }
-    if (!grew) break;
-  }
-  return view.replace(/\s+/g, " ").trim();
-}
-
-/** The initialiser expression starting at `at`, to the end of the statement. */
-function firstArgumentFromAssignment(src: string, at: number): string {
-  const end = scanExpression(src, at, (c, depth) => depth === 0 && (c === ";" || c === "\n"));
-  return src.slice(at, end).trim();
-}
-
 // ── The sweep ─────────────────────────────────────────────────────
 
-/**
- * What counts as a target naming a derived document.
- *
- * `adr` is in, and that is #1548's residue rather than scope creep. The
- * decision `mayWrite` makes is about who PRODUCES a file, not about which
- * directory it sits in — a generated ADR loses injected frontmatter at the
- * next regeneration exactly as a generated spec does. #1548's cited shape is
- * literally `addFrontmatterToAdrs`, an unguarded sibling of a guarded
- * function in `lib/validators/spec-validators.ts`, and a `specs/`-only
- * detector would not see the next one. Widening costs nothing measured: the
- * real tree reads the same one site either way.
- *
- * Anchored at a token boundary rather than matched as a bare substring, so
- * `quadrant` and `inspectPath` are not derived documents. `adrDir` and
- * `specsDir` are, because the boundary is the character BEFORE the word.
- */
-const SPEC_TARGET = /(?:^|[^A-Za-z0-9])(spec|adr)/i;
-
-function tsFiles(root: string, dir: string, out: string[]): void {
+/** TypeScript sources under the five swept directories. */
+function sourceFiles(root: string, dir: string, out: string[], ext: RegExp): void {
   const abs = join(root, dir);
   if (!existsSync(abs)) return;
   for (const e of readdirSync(abs, { withFileTypes: true }).sort((a, b) =>
@@ -511,47 +154,50 @@ function tsFiles(root: string, dir: string, out: string[]): void {
   )) {
     const rel = `${dir}/${e.name}`;
     if (e.isDirectory()) {
-      tsFiles(root, rel, out);
+      if (e.name === "node_modules" || e.name === ".git") continue;
+      sourceFiles(root, rel, out, ext);
       continue;
     }
-    if (!e.name.endsWith(".ts") || e.name.endsWith(".test.ts")) continue;
+    if (!ext.test(e.name) || e.name.endsWith(".test.ts")) continue;
     out.push(rel);
   }
 }
 
-/** Every write-primitive call site under the swept directories. */
+/**
+ * Every write-primitive call site under the swept directories.
+ *
+ * Throws, naming the file, when a source cannot be parsed. A file the parser
+ * gave up on and a file with no writes produce the same empty list, and only
+ * one of those is a clean reading.
+ */
 export function writeSites(root: string, dirs: readonly string[] = SWEPT_DIRS): WriteSite[] {
   const files: string[] = [];
-  for (const d of dirs) tsFiles(root, d, files);
-
-  // The lookbehind excludes identifier characters but NOT `.`, so a member
-  // call is seen. `lib/conformity.ts` spells one `require("fs").writeFileSync(
-  // reportPath, …)`, and a lookbehind that blocked `.` made it invisible —
-  // found by this sweep's own negative control, which is the only reason it
-  // is not still invisible. `safeWriteFileSync(` stays excluded: `e` is an
-  // identifier character.
-  const pattern = new RegExp(
-    `(?<![A-Za-z0-9_$])(${WRITE_PRIMITIVES.map((p) => p.replace(".", "\\.")).join("|")})\\s*\\(`,
-    "g",
-  );
+  for (const d of dirs) sourceFiles(root, d, files, /\.ts$/);
+  for (const d of SWEPT_JS_DIRS) sourceFiles(root, d, files, /\.js$/);
 
   const sites: WriteSite[] = [];
   for (const file of files) {
     const raw = readFileSync(join(root, file), "utf-8");
-    const src = blankComments(raw);
-    for (const m of src.matchAll(pattern)) {
-      const open = m.index! + m[0].length - 1;
-      const target = argumentAt(src, open, WRITTEN_ARGUMENT[m[1]] ?? 0).replace(/\s+/g, " ");
-      const view = expandView(src, target);
+    const loader = file.endsWith(".js") ? "js" : "ts";
+    let found;
+    try {
+      found = writeSitesIn(raw, { loader });
+    } catch (e) {
+      throw new Error(`spec-write sweep: UNMEASURED in ${file} — ${(e as Error).message}`);
+    }
+    const lines = resolveLines(raw, found, { positionsAreOriginal: loader === "js" });
+    found.forEach((s, i) => {
       sites.push({
         file,
-        line: src.slice(0, m.index!).split("\n").length,
-        primitive: m[1],
-        target,
-        view,
-        specTargeting: SPEC_TARGET.test(view),
+        line: lines[i],
+        primitive: s.primitive,
+        target: s.target,
+        view: s.view,
+        specTargeting: specTargetingOf(s),
+        unresolved: s.unresolved,
+        opaque: s.opaque,
       });
-    }
+    });
   }
   return sites;
 }

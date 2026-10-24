@@ -101,6 +101,32 @@ export function parseTsModule(source: string): ParsedModule | null {
   }
 }
 
+/**
+ * Parse JavaScript that needs no type stripping, or `null` if it does not
+ * parse.
+ *
+ * Distinct from `parseTsModule` for two reasons, both measured on
+ * `workflows/*.js` (#1566):
+ *
+ *  - **`Bun.Transpiler` refuses all six of them**, on every loader — `js`,
+ *    `jsx`, `ts` and `tsx` — while acorn parses the raw source without
+ *    complaint. Routing `.js` through the transpiler turns six readable files
+ *    into six refusals.
+ *  - **Positions index the ORIGINAL text**, because nothing was rewritten. So
+ *    a caller can report an exact line instead of reconciling by ordinal,
+ *    which is the one real cost `parseTsModule` imposes.
+ *
+ * `js` is the input, unchanged, so the `ParsedModule` contract still holds:
+ * node positions index `js`.
+ */
+export function parseJsModule(source: string): ParsedModule | null {
+  try {
+    return { tree: parse(source, PARSE_OPTIONS) as unknown as AstNode, js: source };
+  } catch {
+    return null;
+  }
+}
+
 /** Every node in the tree, depth-first, parents before children. */
 export function* walkNodes(node: AstNode): Generator<AstNode> {
   yield node;
