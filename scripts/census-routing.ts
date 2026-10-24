@@ -42,9 +42,10 @@
  * needs a notion of "what this session ran" that does not exist here.
  */
 import { execFileSync } from "child_process";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
+import { LINE_CITATION } from "../lib/line-citation";
 import { TRACKED_ID_PREFIX_SOURCE } from "../lib/sc-ids";
 
 /**
@@ -77,20 +78,67 @@ export interface CensusTrigger {
   id: string;
   /** The event, phrased the way the agent who caused it would describe it. */
   event: string;
-  /** Repo-relative test paths. */
+  /** Repo-relative test paths. Empty on a row that derives its targets. */
   tests: string[];
   fires(c: Change): boolean;
+  /**
+   * Targets resolved against the TREE rather than written down (#1442).
+   *
+   * A fixed list is wrong for a per-document suite: the pair
+   * `specs/<NAME>.md` / `test/<name>.test.ts` is a convention, and a literal
+   * row would be wrong the moment a spec gains a suite or a suite is
+   * renamed. `exists` is injected rather than read here so the convention is
+   * one expression with one reading of the filesystem behind it.
+   *
+   * **An empty return means the row does not fire for that change at all** —
+   * see `censusTestsFor`. A row that fired with no target would read exactly
+   * like a spec whose suite was renamed away, and those are different facts.
+   */
+  derive?(c: Change, exists: (path: string) => boolean): string[];
+  /**
+   * The rule file's table cell for a derived row, since there is no path
+   * list to render. It must spell no concrete test path: the document's
+   * section is compared to `allCensusTests()`, a derived row contributes
+   * nothing to that set, and a concrete path in this prose would read as a
+   * routed test. `test/census-routing.test.ts` asserts it.
+   */
+  derivedTarget?: string;
 }
 
 const isMarkdown = (p: string) => p.endsWith(".md");
 const inDir = (p: string, dir: string) => p.startsWith(`${dir}/`);
 
 /**
- * A `path.ts:123` citation, which is the only thing `#541`'s ratchet counts.
- * Deliberately narrow: a bare `foo.ts` is not a citation, and neither is a
- * version like `1.2:3`.
+ * What `#541`'s ratchet counts as a line citation — asked of the ratchet's
+ * own binding rather than respelled here.
+ *
+ * It used to be a hand-written `/[\w./-]+\.tsx?:\d+/`, which is a second
+ * spelling of `lib/line-citation.ts`'s `LINE_CITATION`, and the two
+ * disagreed in both directions: `.js` and `.json` citations are counted by
+ * the ratchet and were invisible here, and a `.tsx:12` is matched here and
+ * counted by nothing. PR #1466 rewrote `PROJECT-STATE.md` and removed
+ * `ship.js:2931` and `workflows/ship.js:1705` — both `.js` — so this row
+ * stayed silent and CI went red on `NoLineCitationsError` for a banked
+ * document that now yielded none. One round, on a docs-only change (#1442).
+ *
+ * `LINE_CITATION` is global, and `.test()` on a `/g` regex carries
+ * `lastIndex` between calls, so the source is recompiled without the flag:
+ * a stateful reader would skip every other line.
  */
-const LINE_CITATION = /[\w./-]+\.tsx?:\d+/;
+const LINE_CITATION_LINE = new RegExp(LINE_CITATION.source);
+
+/**
+ * The suite named after a spec document, whether or not it exists.
+ *
+ * `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` -> `test/code-review-convergence-spec.test.ts`.
+ * Nested specs collapse to their basename, which is the convention the tree
+ * already follows. Exported so there is ONE expression of the convention;
+ * a second one would survive any mutation of the first.
+ */
+export function ownSpecTestPath(specPath: string): string {
+  const base = specPath.slice(specPath.lastIndexOf("/") + 1).replace(/\.md$/, "");
+  return `test/${base.toLowerCase()}.test.ts`;
+}
 
 /**
  * A criterion checkbox, ticked. The space inside `[ ]` is the discriminator.
@@ -132,7 +180,7 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     tests: ["test/line-citation-ratchet.test.ts", "test/agents-md-refs.test.ts"],
     fires: c =>
       isMarkdown(c.path) &&
-      (c.isNew || [...c.added, ...c.removed].some(l => LINE_CITATION.test(l))),
+      (c.isNew || [...c.added, ...c.removed].some(l => LINE_CITATION_LINE.test(l))),
   },
   {
     // Not in the prose list before #990, and the rule file's own closing
@@ -219,6 +267,43 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
         c.removed.some(l => TICKED_CRITERION.test(l))),
   },
   {
+    // #1442. The three rows above route the same fixed set for an edit, a
+    // tick and an add, and none of them routes the suite whose entire
+    // subject is the document that changed.
+    //
+    // Measured twice, four days apart, on two branches: #1439 ticked `CRC-E4`
+    // and #1450 ticked `CRC-M11` in `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`,
+    // each left the criterion in the not-done bucket, each ran the six suites
+    // this router printed, each was green locally, and each went red in CI on
+    // `test/code-review-convergence-spec.test.ts` — *"criteria in TWO
+    // buckets"*. A tick and a bucket entry are the SAME edit for any spec
+    // that keeps a per-criterion remainder list, so the gap is not random:
+    // this router was reliably silent on exactly the follow-on a tick
+    // creates.
+    //
+    // DERIVED rather than literal, because the population moves. One pair
+    // resolves on this tree and it is the pair that cost the two rounds.
+    //
+    // The obvious widening — also accept the name with a trailing `-spec`
+    // removed — was measured and REJECTED. It adds four candidates, and
+    // `test/gate-contracts.test.ts`, `test/instruction-compliance.test.ts`
+    // and `test/scaffold-decomposition.test.ts` contain their spec's
+    // filename zero times and open no spec document at all; they read
+    // `gates/`, `lib/compliance.ts` and `scripts/scaffold-project.ts`. An
+    // edit to the spec cannot redden any of them. The fourth,
+    // `test/agent-brief-template.test.ts`, names its spec once, in a
+    // `describe` title. Routing four suites a spec edit cannot redden is the
+    // thing the `new-spec` row above is scoped to avoid.
+    id: "spec-own-test",
+    event: "touched a specs/ file that has a suite named after it",
+    tests: [],
+    // Kept short on purpose: this cell is rendered into an always-loaded
+    // rule file, whose peak surface sits inside 400 bytes of its budget.
+    derivedTarget: "the suite named after it: `test/` + its basename lowercased + `.test.ts`",
+    derive: (c, exists) => [ownSpecTestPath(c.path)].filter(exists),
+    fires: c => inDir(c.path, "specs") && isMarkdown(c.path),
+  },
+  {
     id: "gates-hooks-scaffold",
     event: "touched gates/, hooks/ or the scaffold",
     tests: [
@@ -297,24 +382,64 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
 ];
 
 export interface CensusRouting {
-  /** Rows that fired, in table order, each with the paths that fired it. */
-  fired: { trigger: CensusTrigger; because: string[] }[];
+  /**
+   * Rows that fired, in table order, each with the paths that fired it and
+   * the tests THAT reading resolved to. A fixed row's `tests` is the row's
+   * own list; a derived row's is what the tree answered (#1442).
+   */
+  fired: { trigger: CensusTrigger; because: string[]; tests: string[] }[];
   /** The union of the fired rows' tests, deduplicated, in table order. */
   tests: string[];
 }
 
-/** Every test any row can emit. The rule file's block must equal this set. */
+/**
+ * Every test a FIXED row can emit. The rule file's block must equal this set.
+ *
+ * A derived row contributes nothing here on purpose: its membership is a
+ * property of the tree, not of the table, so putting it in this set would
+ * put a list into the rule file's prose that rots at the next rename —
+ * which is the thing #990 built the rendered table to prevent.
+ */
 export function allCensusTests(): string[] {
   return [...new Set(CENSUS_TRIGGERS.flatMap(t => t.tests))];
 }
 
-export function censusTestsFor(changes: Change[]): CensusRouting {
+/** Resolve a repo-relative path against a project root. */
+export const onDisk = (root: string) => (p: string) => existsSync(join(root, p));
+
+const SELF_ROOT = join(import.meta.dir, "..");
+
+/**
+ * `exists` decides what a derived row resolves to. It defaults to THIS
+ * repository, which is right for a reader asking about the tree it was
+ * imported from and wrong for one routing a consumer project — pass
+ * `onDisk(root)` whenever the root is not this one.
+ */
+export function censusTestsFor(
+  changes: Change[],
+  exists: (path: string) => boolean = onDisk(SELF_ROOT),
+): CensusRouting {
   const fired: CensusRouting["fired"] = [];
   for (const trigger of CENSUS_TRIGGERS) {
-    const because = changes.filter(c => trigger.fires(c)).map(c => c.path);
-    if (because.length > 0) fired.push({ trigger, because });
+    const matched = changes.filter(c => trigger.fires(c));
+    // A derived row drops the changes whose derivation resolved to nothing,
+    // so a row with no surviving change is ABSENT rather than present and
+    // empty. The two read identically in the output and are different facts:
+    // "no spec in this diff has a suite named after it" against "the row
+    // fired and the suite it names is gone".
+    const resolved = trigger.derive
+      ? matched
+          .map(c => ({ path: c.path, tests: trigger.derive!(c, exists) }))
+          .filter(r => r.tests.length > 0)
+      : matched.map(c => ({ path: c.path, tests: trigger.tests }));
+    if (resolved.length === 0) continue;
+    fired.push({
+      trigger,
+      because: resolved.map(r => r.path),
+      tests: [...new Set(resolved.flatMap(r => r.tests))],
+    });
   }
-  return { fired, tests: [...new Set(fired.flatMap(f => f.trigger.tests))] };
+  return { fired, tests: [...new Set(fired.flatMap(f => f.tests))] };
 }
 
 /**
@@ -420,14 +545,15 @@ if (import.meta.main) {
 
   if (argv.includes("--all")) {
     for (const t of CENSUS_TRIGGERS) {
-      console.log(`${t.id.padEnd(22)}${t.event}\n${" ".repeat(22)}${t.tests.join(" ")}`);
+      const target = t.derivedTarget ?? t.tests.join(" ");
+      console.log(`${t.id.padEnd(22)}${t.event}\n${" ".repeat(22)}${target}`);
     }
     process.exit(0);
   }
 
   let routing: CensusRouting;
   try {
-    routing = censusTestsFor(changesFor(root, flag("base")));
+    routing = censusTestsFor(changesFor(root, flag("base")), onDisk(root));
   } catch (e) {
     // Loud and non-zero. A router that cannot read the diff and prints an
     // empty line reads exactly like "nothing to run", which is the fail-open

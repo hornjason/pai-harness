@@ -75,10 +75,12 @@ import {
   CENSUS_TRIGGERS,
   allCensusTests,
   censusTestsFor,
+  ownSpecTestPath,
   parseUnifiedDiff,
   type Change,
 } from "../scripts/census-routing";
 import { TRACKED_ID_PREFIXES } from "../lib/sc-ids";
+import { LINE_CITATION } from "../lib/line-citation";
 
 const REPO = join(import.meta.dir, "..");
 const RULE = join(REPO, ".claude/rules/self-referential-tests.md");
@@ -148,8 +150,18 @@ describe("#990: a tick is routed, and an edit that is not a tick is not", () => 
   // instead of reproducing this defect a second time. `SC` is skipped
   // because the two cases above already measure it; what this asserts is
   // that no member of the list is unrouted.
+  //
+  // The baseline is a prose edit to the SAME path, not to `specs/X.md`. #1442
+  // added a row whose target is derived from the spec's own name, so a
+  // baseline on a different spec varies two things at once — the tick AND
+  // whether the spec has a suite named after it — and the delta would be 5
+  // for `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` and 4 for a spec with no such
+  // suite. Same path, differing only in the tick, is the pair discipline
+  // `.claude/rules/checks-must-be-able-to-fail.md` asks for.
   test("every tracked prefix routes a tick, not only the first one", () => {
-    const edit = censusTestsFor([change({ path: "specs/X.md", added: ["some prose"] })]);
+    const edit = censusTestsFor([
+      change({ path: "specs/CODE-REVIEW-CONVERGENCE-SPEC.md", added: ["some prose"] }),
+    ]);
     for (const prefix of TRACKED_ID_PREFIXES) {
       const { tests } = censusTestsFor([
         change({
@@ -220,7 +232,8 @@ describe("#990: the rule file's block is the router's table", () => {
    */
   function expectedBlock(): string {
     const rows = CENSUS_TRIGGERS.map(
-      t => `| ${t.event} | ${t.tests.map(p => `\`${p}\``).join(" ")} |`,
+      t =>
+        `| ${t.event} | ${t.derivedTarget ?? t.tests.map(p => `\`${p}\``).join(" ")} |`,
     );
     return ["| what you did | what to run |", "|---|---|", ...rows].join("\n");
   }
@@ -260,6 +273,27 @@ describe("#990: the rule file's block is the router's table", () => {
   test("every routed test exists on disk", () => {
     const missing = allCensusTests().filter(t => !existsSync(join(REPO, t)));
     expect(missing, "a routed census test does not exist").toEqual([]);
+  });
+
+  // #1442. A derived row has no fixed path list, so its cell is prose, and
+  // prose in this section is read by the case above as a routed test the
+  // moment it spells one. That is an accident of the regex today; this binds
+  // it. A derived cell that names a concrete path would have to be in
+  // `allCensusTests()` too, and a derived row's membership is a property of
+  // the tree rather than of the table — which is the whole reason it is
+  // derived.
+  test("a derived row's table cell spells no concrete test path", () => {
+    const derived = CENSUS_TRIGGERS.filter(t => t.derivedTarget !== undefined);
+    expect(derived.length, "no row derives its targets, so this asserted nothing").toBeGreaterThan(
+      0,
+    );
+    for (const t of derived) {
+      expect(
+        t.derivedTarget!.match(/test\/[\w.-]+\.test\.tsx?/g) ?? [],
+        `the ${t.id} row's table cell spells a concrete test path, which the rule file's ` +
+          "section comparison would then read as a routed test",
+      ).toEqual([]);
+    }
   });
 
   test("the router routes the SC census, which it is the point of", () => {
@@ -552,5 +586,302 @@ describe("#1368: a generated workflow routes to the suites that read it", () => 
       ),
     );
     expect(fired.map(f => f.trigger.id)).not.toContain("generated-workflow");
+  });
+});
+
+/**
+ * #1442: a `specs/` edit routes the suite named after that spec.
+ *
+ * #990 split `specs/` into an edit and a tick; #1306 added the add. All three
+ * route the SAME fixed set, and none of them routes the spec's OWN suite —
+ * the file whose entire subject is that one document.
+ *
+ * Measured twice, four days apart, by the same session on two branches:
+ * #1439 ticked `CRC-E4` and #1450 ticked `CRC-M11` in
+ * `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`, each left the criterion in the
+ * not-done bucket, each ran the six suites the router printed, each was green
+ * locally, and each went red in CI on `test/code-review-convergence-spec.test.ts`
+ * — *"criteria in TWO buckets: the states are meant to be exclusive"*. Two CI
+ * rounds for a defect a one-second local run catches, on the spec whose own
+ * ranking function is rounds-to-pass.
+ *
+ * ## The convention, and what was deliberately NOT adopted
+ *
+ * `specs/<NAME>.md` routes to `test/<lowercase NAME>.test.ts` when that file
+ * exists. One pair resolves on this tree, and it is the pair that cost the
+ * two rounds.
+ *
+ * The obvious widening — also accept the name with a trailing `-spec`
+ * removed — was measured and rejected. It adds four candidates:
+ * `test/gate-contracts.test.ts`, `test/instruction-compliance.test.ts` and
+ * `test/scaffold-decomposition.test.ts` contain their spec's filename zero
+ * times and read no spec document at all (they test `gates/`, `lib/compliance`
+ * and `scripts/scaffold-project.ts`), so an edit to the spec cannot redden
+ * any of them; `test/agent-brief-template.test.ts` names its spec once, in a
+ * `describe` title. Routing four suites that a spec edit cannot redden is the
+ * "router that names more than it has to" the #1306 row above already argues
+ * against, and an ignored router is the state #990 is about.
+ *
+ * A spec with no suite named after it routes to NOTHING, and the row does not
+ * fire at all — absent, not empty. A row that fired with an empty target
+ * would read exactly like a spec whose suite was renamed away.
+ *
+ * ## What was broken to prove it, run and counted
+ *
+ * Over this file (35 tests). Every count AND membership was predicted before
+ * the battery ran, and the baseline row was read first — an instrument that
+ * has stopped reporting takes the baseline down with it, and `bun` writes its
+ * summary to stderr, so a reader parsing stdout alone reports nothing at all.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 35 pass, 0 fail | **35 pass, 0 fail** | — |
+ * | the `spec-own-test` entry deleted, router only | 6: W1, W2, D1, F1, T3, and the byte-identity case | **6 of 35**, the six named | the CRC prose edit below |
+ * | the same, applied FAITHFULLY — the rendered table reverted too | 5: W1, W2, D1, F1, T3 | **5 of 35**, the five named | `{path: "specs/CODE-REVIEW-CONVERGENCE-SPEC.md", added: ["some prose"]}`: the original routes `agents-md-spec-listing`, `spec-requirements` AND `code-review-convergence-spec`, the mutant routes the first two |
+ * | the `doc` row's detector respelled back to `/[\w./-]+\.tsx?:\d+/` | 3: B1, B2, B4 | **3 of 35**, the three named | `{path: "PROJECT-STATE.md", removed: ["- the pin is read at \`workflows/ship.js:1705\`"]}` — #1466's own removed line: the original routes the ratchet pair, the mutant routes **nothing at all** |
+ * | the empty-derivation filter dropped, so a derived row fires with no target | 1: C2 | **1 of 35**, the one named | `{path: "specs/HARNESS-STANDARD.md", added: ["- [ ] SC-9108: not yet"]}`: the original omits the row from `fired`, the mutant lists it carrying zero tests |
+ * | **the cheapest wrong fix**, applied faithfully: the derived row deleted, `test/code-review-convergence-spec.test.ts` appended to `spec-edit` as a literal, table regenerated | 5: W2, D1, C2, F1, T3 | **5 of 35**, the five named | the HARNESS-STANDARD edit above: the original routes two tests, the mutant routes three, one of which is a suite about a document the diff does not touch |
+ *
+ * **W1 is GREEN under the wrong fix**, which is why it is not the whole
+ * proof. A literal row satisfies "a spec edit routes that suite" exactly, and
+ * what it cannot satisfy is D1 — the delta between a spec that has a suite
+ * named after it and one that does not — or C2, or the two cases that are
+ * about the derivation existing at all. Every one of C1..C3 survives the
+ * wrong fixes non-vacuously, which is the only grade of survival that is
+ * protection.
+ *
+ * Case labels, since four of the eight are controls and the next reader
+ * should not count eight witnesses:
+ *
+ *   W1  "a prose edit to a spec routes the suite named after it"
+ *   W2  "ticking a criterion routes the spec's own suite too"
+ *   D1  "a spec WITH an own suite routes exactly one more test …"
+ *   F1  "a spec whose suite does not exist today is routed the moment it does"
+ *   T3  "a derived row's table cell spells no concrete test path"
+ *   C1  "a change outside specs/ does not route a spec's own suite"
+ *   C2  "a spec with no suite named after it routes nothing, and the row does not fire"
+ *   C3  "a suite named after the spec's STEM is not routed when it never reads the spec"
+ *   B1  "a doc LOSING a .js line citation routes the ratchet"
+ *   B2  "a doc gaining a .json line citation routes the ratchet"
+ *   B4  "the router and the ratchet agree about every sample, both directions"
+ *
+ * None of the five mutations is left in the tree; all were run and reverted,
+ * and `scripts/census-routing.ts` and
+ * `.claude/rules/self-referential-tests.md` were confirmed byte-identical to
+ * the measured source afterwards by sha256.
+ */
+describe("#1442: a specs/ edit routes the suite named after that spec", () => {
+  const CRC_SPEC = "specs/CODE-REVIEW-CONVERGENCE-SPEC.md";
+  const CRC_TEST = "test/code-review-convergence-spec.test.ts";
+
+  // Non-vacuity for every case below. Written as literals rather than read
+  // from `ownSpecTestPath`, because a pair derived from the thing it checks
+  // agrees with it by construction.
+  test("the live pair this row exists for is still on disk", () => {
+    expect(existsSync(join(REPO, CRC_SPEC)), `${CRC_SPEC} was renamed`).toBe(true);
+    expect(existsSync(join(REPO, CRC_TEST)), `${CRC_TEST} was renamed`).toBe(true);
+    expect(ownSpecTestPath(CRC_SPEC), "the convention stopped resolving the live pair").toBe(
+      CRC_TEST,
+    );
+  });
+
+  // W1. WITNESS — red on the pre-#1442 router, which routes the fixed pair
+  // and nothing else for this diff.
+  test("a prose edit to a spec routes the suite named after it", () => {
+    const { tests } = censusTestsFor([change({ path: CRC_SPEC, added: ["some prose"] })]);
+    expect(tests, `a spec edit did not route to ${CRC_TEST} — this is #1439 again`).toContain(
+      CRC_TEST,
+    );
+  });
+
+  // W2. WITNESS — #1439's and #1450's own event, a tick, which is the diff
+  // that was in front of CI both times.
+  test("ticking a criterion routes the spec's own suite too", () => {
+    const { tests, fired } = censusTestsFor([
+      change({ path: CRC_SPEC, added: ["- [x] CRC-9107: a criterion that is also still in a bucket"] }),
+    ]);
+    expect(tests, `#1450's diff did not route to ${CRC_TEST}`).toContain(CRC_TEST);
+    expect(
+      fired.map(f => f.trigger.id),
+      "the own-test row did not fire on the diff it was written for",
+    ).toContain("spec-own-test");
+  });
+
+  // D1. The discrimination that makes W1 a measurement. A spec edit fires
+  // `spec-edit` whatever else is true, so `tests.length > 0` is green on the
+  // pre-#1442 router. Both halves are a prose edit to a spec; they differ in
+  // exactly one thing, which is whether a suite is named after it.
+  test("a spec WITH an own suite routes exactly one more test than a spec without", () => {
+    const withOwn = censusTestsFor([change({ path: CRC_SPEC, added: ["some prose"] })]);
+    const without = censusTestsFor([
+      change({ path: "specs/HARNESS-STANDARD.md", added: ["some prose"] }),
+    ]);
+    expect(without.tests.length, "the spec-edit row stopped firing").toBeGreaterThan(0);
+    expect(
+      withOwn.tests.length - without.tests.length,
+      "the two specs route the same set, so the own-test row is doing nothing",
+    ).toBe(1);
+  });
+
+  // C1. CONTROL. A diff touching no spec must not route it. Without this a
+  // row that fires on everything passes W1 and D1 is the only thing between
+  // that and routing the CRC suite on every diff in the repo.
+  test("a change outside specs/ does not route a spec's own suite", () => {
+    const { tests, fired } = censusTestsFor([
+      change({ path: "lib/code-review-convergence-spec.ts", added: ["export const a = 1;"] }),
+    ]);
+    expect(tests, `${CRC_TEST} is routed by a change touching no spec`).not.toContain(CRC_TEST);
+    expect(fired.map(f => f.trigger.id)).not.toContain("spec-own-test");
+  });
+
+  // C2. CONTROL against the cheapest wrong fix: append CRC_TEST to the
+  // `spec-edit` row as a literal. One line, W1 and W2 both go green, and the
+  // CRC suite then runs on every edit to every spec forever — and silently
+  // routes nothing the day that file is renamed.
+  //
+  // It also asserts the row is ABSENT rather than firing empty: a spec with
+  // no suite named after it must not appear in `fired` at all.
+  test("a spec with no suite named after it routes nothing, and the row does not fire", () => {
+    const { tests, fired } = censusTestsFor([
+      change({ path: "specs/HARNESS-STANDARD.md", added: ["- [ ] SC-9108: not yet"] }),
+    ]);
+    expect(
+      existsSync(join(REPO, "test/harness-standard.test.ts")),
+      "a suite named after HARNESS-STANDARD.md now exists; this control needs a different spec",
+    ).toBe(false);
+    expect(tests, "an unrelated spec edit routed the CRC suite").not.toContain(CRC_TEST);
+    expect(
+      fired.map(f => f.trigger.id),
+      "the own-test row fired for a spec with no own test — empty, not absent",
+    ).not.toContain("spec-own-test");
+    expect(tests, "the spec-edit row stopped firing").toContain("test/spec-requirements.test.ts");
+  });
+
+  // C3. CONTROL against the second wrong fix: accept the name with a trailing
+  // `-spec` stripped. `test/gate-contracts.test.ts` reads `gates/` and never
+  // opens `specs/GATE-CONTRACTS-SPEC.md`, so an edit to that spec cannot
+  // redden it. Measured, not assumed — the case reads the file.
+  test("a suite named after the spec's STEM is not routed when it never reads the spec", () => {
+    const stemTest = "test/gate-contracts.test.ts";
+    const spec = "specs/GATE-CONTRACTS-SPEC.md";
+    expect(existsSync(join(REPO, stemTest)), `${stemTest} was renamed`).toBe(true);
+    expect(
+      readFileSync(join(REPO, stemTest), "utf-8").includes("GATE-CONTRACTS-SPEC.md"),
+      `${stemTest} now names its spec, so the measurement behind this control has moved`,
+    ).toBe(false);
+    const { tests } = censusTestsFor([change({ path: spec, added: ["some prose"] })]);
+    expect(tests, `${stemTest} was routed by an edit to a spec it never reads`).not.toContain(
+      stemTest,
+    );
+  });
+
+  // The target is DERIVED, not a list. A spec that gains a suite tomorrow is
+  // routed the day it lands, and this is the only case that can say so —
+  // every other one is satisfied by a literal pair written into the table.
+  test("a spec whose suite does not exist today is routed the moment it does", () => {
+    const spec = "specs/HARNESS-STANDARD.md";
+    const future = ownSpecTestPath(spec);
+    expect(
+      existsSync(join(REPO, future)),
+      "this case needs a pair that does NOT resolve on the live tree",
+    ).toBe(false);
+    const { tests } = censusTestsFor([change({ path: spec, added: ["some prose"] })], p =>
+      p === future ? true : existsSync(join(REPO, p)),
+    );
+    expect(tests, "the row reads a fixed list, not the tree").toContain(future);
+  });
+});
+
+/**
+ * #1442, second population: the `doc` row's citation detector was a second
+ * spelling of the ratchet's.
+ *
+ * `.claude/line-citation-ratchet.json` banks a count per document and
+ * `test/line-citation-ratchet.test.ts` refuses a banked document that yields
+ * none. The binding that decides what a citation IS is `LINE_CITATION` in
+ * `lib/line-citation.ts`, and it matches `.ts`, `.js` and `.json`. This
+ * router respelled it as `\.tsx?:\d+` — narrower on two extensions and wider
+ * on a third.
+ *
+ * Measured, not inferred. PR #1466 rewrote `PROJECT-STATE.md`'s priorities
+ * block and removed exactly two citations:
+ *
+ *   $ git show 577a078a -- PROJECT-STATE.md | grep '^-' | grep -oE '…'
+ *     ship.js:2931
+ *     workflows/ship.js:1705
+ *
+ * Both `.js`. The router saw neither, printed only the `touched specs/` row,
+ * and CI went red on shard 1 with `NoLineCitationsError: PROJECT-STATE.md is
+ * banked in the citation ratchet as carrying line citations and the census
+ * found none`. One full CI round on a documentation-only change.
+ *
+ * The fix is the one `TRACKED_ID_PREFIX_SOURCE` already applies one row up:
+ * import the binding instead of respelling it. A reader that respells is a
+ * reader that decides again.
+ */
+describe("#1442: the doc row asks the ratchet's own binding what a citation is", () => {
+  const RATCHET = "test/line-citation-ratchet.test.ts";
+  const routes = (line: string, side: "added" | "removed" = "added") =>
+    censusTestsFor([
+      change({
+        path: "PROJECT-STATE.md",
+        added: side === "added" ? [line] : [],
+        removed: side === "removed" ? [line] : [],
+      }),
+    ]).tests.includes(RATCHET);
+
+  // WITNESS. #1466's own removed line, verbatim in shape.
+  test("a doc LOSING a .js line citation routes the ratchet", () => {
+    expect(
+      routes("- the pin is read at `workflows/ship.js:1705`", "removed"),
+      "a removed .js citation did not route the ratchet — this is #1466 again",
+    ).toBe(true);
+  });
+
+  test("a doc gaining a .json line citation routes the ratchet", () => {
+    expect(routes("see `config/check-registry.json:12`")).toBe(true);
+  });
+
+  // CONTROL. A row that fires on every markdown line would make both
+  // witnesses green while routing the ratchet for every doc edit in the repo
+  // — which is the `doc` row's `isNew` half doing all the work and the
+  // citation half doing none.
+  test("a doc edit carrying no citation does not route the ratchet", () => {
+    expect(routes("a sentence about workflows/ship.js with no line number")).toBe(false);
+    expect(routes("released in 1.2:3, which is a version and not a citation")).toBe(false);
+  });
+
+  // The agreement itself, in both directions. A second spelling can be
+  // narrower OR wider: `.tsx:9` is matched by the old regex and by no
+  // citation the ratchet counts, so a doc gaining one routed a suite that
+  // could not see it.
+  test("the router and the ratchet agree about every sample, both directions", () => {
+    const samples = [
+      "the reader is at `lib/line-citation.ts:54`",
+      "the pin is at workflows/ship.js:1705",
+      "the row is at config/check-registry.json:12",
+      "the component is at app/Thing.tsx:9",
+      "released in 1.2:3",
+      "a bare lib/line-citation.ts with no line",
+      "ship.js:2931 opens the line",
+    ];
+    const ratchet = new RegExp(LINE_CITATION.source);
+    let matched = 0;
+    for (const s of samples) {
+      const expected = ratchet.test(s);
+      if (expected) matched++;
+      expect(
+        routes(s),
+        `the router and lib/line-citation.ts disagree about "${s}" — the router has a ` +
+          "second spelling of what a citation is",
+      ).toBe(expected);
+    }
+    expect(matched, "no sample matched, so the loop compared two constant falses").toBeGreaterThan(
+      0,
+    );
+    expect(
+      samples.length - matched,
+      "every sample matched, so the loop never exercised the negative direction",
+    ).toBeGreaterThan(0);
   });
 });
