@@ -1,0 +1,25 @@
+{
+  "id": "worktree-state-write",
+  "reviewPath": "lib/project-state-root.ts",
+  "baseline": "baseline.ts",
+  "provenance": "A compacted, self-contained copy of the decision half of lib/project-state-root.ts, with the three filesystem readings lifted into a RootReading parameter so the subject is pure. A copy on purpose, for the reason suite-lock-redirect gives: a subject whose source is the live module moves every time the module does, and a control that moves is not a control.",
+  "measures": "CRC-A4, first half — whether the reviewer flags code that breaks a convention this repository states. The defect is not a bug in any reading of the code alone: a linked worktree IS a real checkout of the same repository carrying the same tracked generator, and the planted arm says so in its own comment. It is wrong only because CLAUDE.md says it is, which is what makes it a convention break rather than a second copy of a defect class REVIEW.md already names.",
+  "convention": "CLAUDE.md, the PROJECT-STATE.md rule: `project-state.json`, `PROJECT-STATE.md` and `SUCCESS.md` are DA-owned: an agent running in a worktree must never write them. CLAUDE.md is in AI_REVIEW_UNTRUSTED_PATHS and the generated `Restore untrusted paths from the pull request base` step runs before `Run the AI review`, so the reviewer reads the base's copy of that rule and a branch cannot legalise its own change by editing it.",
+  "cases": [
+    {
+      "id": "worktree-state-write/planted",
+      "kind": "planted",
+      "candidate": "planted.ts",
+      "lines": [42, 47],
+      "marker": "linkedWorktree",
+      "defect": "The new arm lets a linked worktree through to the ok path, so the project-state generator runs with `projectRoot` set to the worktree. CLAUDE.md states that an agent running in a worktree must never write `project-state.json`, `PROJECT-STATE.md` or `SUCCESS.md`.",
+      "failureScenario": "A sub-issue agent in `.claude/worktrees/agent-<id>` writes `project-state.json`; the hook reads `repoRoot` as the main checkout and `linkedWorktree` as true, the arm falls through, and the generator regenerates `PROJECT-STATE.md` inside the worktree. Four parallel worktrees then each hold their own version of one shared state document, and the collection guard (#178, SC-413) refuses the whole run over a file no sub-issue claimed — which is what CLAUDE.md records happening to run `wf_0b15a933-b2b`."
+    },
+    {
+      "id": "worktree-state-write/clean",
+      "kind": "clean",
+      "candidate": "clean.ts",
+      "why": "The same change to the same arm, minus the convention break: a linked worktree is recorded under its own outcome instead of being lumped in with an ordinary subdirectory, and is still refused. Every line outside the arm is byte-identical to planted.ts, so a reviewer cannot separate the two on diff shape, on size, or on anything but the convention — which is the only thing this subject measures. test/review-negative-control.test.ts proves both halves of that premise: it runs baseline, planted and clean over a table of readings and requires planted to disagree with the baseline on exactly the linked-worktree rows and clean on none of them in `ok`, and it asserts the three files agree line for line outside the arm."
+    }
+  ]
+}

@@ -41,15 +41,44 @@ is not a control.
 |---|---|---|
 | `suite-lock-redirect/planted` | planted | the redirect pattern loses its `&` alternative, so `&>` and `&>>` stop being recognised. `bun test &>/tmp/out` is then read as a *targeted* run and an unscoped full suite goes unguarded — the permissive direction, which is what makes it a defect rather than an annoyance. The doc comment one line above still claims `&>>` is covered, so the file contradicts itself inside the diff. |
 | `suite-lock-redirect/clean` | clean | a behaviour-preserving refactor of the same baseline: two locals renamed, the operand test extracted to a named function. |
+| `worktree-state-write/planted` | planted | the new arm lets a **linked worktree** through to the ok path, so the project-state generator runs with `projectRoot` set to the worktree. `CLAUDE.md` says an agent running in a worktree must never write `project-state.json`, `PROJECT-STATE.md` or `SUCCESS.md` (#296). |
+| `worktree-state-write/clean` | clean | the same change to the same arm without the break: a linked worktree gets its own outcome name instead of being lumped in with a subdirectory, and is still refused. |
+
+`worktree-state-write` is a compacted copy of the decision half of
+`lib/project-state-root.ts`, with its three filesystem readings lifted into a
+parameter so the subject is pure.
+
+**It measures something `suite-lock-redirect` cannot (#1507, CRC-A4).** The
+redirect plant is a defect in any reading — a guard goes permissive and the
+file contradicts its own comment. This one is not: a linked worktree *is* a
+real checkout of the same repository carrying the same tracked generator, and
+the planted arm says so in its own comment. It is wrong only because this
+repository wrote the rule down. A reviewer that has never read `CLAUDE.md`
+has nothing to find, which is the whole point — `CLAUDE.md` and `.claude/`
+are in `AI_REVIEW_UNTRUSTED_PATHS` and are restored from the pull request's
+base before the reviewer starts, so the conventions it is scored against are
+the base's and a branch cannot legalise its own plant.
+
+The two candidates are byte-identical outside the arm. That is asserted, not
+arranged: a reviewer able to separate them on diff shape, size, or a second
+defect would produce a reading about diff shape, and `clean` would be
+measuring precision against the wrong variable.
 
 Nothing in a staged subject says which one it is, or that it is a subject at
 all. A banner reading "planted defect below" turns a recall measurement into a
 reading-comprehension one.
 
-Both premises are **run**, not asserted. `test/review-negative-control.test.ts`
-executes all three candidates over a table of commands and requires the planted
-one to disagree with its baseline on exactly the two `&>` rows, and the clean
-one to disagree on none.
+Every premise is **run**, not asserted. `test/review-negative-control.test.ts`
+executes the three `suite-lock-redirect` candidates over a table of commands
+and requires the planted one to disagree with its baseline on exactly the two
+`&>` rows, and the clean one to disagree on none. It does the same for
+`worktree-state-write` over a table of root readings — one permission
+disagreement, on the linked-worktree row and nowhere else — and adds the two
+premises a convention break needs and a behavioural plant does not: that the
+sentence the plant contradicts is really in `CLAUDE.md`, read from the
+repository rather than quoted in the manifest, and that the candidates agree
+line for line outside the arm. Each of those is backed by a mutation row in
+that file's header.
 
 ## Running it
 

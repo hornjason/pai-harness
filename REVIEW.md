@@ -41,6 +41,35 @@ nit — see the cap below.
 | A test | **It cannot fail.** Name the input on which the code and a plausible mutant of it disagree. If you cannot, say the test is unfalsifiable rather than that it is thin. |
 | A doc, a rule file, a comment | **It lies.** A line that was true of a previous revision and is now false, or a cited path, symbol or line number that does not resolve. |
 | Config reading | **A corrupt config reads as a missing one**, and a missing one as a default. |
+| Any code, against what this repo already decided | **It does what `CLAUDE.md` or an always-loaded `.claude/rules/*.md` says not to do.** Nothing in the diff looks wrong, because nothing in it *is* wrong on its own terms — the rule is what makes it wrong, and the pull request will not restate the rule for you. Quote the sentence you are holding it against and name the file it is in; a convention break you cannot quote is an opinion. |
+
+`CLAUDE.md` and `.claude/` are restored from the pull request's base before
+you start, exactly as this file is. So the conventions you read are the ones
+the branch is measured against, and a branch cannot legalise its own change
+by editing them in the same diff. Hold the code to what you read.
+
+## On a bug fix, say what the cause was
+
+A pull request that says it fixes a bug is the one case where *the symptom is
+gone* is not evidence. The cheapest repair here is almost always the one that
+makes a report stop — widen a threshold, delete the entry, let an absent
+value through — and it is worse than no fix: a missing check is visible and a
+green one is not, so the repair certifies the regression at the moment it
+comes back. `.claude/rules/checks-must-be-able-to-fail.md` calls that the
+fifth shape and this repository has paid for it repeatedly.
+
+So on a bug fix, answer two questions and say which one you could not.
+
+- **What produced the reported state?** Name it in the code, not in the
+  narrative — the line that computed the wrong value, not "a race".
+- **Does the diff reach it, or reach the place it surfaced?** A guard added
+  at the point of observation while the producer is untouched is a finding,
+  and it is a `high` one when the producer is still reachable by another
+  caller.
+
+If the cause is genuinely out of scope, that is a legitimate answer and the
+pull request should contain it. A fix that is silent about its own cause is
+the finding.
 
 ## Do not flag
 
