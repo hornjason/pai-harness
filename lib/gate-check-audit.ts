@@ -321,11 +321,17 @@ function pathTokens(body: string): { tokens: PathToken[]; assertDepthAt: Map<num
  *
  * - nothing has asserted on the way to the warn — no `expect` whose enclosing
  *   block still contains it;
- * - nothing asserts after it either — the next thing the path meets is a
- *   `return` at or above the warn's own depth, or the end of the check.
+ * - nothing asserts after it either — the path reaches a `return` at or above
+ *   the warn's own depth, or runs out of check, without meeting an `expect`.
  *
- * Falling out of an `if` into an assertion below is therefore not a finding:
- * that path does reach the `expect` and can fail.
+ * Both halves of the second condition are implemented, and the second half is
+ * the `else { console.warn(...) }` shape that gets past the body-level
+ * predicate as well: the sibling branch's `expect` makes the body assert.
+ *
+ * Falling out of an `if` into an assertion below is NOT a finding: once the
+ * warn's own enclosing block closes, the path has merged back into the main
+ * flow and reaches whatever that flow asserts. A `return` belonging to a
+ * later, unrelated branch is that flow's, not this warn's.
  */
 export function unassertedWarnPaths(source: string): WarnReturnPath[] {
   const out: WarnReturnPath[] = [];
@@ -341,14 +347,19 @@ export function unassertedWarnPaths(source: string): WarnReturnPath[] {
       // the warn's depth that block has closed, the path has merged back into
       // the main flow, and every `return` and `expect` after that belongs to
       // the flow rather than to this warn.
-      let leaves = false;
+      // Running out of tokens IS the path leaving: nothing asserts after the
+      // warn, so it reaches the end of the check unasserted. That is the
+      // `else { console.warn(...) }` shape, which gets past both halves of
+      // the audit — the sibling branch's `expect` makes the body assert, and
+      // there is no `return` for this scan to stop on.
+      let leaves = true;
       let runningMin = warn.depth;
       for (let u = t + 1; u < tokens.length; u++) {
         const after = tokens[u]!;
         runningMin = Math.min(runningMin, after.minBefore);
-        if (runningMin < warn.depth) break;
-        if (after.kind === "expect") break;
-        if (after.kind === "return" && after.depth <= warn.depth) { leaves = true; break; }
+        if (runningMin < warn.depth) { leaves = false; break; }
+        if (after.kind === "expect") { leaves = false; break; }
+        if (after.kind === "return" && after.depth <= warn.depth) break;
       }
       if (!leaves) continue;
       out.push({

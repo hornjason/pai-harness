@@ -313,6 +313,33 @@ describe("SC-2520, SC-2521: the audit's unit is the path, not the check body", (
     expect(unassertedWarnPaths(src)).toEqual([]);
   });
 
+  test("a warn that ends the check without returning is named", () => {
+    // PR #1539's review, second round. The scan implemented only half of what
+    // it documented: a path leaves the check at a `return` OR at the end of
+    // the check, and running out of tokens was treated as "did not leave".
+    //
+    // This is the shape that gets past BOTH halves of the audit. The
+    // if-branch's `expect` makes the body assert, so the body-level predicate
+    // says nothing; the else-branch warns and simply ends, so no `return`
+    // token exists for the path-level scan to stop on. It is the #1384 defect
+    // written with an `else` instead of an early return.
+    const src = [
+      `test("a: asserts on one branch, warns on the other", () => {`,
+      `  if (a) {`,
+      `    expect(p, "m").toBe(true);`,
+      `  } else {`,
+      `    console.warn("WARN: nothing to check");`,
+      `  }`,
+      `});`,
+    ].join("\n");
+    expect(gateChecks(src)[0]!.hasAssertion, "the body does contain an assertion").toBe(true);
+    expect(checksWithoutAssertions(src), "the body-level predicate is blind here too").toEqual([]);
+    expect(unassertedWarnPaths(src).length).toBe(1);
+    expect(checksThatCannotFail(src).map(c => c.name)).toEqual([
+      "a: asserts on one branch, warns on the other",
+    ]);
+  });
+
   test("a bare tier gate is not named", () => {
     // THE OUTAGE CONTROL. `if (tier === "LIGHT") return;` opens most checks in
     // the suite. It is deliberate scoping, not a swallowed refusal, and a
