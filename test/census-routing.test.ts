@@ -74,16 +74,35 @@ import { join } from "path";
 import {
   CENSUS_TRIGGERS,
   allCensusTests,
+  censusDirsRead,
   censusTestsFor,
   ownSpecTestPath,
   parseUnifiedDiff,
+  testPopulationCensusSuites,
   type Change,
 } from "../scripts/census-routing";
 import { TRACKED_ID_PREFIXES } from "../lib/sc-ids";
 import { LINE_CITATION } from "../lib/line-citation";
+import { stripJsComments } from "../lib/strip-js-comments";
 
 const REPO = join(import.meta.dir, "..");
 const RULE = join(REPO, ".claude/rules/self-referential-tests.md");
+
+/**
+ * A routed test path as it is spelled in the rule file's section.
+ *
+ * ONE binding, read by the section comparison and by the derived-row cell
+ * check, because two spellings of "what a test path looks like" are two
+ * deciders and a mutation of either leaves the other holding the case up.
+ *
+ * The class admits `/`, and that is #1547's second flat-`test/` assumption.
+ * Written `[\w.-]+` it cannot match `test/unit/ambiguous-anchor.test.ts` at
+ * all, so routing a suite from a SUBDIRECTORY made the section comparison
+ * red for a correct change: the path was in `allCensusTests()` and
+ * unmatchable in the prose. The narrow form was not catching anything the
+ * wide one misses — a path is a path at any depth.
+ */
+const ROUTED_TEST_PATH = /test\/[\w.\/-]+\.test\.tsx?/g;
 
 // Four since #1161 added `ticked-sc-absent-symbol`, which refuses a tick
 // naming a symbol the tree does not contain — an event only a spec edit can
@@ -261,7 +280,7 @@ describe("#990: the rule file's block is the router's table", () => {
     const rest = doc.slice(at + 1);
     const end = rest.indexOf("\n## ");
     const section = end === -1 ? rest : rest.slice(0, end);
-    const named = [...new Set(section.match(/test\/[\w.-]+\.test\.tsx?/g) ?? [])].sort();
+    const named = [...new Set(section.match(ROUTED_TEST_PATH) ?? [])].sort();
     expect(named.length, "the section names no test at all").toBeGreaterThan(0);
     expect(named, "a test is named in the section that no trigger routes to").toEqual(
       [...allCensusTests()].sort(),
@@ -289,7 +308,7 @@ describe("#990: the rule file's block is the router's table", () => {
     );
     for (const t of derived) {
       expect(
-        t.derivedTarget!.match(/test\/[\w.-]+\.test\.tsx?/g) ?? [],
+        t.derivedTarget!.match(ROUTED_TEST_PATH) ?? [],
         `the ${t.id} row's table cell spells a concrete test path, which the rule file's ` +
           "section comparison would then read as a routed test",
       ).toEqual([]);
@@ -1159,6 +1178,688 @@ describe("#1515: a DA-owned session-state write routes the suites that read it",
     for (const t of STATE_CENSUS) {
       expect(allCensusTests(), `${t} is not routed by any row`).toContain(t);
       expect(existsSync(join(REPO, t)), `${t} does not exist`).toBe(true);
+    }
+  });
+});
+
+/**
+ * #1547: the question neither decider is asked is "is this list complete?"
+ *
+ * Every case above this one is about a row that exists. The two cases in
+ * *"the rule file's block is the router's table"* compare `CENSUS_TRIGGERS`
+ * to the rendered prose in both directions — and both directions are about
+ * AGREEMENT BETWEEN TWO DOCUMENTS. A census suite absent from both leaves
+ * them in perfect agreement and the suite green. Two deciders answering the
+ * same question, which is `.claude/rules/checks-must-be-able-to-fail.md`'s
+ * fourth shape, and it cost three agents one CI round each in a single day:
+ *
+ *   #1286 / PR #1537  added a test file, ran everything the router printed,
+ *                     shipped a red `test-shard (3)` — `scratch-cleanup`.
+ *   #1540 / PR #1546  changed `config/prove-evidence.schema.json`; the router
+ *                     named no row for it at all, and the second consumer was
+ *                     found by grepping.
+ *
+ * ## How a census-style suite is identified, and why that shape
+ *
+ * `censusDirsRead` derives it: a suite ENUMERATES a directory resolved from
+ * its own repo-root binding. A set of files is the one input no import edge
+ * expresses and no diff contains, which is exactly why
+ * `scripts/select-affected-tests.ts` cannot reach these and this router
+ * exists. Reading a single NAMED file from the root is deliberately not
+ * enough — most of `test/` does that, and a router that names everything is
+ * one nobody runs.
+ *
+ * ## What this check is scoped to, and the numbers behind the scoping
+ *
+ * The population is the suites that enumerate `test/`, held against the row
+ * that declares itself the router for adding a file there. Completeness is
+ * only well defined against a row that names an event.
+ *
+ * The general form — *every path class a census suite reads is named by some
+ * row* — was derived and REJECTED on measurement, not assumed away. Over the
+ * 610 suites under `test/`, `censusDirsRead` yields **43 (suite, directory)
+ * pairs across 14 directories**, and requiring a change in D to route every
+ * suite that enumerates D leaves **42 of the 43 unrouted**. Satisfying it
+ * means firing census suites on substantially every diff to `lib/`,
+ * `scripts/`, `test/` and `workflows/` — the "router that names more than it
+ * has to" the `new-spec` and `spec-own-test` rows above are each explicitly
+ * scoped to avoid. The crude form fails the same way: of those 14
+ * directories, an ordinary edit fires any row in only **4**.
+ *
+ * Both figures were RE-MEASURED after the recursion fix, and the first
+ * reading of them was wrong in a way worth recording. It reported "37 of 44
+ * unrouted" for this property, but what it had actually counted was suites
+ * absent from `allCensusTests()` — membership in ANY row, not "a change in D
+ * routes S". Two different questions, one number, and the prose claimed the
+ * stricter one. The scan was also top-level only, so it never saw `test/`'s
+ * subdirectories at all.
+ *
+ * So the second direction is routed EXPLICITLY — the `config-registry` row —
+ * and this is the sentence saying so, because "we routed the one path we
+ * noticed" is how the first omission happened. Both numbers and the full
+ * sweep are in `reference/self-referential-tests-worked-instances.md`.
+ *
+ * ## What was broken to prove it, run and counted
+ *
+ * Baseline read first, before the predicate existed: `bun test
+ * test/census-routing.test.ts` was **43 pass, 0 fail**.
+ *
+ * The battery was run TWICE: once on the first cut, and again after the AI
+ * review on PR #1556 found that `testPopulationCensusSuites` read only the
+ * top level of `test/`. Both rounds are kept. The first round's wrong
+ * predictions are left standing — a row that matches once the number has
+ * been edited is not a row anybody can check.
+ *
+ * ### Round 1, on the first cut (52 cases)
+ *
+ * | Row | Predicted | Measured |
+ * |---|---|---|
+ * | **baseline** | 52 pass, 0 fail | **52 pass, 0 fail** |
+ * | the three suites removed from `new-test-file`, table reverted | 2: W1, W3 | **2 of 52**, the two named |
+ * | a census-style suite PLANTED at the top level | 1: W1 | **1 of 52**, the one named |
+ * | the `config-registry` row deleted, table reverted | 3: W4, T1, T2 | **1 of 52**: W4 |
+ * | the argument reader replaced by `[^,)]+` | 2: D1, W1 | **3 of 52**: W2, X1, D1 |
+ * | the monotone exclusions emptied | 3 | **1 of 52**: W1 |
+ *
+ * **Three of those five predictions were wrong.** The config row came back
+ * LOW for the reason #1306's rows 3 and 4 did, one table over: the mutation
+ * reverts the rendered table in the same breath, so T1 and T2 agree again
+ * and only the behavioural case is left. The exclusions row came back LOW
+ * because X1 is satisfied by an EMPTY list — it guards an exclusion that
+ * stopped applying, not the decision to have none.
+ *
+ * The truncating-reader row came back HIGH, and that one is the lesson. It
+ * does not make W1 red at all: it SHRINKS the population until the survivors
+ * happen to be routed, so the completeness case goes green having witnessed
+ * nothing. What reports it is W2 and X1 — the MEMBERSHIP cases. This
+ * instrument fails by going quiet, and a verdict case cannot catch a quiet
+ * instrument.
+ *
+ * ### Round 2, after the recursion fix (54 cases)
+ *
+ * Every count AND membership below was predicted before the battery ran, and
+ * the baseline row was read first.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 54 pass, 0 fail | **54 pass, 0 fail** | — |
+ * | the four suites removed from `new-test-file`, table reverted — the genuinely pre-#1547 router | 2: W1, W3 | **2 of 54**, the two named | `{path: "test/x.test.ts", isNew: true}`: the original routes six suites, the mutant routes two |
+ * | a census suite PLANTED at `test/zz-planted-census.test.ts` | 1: W1 | **1 of 54**: W1, **naming the planted file** | the planted file: the population is 8 suites, the mutant's 9, and the ninth is in no row |
+ * | a census suite PLANTED at `test/unit/zz-planted-census.test.ts` | 1: W1 | **1 of 54**: W1, **naming the planted file** | the same file one directory down |
+ * | the SAME planted subdirectory file, with the walk reverted to a flat `readdirSync` | 2: W2, D2, and W1 does NOT name it | **2 of 54**: W2, D2, and the planted file appears nowhere in the output | the planted file: the recursive walk derives it, the flat one cannot see it at all |
+ * | the `config-registry` row deleted, table reverted | 1: W4 | **1 of 54**: W4 | `{path: "config/check-registry.json"}`: the original routes two suites, the mutant nothing |
+ * | the argument reader replaced by `[^,)]+` | 4: W2, D2, X1, D1 | **4 of 54**, the four named | `test/sc-id-namespace.test.ts`'s own source: the original reads `test`, the mutant reads `join(REPO` |
+ * | the monotone exclusions emptied | 1: W1 | **1 of 54**: W1 | the live tree: three suites whose tree scan is a lower bound are demanded of a row that cannot move them |
+ * | the walk reverted to a flat `readdirSync`, nothing planted | 2: W2, D2 | **2 of 54**, the two named | `test/unit/ambiguous-anchor.test.ts`: the recursive walk derives it, the flat one does not |
+ *
+ * **Nine of nine held this round, counts and membership.**
+ *
+ * ### Round 3, after the AI review on PR #1556 found the keyword regex (57 cases)
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 57 pass, 0 fail | **57 pass, 0 fail** | — |
+ * | `repoRootIdents(code)` reverted to `repoRootIdents(src)` | 1: D5 | **1 of 57**: D5 | a root bound only inside a string literal: the original reads no root, the mutant reads one and derives `[""]` |
+ * | `blankLiterals` dropped from the code view | 4: W1, C1, D4, D5 | **3 of 57** first, **4 of 57** after D4 was repaired | this test file's own quoted fixtures: the original reads them as text, the mutant as code |
+ * | the walk reverted to a flat `readdirSync`, nothing planted | 2: W2, D2 | **2 of 57**, the two named | unchanged from round 2 — the recursion evidence survives the refactor |
+ *
+ * **Three of four held. The wrong one is the useful one.** Row 3 was
+ * predicted at 4 and measured 3: D4 asserted `src.includes("blankLiterals")`
+ * over the RAW file, and the docblock above the call contains that word, so
+ * deleting the call left the check green. A structural assertion satisfied
+ * by a comment saying the thing was done is #1322's shape, inside the very
+ * block that argues for one decider. D4 now reads the comment-stripped
+ * source and matches the CALL, with a control asserting nothing before the
+ * function satisfies it; re-measured, the row is 4 as predicted.
+ *
+ * Both defects this round were LATENT on this tree: the population is 9
+ * suites before and after, with the same members. The keyword case has no
+ * current member — no suite in `test/` carries a regex literal after a
+ * keyword ahead of its census read — so unlike round 2 this is "a gap with
+ * no member", and saying which it is was the distinction round 2 turned on.
+ *
+ * ### Round 4, after the review found the THIRD site reading the wrong view (58 cases)
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 58 pass, 0 fail | **58 pass, 0 fail** | — |
+ * | `repoRootIdents(code)` reverted to `(src)` | 2: D4, D5 | **2 of 58**, the two named | a root bound only inside a string literal |
+ * | `firstArgument(code, src,` reverted to `(src, src,` | 2: D4, D6 | **2 of 58**, the two named | `join(REPO, "weird(dir")`: the masked count resolves it, the literal-bearing count desyncs |
+ * | the enumeration loop scans `src` instead of `code` | 3: D4, C1, W1 | **1 of 58**: D4 only | this file's quoted fixtures |
+ *
+ * **Three of four held. Row 4 was wrong, and why it was wrong is the whole
+ * case for the structural rule.** C1 and W1 stayed green because the OTHER
+ * two sites were still masked: with `repoRootIdents` reading the blanked
+ * view no quoted fixture can bind a root, and with `firstArgument` counting
+ * over it the brackets inside a fixture string are blank, so the argument
+ * never balances and nothing resolves. Two correct sites cover behaviourally
+ * for a third that has regressed.
+ *
+ * That is the `two deciders` shape read from the other end, and it is why
+ * `src` being read-only inside `censusDirsRead` is now ASSERTED rather than
+ * remembered. Three rounds of review found the same defect in three
+ * different places; a behavioural suite could only ever have caught the last
+ * one standing.
+ *
+ * **Rows 4 and 5 are the pair, and only the pair is evidence.** The same
+ * planted file sits at `test/unit/zz-planted-census.test.ts` in both. With
+ * the recursive walk the completeness case is RED and names it; with the
+ * flat walk the completeness case is GREEN and the file's name appears
+ * nowhere in the run. A single red row would not have separated the
+ * recursion from anything else that might have reddened it.
+ *
+ * Row 3 is the one the issue asks for by name and the only one that measures
+ * the DERIVATION rather than a row: a hand-maintained list of census suites
+ * is green under it, because the planted file is in nobody's list.
+ *
+ * None of the mutations is left in the tree; all were run and reverted, and
+ * the three files were confirmed byte-identical to the measured source
+ * afterwards.
+ *
+ * Case labels, since four of the nine are controls:
+ *
+ *   W1  "every suite that censuses the test population is routed by the row …"
+ *   W2  "the suites this issue reported are each in the derived population"
+ *   W3  "adding a test file routes the suite that caught #1286"
+ *   W4  "an edit to a config/ registry routes the suites that read it"
+ *   D1  "a directory bound to an identifier is read, not only an inline join"
+ *   D2  "the population reaches suites in subdirectories of test/"
+ *   X1  "every monotone exclusion is still in the population"
+ *   C1  "a fixture-driven suite is not in the population"
+ *   C2  "a change outside config/ does not route the registry suites"
+ *   C3  "the walk admits no fixture project's own test files"
+ */
+describe("#1547: the routed set is complete over the census of the test population", () => {
+  /**
+   * Suites that enumerate `test/` and CANNOT be reddened by adding a file to
+   * it, with the reason per suite — the finding this issue asks for stated
+   * rather than suppressed.
+   *
+   * All three share one structural reason rather than three opinions: their
+   * assertion over the population is a LOWER BOUND, so a new file moves it in
+   * the safe direction and only a DELETION can refuse. That is a property of
+   * the assertion, checkable by reading it, not a measurement that ages.
+   */
+  const MONOTONE_OVER_TEST_POPULATION: Record<string, string> = {
+    "test/ai-review-surface-census.test.ts":
+      "its two tree cases are `titles present at the base commit and absent now` and `the " +
+      "surface is strictly larger than it was` — both refuse a REMOVAL. A new file only adds " +
+      "titles and only raises the count, so no addition can redden it.",
+    "test/sc-coverage-claims.test.ts":
+      "its scan of test/ is the vacuity guard `total coverage claims > 150`, a lower bound. " +
+      "The input that reddens this suite is a criterion id mentioned without a claim form, " +
+      "which is a property of the id and not of the population.",
+    "test/scaffold-generators.test.ts":
+      "its scan of test/ asserts `at least 3 test files reference ProjectScan`, a lower " +
+      "bound. Adding a file can only raise that count; the suite's subject is the generator " +
+      "module, and the scan is a coverage floor over it.",
+  };
+
+  /** Repo-relative paths the `new-test-file` row routes for a new test file. */
+  const routedByNewTestFile = () =>
+    censusTestsFor(
+      [change({ path: "test/zz-a-newly-added-suite.test.ts", isNew: true, added: ["x"] })],
+      p => existsSync(join(REPO, p)),
+    ).tests;
+
+  // W1. THE WITNESS, and the whole issue. Red before the fix naming
+  // `scratch-cleanup`, `consumer-no-rebuild-delegation` and
+  // `ai-review-runner-shell-parity` — the first reported, the other two found
+  // by sweeping the derived population.
+  test("every suite that censuses the test population is routed by the row for adding one", () => {
+    const population = testPopulationCensusSuites(REPO);
+    const routed = routedByNewTestFile();
+    const unrouted = population.filter(
+      p => !routed.includes(p) && !(p in MONOTONE_OVER_TEST_POPULATION),
+    );
+    expect(
+      unrouted,
+      "these suites read the test/ population from the tree, so adding a test file can " +
+        "redden them, and no CENSUS_TRIGGERS row routes them for that event — which is " +
+        "#1286 exactly. Either add the suite to the `new-test-file` row in " +
+        "scripts/census-routing.ts (and regenerate the table in " +
+        ".claude/rules/self-referential-tests.md), or — if adding a file cannot redden it — " +
+        "add it to MONOTONE_OVER_TEST_POPULATION here with the assertion that makes it " +
+        `monotone:\n${unrouted.join("\n")}`,
+    ).toEqual([]);
+  });
+
+  // Non-vacuity for W1, which compares two lists and is satisfied by an empty
+  // population. The derivation silently returning nothing is the failure mode
+  // a derived list has and a hand list does not.
+  test("the derived population is real, and larger than the exclusions", () => {
+    const population = testPopulationCensusSuites(REPO);
+    expect(
+      population.length,
+      "no suite in test/ was derived as censusing the test population — censusDirsRead has " +
+        "stopped reading, and W1 above is comparing two empty lists",
+    ).toBeGreaterThan(Object.keys(MONOTONE_OVER_TEST_POPULATION).length);
+    expect(
+      routedByNewTestFile().length,
+      "the new-test-file row routes nothing, so W1 is vacuous from the other side",
+    ).toBeGreaterThan(0);
+  });
+
+  // W2. The suites this issue, its comment and the AI review name, asserted
+  // to be IN the derived population. Without this, a predicate that happens
+  // to exclude them makes W1 green while the reported defect stands — which
+  // is exactly how the non-recursive walk below hid one of them.
+  test("the suites this issue reported are each in the derived population", () => {
+    const population = testPopulationCensusSuites(REPO);
+    for (const t of [
+      "test/scratch-cleanup.test.ts",
+      "test/consumer-no-rebuild-delegation.test.ts",
+      "test/ai-review-runner-shell-parity.test.ts",
+      "test/unit/ambiguous-anchor.test.ts",
+    ]) {
+      expect(
+        population,
+        `${t} reads the test/ population from the tree and the derived predicate does not ` +
+          "see it, so this check cannot catch the defect it was written for",
+      ).toContain(t);
+    }
+  });
+
+  // D2. The walk's depth, which the first cut of this check got wrong.
+  //
+  // `testPopulationCensusSuites` read only the top level of `test/`, so every
+  // suite under `test/unit/` was invisible to the population and the
+  // completeness case went GREEN HAVING WITNESSED NOTHING for all of them.
+  // The same shape as the `[^,)]+` truncation D1 guards — the population
+  // silently shrinks until the survivors happen to be routed — arriving
+  // through depth instead of parsing.
+  //
+  // Measured on this tree before the fix: 540 `.test.ts` at the top level and
+  // 70 below it, of which exactly ONE satisfies the predicate. The prediction
+  // was zero and is recorded wrong: a gap with a live member is a different
+  // finding from a gap with none, and this one has a member.
+  //
+  // The ROUTING side was never blind — `new-test-file`'s `fires` is
+  // `/^test\/.*\.test\.tsx?$/` and `.*` crosses a slash — so only the
+  // derivation needed fixing. That asymmetry is why the defect was invisible:
+  // the router would have run the suite, and the check that is supposed to
+  // notice the suite was missing could not see it to ask.
+  test("the population reaches suites in subdirectories of test/", () => {
+    const population = testPopulationCensusSuites(REPO);
+    const nested = population.filter(p => p.slice("test/".length).includes("/"));
+    expect(
+      nested,
+      "no suite below the top level of test/ is in the population. test/unit/ holds 67 " +
+        "suites and test/unit/ambiguous-anchor.test.ts scans test/ recursively for " +
+        "structuralCut call sites, so the walk in testPopulationCensusSuites has stopped " +
+        "descending and every census suite under a subdirectory is unseen",
+    ).not.toEqual([]);
+    expect(
+      nested,
+      "the live member this case was written for is no longer derived",
+    ).toContain("test/unit/ambiguous-anchor.test.ts");
+  });
+
+  // C3. CONTROL on the widening a recursive walk buys. `test/fixtures/` holds
+  // whole fixture PROJECTS, three of which carry their own `*.test.ts` under
+  // a nested `test/` directory. Those were never candidates: they are input
+  // data for a scaffold fixture, not suites this repository runs, and a
+  // population that admits one would demand the router name it.
+  //
+  // Asserted as MEMBERSHIP, not as a total. A count is satisfied by any
+  // substitution that preserves it, and the whole point of the recursion is
+  // that the population grew.
+  test("the walk admits no fixture project's own test files", () => {
+    const population = testPopulationCensusSuites(REPO);
+    const fixtures = population.filter(p => p.startsWith("test/fixtures/"));
+    expect(
+      fixtures,
+      "a fixture project's own suite reached the population. These live under " +
+        "test/fixtures/<project>/test/ and are data, not suites this repository runs, so " +
+        "the router must not be asked to name them",
+      ).toEqual([]);
+    // Non-vacuity: those files really are on disk and really are `.test.ts`,
+    // so the empty list above is a refusal and not a walk that found nothing.
+    expect(
+      existsSync(join(REPO, "test/fixtures/golden-project/test/index.test.ts")),
+      "the fixture suite this control is about was moved, so it guards nothing",
+    ).toBe(true);
+  });
+
+  // W3. The event, end to end, at the router's own interface — the thing an
+  // agent running `bun scripts/census-routing.ts` actually gets.
+  test("adding a test file routes the suite that caught #1286", () => {
+    const routed = routedByNewTestFile();
+    expect(
+      routed,
+      "adding a test file does not route test/scratch-cleanup.test.ts — this is #1286 " +
+        "again, and PR #1537 shipped a red shard on exactly this diff",
+    ).toContain("test/scratch-cleanup.test.ts");
+    expect(
+      routed,
+      "adding a test file does not route test/consumer-no-rebuild-delegation.test.ts, " +
+        "whose SCANNED_FILES list refuses any consumer-* file on disk that it lacks",
+    ).toContain("test/consumer-no-rebuild-delegation.test.ts");
+  });
+
+  // X1. The stale-carve-out guard, the same discipline
+  // `CARVED_IDENT_DIVERGENCES` applies in test/scratch-cleanup.test.ts: an
+  // exclusion nobody needs is a hole nobody can see.
+  test("every monotone exclusion is still in the population, and says why", () => {
+    const population = testPopulationCensusSuites(REPO);
+    const stale = Object.keys(MONOTONE_OVER_TEST_POPULATION).filter(
+      f => !population.includes(f),
+    );
+    expect(
+      stale,
+      "this suite no longer censuses the test population, so its exclusion exempts nothing " +
+        `and must be deleted rather than left standing:\n${stale.join("\n")}`,
+    ).toEqual([]);
+    for (const [f, why] of Object.entries(MONOTONE_OVER_TEST_POPULATION)) {
+      expect(existsSync(join(REPO, f)), `${f} was renamed away`).toBe(true);
+      // The WARN_TIER_CHECKS bar. A reason short enough to be a label is a
+      // reason nobody had to establish.
+      expect(why.length, `the exclusion reason for ${f} is too short to be one`).toBeGreaterThan(
+        80,
+      );
+    }
+  });
+
+  // D1. The instrument's control, and the mutation that would have made this
+  // whole check green while witnessing nothing. `readdirSync(join(REPO,
+  // "test"))` read with a `[^,)]+` argument capture truncates to `join(REPO`
+  // and resolves to nothing — which drops every suite that does not spell its
+  // directory inline, including two of the three this issue is about.
+  test("a directory bound to an identifier is read, not only an inline join", () => {
+    const inline = 'const REPO = join(import.meta.dir, "..");\nreaddirSync(join(REPO, "test"));\n';
+    const bound =
+      'const REPO = join(import.meta.dir, "..");\nconst TEST_DIR = join(REPO, "test");\n' +
+      "readdirSync(TEST_DIR);\n";
+    expect(censusDirsRead(inline), "an inline join is not resolved").toContain("test");
+    expect(censusDirsRead(bound), "a directory bound to an identifier is not resolved").toContain(
+      "test",
+    );
+    // The repo root itself, reached through a navigation literal, is the root
+    // and not a directory named `..`.
+    expect(
+      censusDirsRead('const R = join(import.meta.dir, "..");\nreaddirSync(R);\n'),
+      "a navigation literal was read as a directory name",
+    ).toEqual([""]);
+  });
+
+  // D3. The regex-vs-division heuristic, and the second decider this check
+  // had no business owning. Found by the AI review on PR #1556.
+  //
+  // A `/` after a keyword — `return /["']/.test(c)` — opens a regex, and a
+  // heuristic that looks only at the single previous CHARACTER sees `n` and
+  // calls it division. The quotes inside the pattern then go live, the `"`
+  // opens a string that runs to the next `"` anywhere below, and every
+  // enumeration in between is read as quoted text. The suite drops out of the
+  // population and W1 cannot flag what it cannot see.
+  //
+  // The first cut's docblock argued this direction was SAFE — "treating a
+  // regex as division leaves its quotes live and can only ADD files to the
+  // population". That is recorded wrong here rather than deleted: it holds
+  // only for a pattern with balanced quotes. `["']` carries one of each, so
+  // the miscount REMOVES files, which is the silent direction.
+  //
+  // `lib/strip-js-comments.ts` already decides this, keyword-aware, and is
+  // already imported by `censusDirsRead` — #905 is the issue that put the
+  // keyword set there. So the fix is not a wider local heuristic; it is
+  // having one decider instead of two, which is the shape this whole block
+  // is about.
+  test("a regex literal after a keyword does not swallow the census below it", () => {
+    const fixture =
+      'function isQuoteChar(c) { return /["\']/.test(c); }\n' +
+      'const REPO = join(import.meta.dir, "..");\n' +
+      'readdirSync(join(REPO, "test"));\n';
+    expect(
+      censusDirsRead(fixture),
+      "a regex after `return` was read as division, so its quote opened a string " +
+        "that swallowed the enumeration below it",
+    ).toContain("test");
+
+    // Every keyword the shared decider accepts, derived from its own source
+    // rather than hand-listed — a list written here is a second decider in
+    // exactly the way this case exists to refuse, and it goes stale silently
+    // when the set below it grows.
+    const lib = readFileSync(join(REPO, "lib", "strip-js-comments.ts"), "utf-8");
+    const set = lib.match(/REGEX_ALLOWED_AFTER_WORD = new Set\(\[([\s\S]*?)\]\)/);
+    expect(set, "the shared keyword set could not be read, so this case tests nothing").not.toBe(
+      null,
+    );
+    const keywords = [...(set![1] ?? "").matchAll(/"([a-z]+)"/g)].map(m => m[1]!);
+    expect(keywords.length, "no keywords were read out of the shared set").toBeGreaterThan(10);
+    const missed = keywords.filter(
+      k =>
+        !censusDirsRead(
+          `const x = ${k} /["']/.test(c);\n` +
+            'const REPO = join(import.meta.dir, "..");\n' +
+            'readdirSync(join(REPO, "test"));\n',
+        ).includes("test"),
+    );
+    expect(missed, "a regex after these keywords was misread as division").toEqual([]);
+
+    // CONTROL, and the reason the heuristic exists at all: a real division
+    // must NOT be read as a regex. `a / b` followed by an enumeration still
+    // resolves, and a lone `/` does not consume the rest of the file.
+    expect(
+      censusDirsRead(
+        'const ratio = width / height;\nconst REPO = join(import.meta.dir, "..");\n' +
+          'readdirSync(join(REPO, "test"));\n',
+      ),
+      "a division was read as a regex literal and consumed the enumeration",
+    ).toContain("test");
+  });
+
+  // D4. ONE DECIDER. D3 above is behavioural and a local heuristic wide
+  // enough to pass it would satisfy every case in this file — two deciders
+  // that agree, which no behavioural test can tell apart
+  // (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). So this
+  // asserts the structural property instead: the router owns no
+  // regex-vs-division rule of its own.
+  // Read with COMMENTS STRIPPED, and that is the whole of what round 3 of
+  // the battery taught. The first cut asserted `src.includes("blankLiterals")`
+  // over the raw file, and the docblock above the call says the word — so
+  // deleting the call left the assertion green. A check satisfied by a
+  // comment saying the thing was done is #1322's shape, and the prediction
+  // for that battery row was 4 fails against a measured 3. Recorded wrong
+  // rather than edited; the missing row is what found this.
+  test("the router carries no second regex-vs-division heuristic", () => {
+    const raw = readFileSync(join(REPO, "scripts", "census-routing.ts"), "utf-8");
+    const src = stripJsComments(raw);
+    expect(
+      /stripJsComments\(\s*source\s*,\s*\{\s*blankLiterals:\s*true\s*\}\s*\)/.test(src),
+      "censusDirsRead no longer masks literals through lib/strip-js-comments.ts",
+    ).toBe(true);
+    // The control on the line above: it must be the CALL that satisfies it,
+    // not the prose about the call.
+    expect(
+      /stripJsComments\(\s*source\s*,\s*\{\s*blankLiterals:\s*true\s*\}\s*\)/.test(
+        raw.slice(0, raw.indexOf("export function censusDirsRead")),
+      ),
+      "the assertion above is being satisfied by text before the function",
+    ).toBe(false);
+    const local = ["REGEX_MAY_FOLLOW", "function stringMask"].filter(s => src.includes(s));
+    expect(
+      local,
+      "a local literal/regex heuristic is back in scripts/census-routing.ts — " +
+        "lib/strip-js-comments.ts is the one decider, and a second one that agrees " +
+        "with it today survives any mutation of it",
+    ).toEqual([]);
+
+    // THE RULE THAT WOULD HAVE CAUGHT ALL THREE. Three separate rounds of
+    // review found the same defect — a site SCANNING the literal-bearing
+    // view when it wanted the masked one — in three different places
+    // (`stringMask`, `repoRootIdents`, `firstArgument`). Fixing each one
+    // individually leaves the fourth to be found by a fourth review, so the
+    // property is asserted instead of remembered:
+    //
+    //   inside `censusDirsRead`, `src` is READ FROM and never SCANNED.
+    //
+    // Every match, count and traversal goes over `code`; `src` appears only
+    // in its own declaration and in `.slice(…)`, which is the one operation
+    // that needs the literals intact.
+    const body = src.slice(
+      src.indexOf("export function censusDirsRead"),
+      src.indexOf("\n}", src.indexOf("export function censusDirsRead")),
+    );
+    expect(body.length, "the function body could not be located, so this asserts nothing").
+      toBeGreaterThan(200);
+    const scanned = [...body.matchAll(/\bsrc\b\s*(\.\w+|\))?/g)]
+      .map(m => m[0].trim())
+      .filter(use => use !== "src.slice" && use !== "src");
+    expect(
+      scanned,
+      "`src` is being scanned rather than sliced inside censusDirsRead — the " +
+        "literal-bearing view counts a bracket or a quote inside a string as code, " +
+        "which is the defect three separate review rounds found in three places",
+    ).toEqual([]);
+    expect(
+      /firstArgument\(\s*code\s*,\s*src\s*,/.test(body),
+      "firstArgument is no longer counting over the masked view",
+    ).toBe(true);
+  });
+
+  // D5. The same blindness, at the one site the D3 fix did not cover —
+  // found by applying the round-2 instruction ("check whether the same
+  // blindness is anywhere else") to the round-3 fix rather than to the
+  // original code.
+  //
+  // `censusDirsRead` resolves which identifiers name the repo root through
+  // `repoRootIdents`, and that was still reading the view with literals
+  // INTACT. `import.meta.dir` is a code token, so it survives inside a
+  // quoted fixture, and a root could be manufactured out of string contents
+  // alone. Measured before the fix: the source below returned `[""]` — a
+  // census over the repository root asserted by a file that enumerates a
+  // string.
+  //
+  // That is the ADDING direction, which is the loud one: it would have put
+  // a file into the population, W1 would have demanded the router name it,
+  // and somebody would have gone looking. Worth fixing anyway — a predicate
+  // that is wrong in the safe direction is still wrong, and C1 is the only
+  // thing standing between this shape and the population.
+  test("a repo root bound only inside a string literal is not a root", () => {
+    const fixture =
+      `const FIXTURE = 'const ROOT = join(import.meta.dir, "..");';\n` + "readdirSync(FIXTURE);\n";
+    // The fixture's own premise, asserted rather than assumed: it really
+    // does carry a root binding inside a literal and an enumeration outside
+    // one. A fixture that lost either through escaping would pass by
+    // testing nothing.
+    expect(/'[^']*import\.meta\.dir/.test(fixture), "the fixture lost its quoted root").toBe(true);
+    expect(/\nreaddirSync\(/.test(fixture), "the fixture lost its enumeration").toBe(true);
+    expect(
+      censusDirsRead(fixture),
+      "an identifier was read as the repo root because a STRING mentioned " +
+        "import.meta.dir, so quoted text manufactured a census",
+    ).toEqual([]);
+  });
+
+  // D6. The third site reading the wrong view, found by the AI review on
+  // PR #1556 after D3 and D5 fixed the other two.
+  //
+  // `firstArgument` balances brackets to find where the enumeration's first
+  // argument ends. It was counting them over the literal-bearing view, so a
+  // bracket inside a STRING counts as structure: the depth never returns to
+  // zero at the statement's real end, the scan runs on into later source,
+  // and the slice is garbage that `joinedDir` cannot match. The call then
+  // resolves to nothing and the suite is invisible to W1 — the same quiet
+  // false negative as the `[^,)]+` truncation D1 guards, arriving through
+  // bracket counting instead.
+  //
+  // Measured before the fix, and the asymmetry is the tell that the scan was
+  // unreliable rather than merely strict: `"weird(dir"` gave `[]` while
+  // `"weird)dir"` happened to give the right answer.
+  //
+  // SCOPE, measured rather than assumed: the desync costs the ONE call, not
+  // the file. Each match is scanned from its own opening bracket, so a
+  // bracket literal above a real census read does not hide it — the last
+  // assertion holds that, because "the whole file goes dark" and "one call
+  // goes dark" are different defects and only one of them is this.
+  test("a bracket inside a string literal is not counted as structure", () => {
+    const census = (seg: string) =>
+      censusDirsRead(`const REPO = join(import.meta.dir, "..");\nreaddirSync(join(REPO, "${seg}"));\n`);
+    expect(census("test"), "the balanced control stopped resolving").toEqual(["test"]);
+    expect(
+      census("weird(dir"),
+      "an unmatched ( inside a path segment desynced the bracket scan, so a " +
+        "genuine enumeration resolved to nothing",
+    ).toEqual(["weird(dir"]);
+    expect(census("weird)dir"), "an unmatched ) inside a path segment").toEqual(["weird)dir"]);
+    expect(census("a[b"), "an unmatched [ inside a path segment").toEqual(["a[b"]);
+    expect(census("a{b"), "an unmatched { inside a path segment").toEqual(["a{b"]);
+    // The blast radius, asserted: a poisoned call above a real one.
+    expect(
+      censusDirsRead(
+        'const REPO = join(import.meta.dir, "..");\n' +
+          'readdirSync(join(REPO, "weird(dir"));\nreaddirSync(join(REPO, "test"));\n',
+      ),
+      "a bracket literal in one call hid a census read below it",
+    ).toContain("test");
+  });
+
+  // C1. CONTROL. Without it the predicate could return every file in test/,
+  // W1 would demand the router name all of them, and the remedy would be the
+  // "router that names everything" this table is built to avoid.
+  test("a fixture-driven suite is not in the population", () => {
+    const fixture =
+      'const root = mkdtempSync(join(tmpdir(), "rg-"));\nreaddirSync(join(root, "test"));\n';
+    expect(
+      censusDirsRead(fixture),
+      "a scan of a mkdtemp fixture was read as a census over the repository",
+    ).toEqual([]);
+    // And the live tree: most of test/ reads a named file from the root and
+    // is NOT a census. A population equal to the directory is a predicate
+    // that decided nothing.
+    const all = readFileSync(join(REPO, "test", "census-routing.test.ts"), "utf-8");
+    expect(
+      censusDirsRead(all),
+      "this file reads one named document and enumerates nothing, so it is not a census",
+    ).toEqual([]);
+  });
+
+  // W4. The second direction, routed explicitly. Both targets were MEASURED
+  // rather than grepped: `config/check-registry.json` with one entry removed
+  // reddens `check-registry` (3 cases, "#339: every named check resolves"),
+  // and `config/matcher-registry.json` with its last element spliced off
+  // reddens `matcher-registry-parity` and nothing else. An earlier mutation
+  // that `delete`d an array index reported four files and was discarded — it
+  // left a `null` hole, so it measured a corrupt registry rather than a
+  // moved agreement.
+  test("an edit to a config/ registry routes the suites that read it", () => {
+    const { tests, fired } = censusTestsFor([
+      change({ path: "config/check-registry.json", added: ['    "zz-check": {}'] }),
+    ]);
+    for (const t of ["test/check-registry.test.ts", "test/matcher-registry-parity.test.ts"]) {
+      expect(
+        tests,
+        `an edit to config/ did not route ${t} — this is #1540's comment again, where the ` +
+          "router named no row at all for a config/ schema edit",
+      ).toContain(t);
+    }
+    expect(
+      fired.map(f => f.trigger.id),
+      "the config-registry row did not fire on the diff it was written for",
+    ).toContain("config-registry");
+    // The EDIT is the case. A newly added config/ file already picked up
+    // `scaffold-conformity` and `package-closure` incidentally through
+    // `new-file`, and neither is about registry agreement — so a row scoped
+    // to `isNew` would leave the reported defect exactly where it was.
+    expect(
+      censusTestsFor([change({ path: "config/spec-policies.json", added: ["x"] })]).fired.map(
+        f => f.trigger.id,
+      ),
+      "the row only fires on a new file, which is not the case this issue reports",
+    ).toContain("config-registry");
+  });
+
+  // C2. CONTROL against a row that fires on everything, and against the
+  // substring reading: `lib/config-loader.ts` is not `config/`.
+  test("a change outside config/ does not route the registry suites", () => {
+    for (const path of ["lib/config-loader.ts", "test/config-single-layout.test.ts"]) {
+      const { tests, fired } = censusTestsFor([change({ path, added: ["export const a = 1;"] })]);
+      expect(
+        fired.map(f => f.trigger.id),
+        `${path} fired the config-registry row, but it is not in config/`,
+      ).not.toContain("config-registry");
+      expect(tests, `${path} routed the registry census`).not.toContain(
+        "test/check-registry.test.ts",
+      );
     }
   });
 });

@@ -129,13 +129,14 @@ events.** Why a `--name-only` router cannot tell them apart:
 | added or renamed a file | `test/scaffold-conformity.test.ts` `test/package-closure.test.ts` |
 | added a doc, or edited one containing file:line citations | `test/line-citation-ratchet.test.ts` `test/agents-md-refs.test.ts` |
 | added or edited CLAUDE.md, AGENTS.md or a .claude/rules/ doc | `test/rule-provenance.test.ts` `test/instruction-surface-budget.test.ts` `test/harness-fixed-point.test.ts` |
-| added a test file | `test/sc-id-namespace.test.ts` `test/scratch-paths-unique.test.ts` |
+| added a test file | `test/sc-id-namespace.test.ts` `test/scratch-paths-unique.test.ts` `test/scratch-cleanup.test.ts` `test/consumer-no-rebuild-delegation.test.ts` `test/ai-review-runner-shell-parity.test.ts` `test/unit/ambiguous-anchor.test.ts` |
 | touched specs/ | `test/agents-md-spec-listing.test.ts` `test/spec-requirements.test.ts` |
 | added a specs/ file | `test/audit-specs.test.ts` `test/scanner.test.ts` |
 | ticked or unticked an SC (ran sync-sc-status) | `test/sc-binding-split.test.ts` `test/ticked-sc-cover.test.ts` `test/behavioral-sc-ratchet.test.ts` `test/ticked-sc-absent-symbol.test.ts` |
 | touched a specs/ file that has a suite named after it | the suite named after it: `test/` + its basename lowercased + `.test.ts` |
 | touched gates/, hooks/ or the scaffold | `test/gate-contracts.test.ts` `test/scaffold-ownership.test.ts` `test/hook-traceability.test.ts` |
 | changed a generated workflow, or the scaffold source that emits one | `test/ai-review-runner-shell-parity.test.ts` `test/action-pin-parity.test.ts` `test/scaffold-permissions-merge.test.ts` `test/ai-review-wif.test.ts` `test/no-fixed-window-slices.test.ts` |
+| touched config/ | `test/check-registry.test.ts` `test/matcher-registry-parity.test.ts` |
 | wrote the DA-owned session state (project-state.json, PROJECT-STATE.md, SUCCESS.md) | `test/closing-keywords.test.ts` `test/project-state-currency.test.ts` `test/project-state-shape.test.ts` `test/update-project-state.test.ts` `test/success-doc.test.ts` `test/distribution-standing.test.ts` `test/rule-lifecycle-spec.test.ts` |
 
 **That table is rendered from `CENSUS_TRIGGERS` in `scripts/census-routing.ts`
