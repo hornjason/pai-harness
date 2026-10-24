@@ -14,7 +14,7 @@
  *   bun scripts/sync-sc-status.ts --report  # Output per-spec coverage report
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 
 import { walkTestFiles } from "../lib/walk-test-files";
 import { commentMask, enclosingComment, stripJsComments } from "../lib/strip-js-comments";

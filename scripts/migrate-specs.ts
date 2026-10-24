@@ -11,7 +11,7 @@
  *   bun scripts/migrate-specs.ts /path --dry-run      # preview without moving
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { execFileSync } from "child_process";
 import { join } from "path";
 import { localCalendarDay } from "../lib/local-calendar-day";

@@ -66,10 +66,17 @@ const DECISION = 'return reading.status === "authored";';
 const ALWAYS_WRITABLE = "return true;";
 
 const scratch: string[] = [];
+/**
+ * No intermediate binding on purpose. `const d = mkdtempSync(join(
+ * import.meta.dir, …))` reads as a repo-root identifier to the frozen
+ * reference in `test/scratch-cleanup.test.ts` and not to the live parse
+ * (#1482), which makes that census test red for a correct change and has to
+ * be retired with a per-file carve-out. Pushing straight onto the list costs
+ * one line and leaves the check in full force here.
+ */
 function tempRoot(tag: string): string {
-  const d = mkdtempSync(join(import.meta.dir, `.chokepoint-${tag}-`));
-  scratch.push(d);
-  return d;
+  scratch.push(mkdtempSync(join(import.meta.dir, `.chokepoint-${tag}-`)));
+  return scratch[scratch.length - 1];
 }
 afterAll(() => {
   for (const d of scratch) rmSync(d, { recursive: true, force: true });

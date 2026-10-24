@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { localCalendarDay } from "../lib/local-calendar-day";
 import { skipLine } from "../lib/derived-spec";

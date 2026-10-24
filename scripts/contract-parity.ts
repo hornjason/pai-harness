@@ -1001,7 +1001,14 @@ export function fieldReachability(root: string): CategoryReport {
 
 // ── category 6: write accountability ────────────────────────────────────────
 
-const WRITE_CALL = /\b(writeFileSync|appendFileSync)\(\s*([A-Za-z0-9_.]+|join\([^)]*\)|resolve\([^)]*\)|`[^`]*`|"[^"]*")/g;
+/**
+ * `writeSpec` is here because #1552 routed nineteen spec writes through
+ * `lib/write-spec.ts`. The write still happens and is still undeclared; only
+ * the spelling moved. A detector that tracks `writeFileSync` alone goes blind
+ * to every migrated writer and reports the gap as closed — the cheapest wrong
+ * fix here was deleting the stale `KNOWN_UNDECLARED_WRITES` entry instead.
+ */
+const WRITE_CALL = /\b(writeFileSync|appendFileSync|writeSpec)\(\s*([A-Za-z0-9_.]+|join\([^)]*\)|resolve\([^)]*\)|`[^`]*`|"[^"]*")/g;
 
 /** Identifiers a path is anchored to when it is inside the project being written. */
 const PROJECT_ROOTS = new Set([

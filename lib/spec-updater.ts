@@ -4,7 +4,7 @@
  * replaces ACCEPTED status with SHIPPED + issue number.
  * Project-agnostic: never hardcodes any specific spec filename.
  */
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { skipLine } from "./derived-spec";
 import { maySpecBeWritten, writeSpec } from "./write-spec";
 

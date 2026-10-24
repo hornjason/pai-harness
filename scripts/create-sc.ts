@@ -14,7 +14,7 @@
  *
  * Thin CLI consumer — all logic lives in lib/create-sc.ts.
  */
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import {
   allocateScNumber,
   generateSCText,

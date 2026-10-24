@@ -22,7 +22,6 @@ import {
 import { join, relative, dirname, basename } from "path";
 import { loadComplianceConfig, type OrganizeExternalSource } from "./config-loader.js";
 import { matchesAnyAlias, projectAliases } from "./project-aliases.js";
-import { skipLine } from "./derived-spec";
 import { writeSpec } from "./write-spec";
 
 // ── Types ────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@
  * Handles frontmatter injection, oversized spec detection, and governs alignment checks.
  * All functions take a directory path and an actions array for reporting.
  */
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { localCalendarDay } from "../local-calendar-day";
 import { SC_ID_SOURCE } from "../sc-ids";
