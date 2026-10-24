@@ -74,6 +74,7 @@ import {
   emittedInRun,
   overCapReason,
   runIdFor,
+  NON_CHECKOUT_RUN,
   RUN_WINDOW_MS,
   type CommentExemption,
   type CommentTarget,
@@ -220,6 +221,15 @@ let runSeq = 0;
 function freshRun(): string {
   const dir = join(scratch, `run-${runSeq++}`);
   mkdirSync(dir, { recursive: true });
+  // A REAL checkout, because `runIdFor` buckets every non-checkout directory
+  // into one shared `NON_CHECKOUT` allowance — so without this every spawn in
+  // the file would be one run again, and the first case to file would cap the
+  // rest. It is also what an agent is in production: a worktree.
+  // late-env-ok: the child is `git`, which reads none of the variables this
+  // file writes — RUNGATE_OPEN_FINDINGS and the ledger session id are read by
+  // the gate under test, in this process, never by a git subprocess.
+  const init = spawnSync("git", ["-C", dir, "init", "-q", "-b", "main"], { encoding: "utf-8" });
+  expect(init.status, `the fixture run at ${dir} must be a real checkout`).toBe(0);
   return dir;
 }
 
@@ -2685,7 +2695,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
   /** `M3` — the cap never binds, however much the run has filed. */
   const M3 = "spent >= FILINGS_PER_RUN";
   /** `M4` — every refusal becomes waivable, including the cap. */
-  const M4 = 'return refusal !== "OVER_CAP";';
+  const M4 = 'return refusal !== "OVER_CAP" && refusal !== "UNMEASURED_CAP";';
   /** `M5` — the cap stops seeing filings the label would carry through. */
   const M5 = "|| overrideOf(read2)";
 
@@ -3044,7 +3054,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
  * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
  * the half FG-91 surrendered. Nothing else in the file moved.
  */
-describe("FG-143..FG-157: a numeric cap, which no argument defeats", () => {
+describe("FG-143..FG-161: a numeric cap, which no argument defeats", () => {
   const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
   const AT = "2026-10-24T12:00:00.000Z";
 
@@ -3089,14 +3099,27 @@ describe("FG-143..FG-157: a numeric cap, which no argument defeats", () => {
       readTarget: async () => onPr,
     });
 
-  /** Two directories, so "a different run" is an input and not an argument. */
+  /**
+   * Two CHECKOUTS, so "a different run" is an input and not an argument.
+   *
+   * Real `git init`s rather than bare directories: since `runIdFor` buckets
+   * every non-checkout into one `NON_CHECKOUT` allowance, two bare temp dirs
+   * would be the SAME run and FG-145 would be asserting the opposite of what
+   * it says. A checkout is also what a run is in production.
+   */
   let runA: string;
   let runB: string;
   beforeAll(() => {
     runA = join(scratch, "cap-run-a");
     runB = join(scratch, "cap-run-b");
-    mkdirSync(runA, { recursive: true });
-    mkdirSync(runB, { recursive: true });
+    for (const dir of [runA, runB]) {
+      mkdirSync(dir, { recursive: true });
+      // late-env-ok: the child is `git`, which reads none of the variables
+      // this file writes — they are read by the gate under test, in process.
+      const init = spawnSync("git", ["-C", dir, "init", "-q", "-b", "main"], { encoding: "utf-8" });
+      expect(init.status, `${dir} must be a real checkout`).toBe(0);
+    }
+    expect(runIdFor(runA), "two checkouts, two runs").not.toBe(runIdFor(runB));
   });
 
   test("FG-143: over the cap is REFUSED even with a perfect declaration", async () => {
@@ -3187,6 +3210,151 @@ describe("FG-143..FG-157: a numeric cap, which no argument defeats", () => {
     expect(under.refusal).toBe("COMMENT_INSTEAD");
     expect(under.overridden).toBe(true);
     expect(under.emitted).toBe(true);
+  });
+
+  test("FG-159: the cap survives EVERY other refusal, not just the ones I thought of", async () => {
+    // **The invariant, as a population rather than an instance.** FG-157
+    // proved it for `COMMENT_INSTEAD` and that is one member of a set: the
+    // security review named `DUPLICATE`, `NO_CLAIM`, `COMMENT_INSTEAD`,
+    // `DROPPED_CATEGORY` and `SAME_CLASS_IN_RUN`, and a fix verified against
+    // one of five is a conjunction with four untested arms. Each row is the
+    // same shape — allowance spent, the clause independently refused for a
+    // WAIVABLE reason, `--label arbiter-override` attached — and each must
+    // be refused and must not reach the tracker.
+    const L = `--label ${FILING_OVERRIDE_LABEL}`;
+    const dup =
+      'gh issue create --title "retryBudget misbehaves on a long sweep" ' +
+      '--body "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234."';
+    const noClaim =
+      'gh issue create --title "zqxjNoClaim loses a sweep it started" ' +
+      `--body "\`zqxjNoClaim\` in lib/zqxj-no-claim.ts drops 17 of 29 commands over 6301 runs. ${DECLARED}"`;
+
+    const corpus = async () =>
+      measuredCorpus(OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body })));
+    const run = async (cmd: string, prior: FilingLedgerRow[], readExisting = corpus) =>
+      filingGate(cmd, {
+        projectRoot: runA,
+        now: AT,
+        readExisting,
+        readLedger: () => prior,
+        readTarget: async () => onPr,
+      });
+
+    const spent = [landed(runIdFor(runA))];
+    for (const [why, cmd] of [
+      ["DUPLICATE", `${dup} ${L}`],
+      ["NO_CLAIM", `${noClaim} ${L}`],
+      ["COMMENT_INSTEAD", `${undeclaredSecond} ${L}`],
+      ["DROPPED_CATEGORY", `${DROPPED_FILING} ${L}`],
+    ] as const) {
+      const row = (await run(cmd, spent)).rows[0];
+      expect(row.refusal, `${why} + the label, over the cap, must still be refused`).toBe("OVER_CAP");
+      expect(row.overridden, `${why}: the label waives nothing here`).toBe(false);
+      expect(row.emitted, `${why}: nothing reaches the tracker`).toBe(false);
+    }
+
+    // CONTROL for the four rows above, and one axis moves: with the
+    // allowance UNSPENT each of those commands is refused for its OWN
+    // reason, and the label waives it. Without this the rows above would
+    // pass against a gate that had stopped honouring the label entirely.
+    for (const [why, cmd] of [
+      ["DUPLICATE", `${dup} ${L}`],
+      ["NO_CLAIM", `${noClaim} ${L}`],
+      ["COMMENT_INSTEAD", `${undeclaredSecond} ${L}`],
+      ["DROPPED_CATEGORY", `${DROPPED_FILING} ${L}`],
+    ] as const) {
+      const row = (await run(cmd, [])).rows[0];
+      expect(row.refusal, `${why}: under the cap it is still the clause's own refusal`).toBe(why);
+      expect(row.overridden, `${why}: and the label waives it there`).toBe(true);
+    }
+
+    // The fifth member needs the allowance spent BY THIS COMMAND, because a
+    // sibling only exists once a clause has cleared and a clause can only
+    // clear under the cap. Clause 1 lands; clause 2 shares its class and
+    // carries the label, and is refused OVER_CAP rather than waived.
+    const twoClauses = `${second} ${L} && ${second.replace("miscounts its own retries", "miscounts its retries")} ${L}`;
+    const pair = await run(twoClauses, []);
+    // Clause 1 CLEARS and spends the allowance. It is not `emitted`, and the
+    // reason is #1344 rather than the cap: a hook's one lever is the whole
+    // Bash command, so a refusal anywhere marks every row `COMMAND_BLOCKED`.
+    // I predicted `emitted: true` here and was wrong about which field says
+    // "this clause was clean" on a blocked command.
+    expect(pair.rows[0].refusal, "clause 1 cleared on its own merits").toBeNull();
+    expect(pair.rows[0].withheldBy, "and lost the tracker only to its neighbour").toBe(
+      COMMAND_BLOCKED,
+    );
+    expect(pair.rows[1].refusal, "clause 2 shares the class AND is over the cap").toBe("OVER_CAP");
+    expect(pair.rows[1].emitted).toBe(false);
+  });
+
+  test("FG-160: every non-checkout directory is ONE run, so a fresh dir mints nothing", async () => {
+    // The allowance was keyable by the filer: `runIdFor` resolved the path,
+    // so `mkdir /tmp/x && cd /tmp/x && gh issue create` bought a new one at
+    // no cost. Named by the security review of PR #1597; a gate whose unit
+    // the filer chooses is not a gate.
+    const one = join(scratch, "non-checkout-one");
+    const two = join(scratch, "non-checkout-two");
+    mkdirSync(one, { recursive: true });
+    mkdirSync(two, { recursive: true });
+    expect(runIdFor(one), "two bare directories are one run").toBe(NON_CHECKOUT_RUN);
+    expect(runIdFor(two)).toBe(NON_CHECKOUT_RUN);
+
+    const spentElsewhere = [landed(NON_CHECKOUT_RUN)];
+    const r = await filingGate(second, {
+      projectRoot: two,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentElsewhere,
+      readTarget: async () => onPr,
+    });
+    expect(r.rows[0].refusal, "a filing from a different bare dir is the same run").toBe("OVER_CAP");
+
+    // CONTROL: a real CHECKOUT is still its own run, so this is a bucket for
+    // the unidentifiable rather than a cap collapsed onto one allowance.
+    expect(runIdFor(runA)).not.toBe(NON_CHECKOUT_RUN);
+    const checkout = await filingGate(second, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentElsewhere,
+      readTarget: async () => onPr,
+    });
+    expect(checkout.rows[0].refusal, "the bucket is not everybody's allowance").toBeNull();
+  });
+
+  test("FG-161: an unreadable ledger REFUSES; an absent one allows", async () => {
+    // The one place in this file that fails CLOSED, and the distinction it
+    // turns on is `readLedgerRows`'s own: `[]` for absent, `null` for
+    // present-and-unreadable. A machine that has filed nothing has spent
+    // nothing; a ledger nobody can read has an allowance nobody can count,
+    // and allowing there is not a loud note — it is the gate removed by
+    // anything able to make one file unreadable.
+    const unreadable = await filingGate(`${second} --label ${FILING_OVERRIDE_LABEL}`, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => null,
+      readTarget: async () => onPr,
+    });
+    expect(unreadable.rows[0].refusal).toBe("UNMEASURED_CAP");
+    expect(unreadable.rows[0].overridden, "and no label waives this one either").toBe(false);
+    expect(unreadable.rows[0].emitted).toBe(false);
+    expect(unreadable.refusal ?? "", "the refusal names the file an OPERATOR must fix").toContain(
+      "could not be read",
+    );
+
+    // CONTROL, one axis: the SAME command against an ABSENT ledger — the
+    // empty population, which is a reading — is allowed. Without this the
+    // row above is satisfied by a gate that refuses every filing on earth.
+    const absent = await filingGate(second, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => [],
+      readTarget: async () => onPr,
+    });
+    expect(absent.rows[0].refusal, "nothing filed is not the same as nothing readable").toBeNull();
+    expect(absent.rows[0].emitted).toBe(true);
   });
 
   test("FG-147: a REFUSED filing does not consume the allowance", async () => {

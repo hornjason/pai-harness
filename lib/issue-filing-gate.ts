@@ -152,12 +152,14 @@ export const FILING_OVERRIDE_LABEL = "arbiter-override";
  * with --label arbiter-override"*, so the one refusal no label can open was
  * also the one advertising the bypass. Found by the AI review of PR #1597.
  *
- * `OVER_CAP` is the only `false`, and the reason is not a policy preference:
- * the label answers a claim ABOUT a finding, and a count makes none. A
- * waivable cap is the per-finding judgement the cap exists to replace.
+ * The two `false` values are the cap's, and the reason is not a policy
+ * preference: the label answers a claim ABOUT a finding, and neither a count
+ * nor a missing count makes one. A waivable cap is the per-finding judgement
+ * the cap exists to replace, and a waivable `UNMEASURED_CAP` is a cap any
+ * agent can remove by making the ledger unreadable.
  */
 export function waivableRefusal(refusal: ArbiterRefusal | null): boolean {
-  return refusal !== "OVER_CAP";
+  return refusal !== "OVER_CAP" && refusal !== "UNMEASURED_CAP";
 }
 
 /**
@@ -255,6 +257,15 @@ export const FILINGS_PER_RUN = 1;
 export const RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * The one run every non-checkout directory shares.
+ *
+ * A sentinel rather than a path, so it cannot collide with a real toplevel
+ * and so a reader of the ledger can see at a glance which rows were filed
+ * from nowhere in particular. See `runIdFor` for why they share.
+ */
+export const NON_CHECKOUT_RUN = "NON_CHECKOUT";
+
+/**
  * Which RUN a filing belongs to — the checkout it was filed from.
  *
  * **Not the session, and the measurement is why.** `filingBatch` mints
@@ -272,24 +283,34 @@ export const RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
  * Through `toplevel` from `lib/launch-base.ts`, so `/wt/x` and `/wt/x/lib`
  * are one run and there is one binding for "which checkout is this".
  *
- * **A directory that is not a checkout is its own run, not `null`.** git is
- * used to CANONICALISE the directory, not to decide whether there is one —
- * the directory always exists, so a reading is always available. Returning
- * `null` here was the first spelling and it is the worse one in both
- * directions at once: every filing from outside a checkout on the whole
- * machine would share one allowance with every legacy row written before
- * this field existed, which is a permanent gag, and the fix for that gag
- * would have been to exempt them, which is a bypass.
+ * **Every directory that is not a checkout is ONE run, `NON_CHECKOUT_RUN`.**
+ * This read `resolve(projectRoot)` first, so each non-checkout directory was
+ * its own run — and that made the allowance keyable by the filer: `mkdir
+ * /tmp/x && cd /tmp/x && gh issue create` mints a fresh one, every time, at
+ * no cost. The first docblock said so out loud and argued the exposure was
+ * acceptable because nothing else here tracks a `cd` either. It is not
+ * acceptable for THIS field, because this one is the cap's denominator: a
+ * gate whose unit the filer chooses is not a gate. Reversed on 2026-10-24
+ * after the security review of PR #1597 named it, and the earlier reasoning
+ * is kept here rather than deleted because it is the argument a later agent
+ * will reach for again.
  *
- * What this does NOT defend against is an agent deliberately filing from a
- * fresh directory each time. Neither does anything else here:
- * `lib/issue-create-override.ts` declines to track `cd` across clauses, and
- * this file's own header lists `curl`, the MCP tools and another machine as
- * outside the chokepoint entirely. The cap governs the default, which is
- * what the measurement is about.
+ * The cost is real and is the one the first spelling was avoiding: every
+ * filing from outside a checkout on this machine now shares one allowance.
+ * That is the fail-closed direction, and it is narrow — an agent works in a
+ * worktree, which is a checkout, and `toplevel` resolves `/wt/x/lib` to
+ * `/wt/x` so sub-directories were never separate runs in the first place.
+ *
+ * Legacy rows are unaffected: they carry `run: null`, which matches no run
+ * and is counted towards nothing, so this does not fold them into the
+ * bucket. `null` and `NON_CHECKOUT_RUN` are different readings and stay so.
+ *
+ * What this still does NOT defend against is a filing that never reaches
+ * this chokepoint — `curl`, the MCP tools, another machine. This file's own
+ * header lists those, and the cap governs the default.
  */
 export function runIdFor(projectRoot: string): string {
-  return toplevel(projectRoot) ?? resolve(projectRoot);
+  return toplevel(projectRoot) ?? NON_CHECKOUT_RUN;
 }
 
 /**
@@ -341,6 +362,30 @@ export function overCapReason(run: string, already: number, target: CommentTarge
     "  judgement about your finding, which may well be a good one — the cap exists because a",
     "  per-finding judgement drifts and a count does not. If several findings belong on the",
     "  tracker, they are one issue naming every instance, not several.",
+  ].join("\n");
+}
+
+/**
+ * The refusal when the allowance cannot be counted at all (#1595).
+ *
+ * Names the ledger, because this is the one refusal in the file an OPERATOR
+ * has to act on rather than the agent: nothing the filer writes will change
+ * it, and the remedy is to repair or move the file. Says so, so the agent
+ * does not spend a turn re-drafting a body that was never the problem.
+ */
+export function uncountableCapReason(run: string, target: CommentTarget): string {
+  return [
+    `the filing ledger at ${ledgerPath()} is present and could not be read, so this run's`,
+    `allowance cannot be counted. An unreadable ledger is not an empty one — an ABSENT ledger`,
+    "is a machine that has filed nothing and allows — so this refuses rather than restoring a",
+    "full allowance to anything that can make one file unreadable.",
+    "",
+    `  ${commentTargetSentence(target)}`,
+    "",
+    `  run: ${run}`,
+    "",
+    "  Nothing about your finding is in question and re-drafting it will not help. Repair or",
+    "  move the ledger, or post the comment above. No label waives this one either.",
   ].join("\n");
 }
 
@@ -1860,16 +1905,25 @@ export async function filingGate(
   // adjudicating every clause against a snapshot taken before any of them
   // landed. That is the same shape as the sibling list above.
   //
-  // An UNREADABLE ledger cannot be counted, and that case ALLOWS, loudly,
-  // through `unreadableLedgerNote` which is already pushed above. It is the
-  // one hole left in the cap and it is deliberate rather than overlooked:
-  // this file's standing policy is that a measurement apparatus must not
-  // block the thing it measures — `recordAdjudication` returns `false`
-  // rather than throwing for exactly this reason. A broken ledger is not an
-  // appeal; it is an instrument that stopped reporting, and the note says so.
+  // **An UNREADABLE ledger REFUSES, and this is the one place in the file
+  // that fails closed.** It allowed at first, on the standing policy that a
+  // measurement apparatus must not block the thing it measures — which is
+  // right for `recordAdjudication` returning `false` rather than throwing,
+  // and wrong here. The ledger is not the apparatus for the cap; it is the
+  // cap's STATE. "Could not read it" means the allowance is unknown, and
+  // allowing on an unknown allowance is not a loud note, it is the gate
+  // removed by anything that can make one file unreadable.
+  //
+  // The two readings this turns on already exist and are already separated:
+  // `readLedgerRows` returns `[]` for a genuinely absent file and `null`
+  // for present-and-unreadable. An empty population is an answer — a
+  // machine that has never filed has spent nothing — and it allows. `null`
+  // is not an answer, and it refuses as `UNMEASURED_CAP`, which
+  // `waivableRefusal` excludes so the label cannot clear it either.
   const run = runIdFor(options.projectRoot);
   const nowMs = Date.parse(at);
-  let spent = priorRows === null ? 0 : emittedInRun(priorRows, run, nowMs);
+  const uncountable = priorRows === null;
+  let spent = uncountable ? 0 : emittedInRun(priorRows, run, nowMs);
 
   for (const [index, attempt] of attempts.entries()) {
     const read1 = await adjudicateFiling(
@@ -1970,14 +2024,23 @@ export async function filingGate(
     // `SAME_CLASS_IN_RUN` keeps its precedence, because a clause refused for
     // it is not emitted and `wouldEmit` is therefore false — the conversion
     // only touches clauses that were going to reach the tracker.
+    //
+    // `uncountable` rides the same conversion rather than a second one. The
+    // question *"may this clause reach the tracker?"* has one answer and one
+    // place that applies it; "the allowance is spent" and "the allowance
+    // cannot be read" are two reasons for the same No, and splitting them
+    // across two branches is how the first bypass got in.
     const wouldEmit = read2.outcome !== "REFUSE" || overrideOf(read2);
+    const capped = uncountable || spent >= FILINGS_PER_RUN;
     const verdict: FilingAdjudication =
-      wouldEmit && spent >= FILINGS_PER_RUN
+      wouldEmit && capped
         ? {
             ...read2,
             outcome: "REFUSE",
-            refusal: "OVER_CAP",
-            reason: overCapReason(run, spent, await targetFor(attempt.repo)),
+            refusal: uncountable ? "UNMEASURED_CAP" : "OVER_CAP",
+            reason: uncountable
+              ? uncountableCapReason(run, await targetFor(attempt.repo))
+              : overCapReason(run, spent, await targetFor(attempt.repo)),
           }
         : read2;
     const overridden = overrideOf(verdict);
@@ -2345,7 +2408,8 @@ export function unreadableLedgerNote(): string {
   return (
     `[FindingArbiter] UNMEASURED prior refusals — ${ledgerPath()} exists and could not be read, ` +
     "so this command's rows carry `refiledAfter: null` meaning *not looked up* rather than *none " +
-    "found*. The filing is allowed and recorded; an override in it may be counted against no " +
-    "refusal."
+    "found*. The same read is the cap's state, so the filing is also refused `UNMEASURED_CAP` " +
+    "rather than allowed: an unreadable ledger is not an empty one, and an allowance that cannot " +
+    "be counted is not an allowance that is free."
   );
 }

@@ -840,6 +840,23 @@ export type ArbiterRefusal =
    * about the finding for a waiver to address.
    */
   | "OVER_CAP"
+  /**
+   * The ledger is present and unreadable, so the allowance cannot be counted
+   * (#1595, scope item 4).
+   *
+   * **Distinct from `UNMEASURED`, and fails in the opposite direction from
+   * every other unreadable input in this gate.** Elsewhere an unreadable
+   * input allows loudly, because a measurement apparatus must not block the
+   * thing it measures. The ledger is not the apparatus here — it is the
+   * cap's STATE, so "unreadable" means the cap does not exist, and allowing
+   * on it is not a loud note but a silent removal of the gate.
+   *
+   * `readLedgerRows` already separates the two readings this turns on:
+   * `[]` for a genuinely absent file, `null` for present-and-unreadable. An
+   * empty population is a legitimate answer and allows; UNMEASURED is not an
+   * answer at all and refuses, naming the path so an operator can act.
+   */
+  | "UNMEASURED_CAP"
   /** Something could not be evaluated. Fails; never skips. */
   | "UNMEASURED";
 
