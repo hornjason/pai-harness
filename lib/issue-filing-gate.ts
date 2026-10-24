@@ -1912,16 +1912,8 @@ export async function filingGate(
     // for reporting DUPLICATE ahead of NO_CLAIM.
     const sameClass =
       read1.outcome === "REFUSE" ? [] : duplicateCollisions(finding, siblings);
-    const overCap =
-      read1.outcome !== "REFUSE" && sameClass.length === 0 && spent >= FILINGS_PER_RUN;
-    const verdict: FilingAdjudication = overCap
-      ? {
-          ...read1,
-          outcome: "REFUSE",
-          refusal: "OVER_CAP",
-          reason: overCapReason(run, spent, await targetFor(attempt.repo)),
-        }
-      : sameClass.length === 0
+    const read2: FilingAdjudication =
+      sameClass.length === 0
         ? read1
         : {
             ...read1,
@@ -1954,9 +1946,41 @@ export async function filingGate(
     // a label that waived it would hand back exactly the per-filing
     // judgement the cap exists to replace: a valid reason defeating the cap
     // IS the bar that let three of three filings through on 2026-10-24.
-    const waivable = waivableRefusal(verdict.refusal);
-    const overridden =
-      labelled && waivable && (verdict.outcome === "REFUSE" || prior !== null);
+    //
+    // ONE binding, applied to two inputs. The cap below has to know whether
+    // the label would carry this clause to the tracker BEFORE it decides,
+    // and the row has to record whether it did AFTER. Written as two
+    // expressions those are two deciders over one question, which is how the
+    // bypass this closes got in.
+    const overrideOf = (v: FilingAdjudication) =>
+      labelled && waivableRefusal(v.refusal) && (v.outcome === "REFUSE" || prior !== null);
+
+    // **The cap applies to anything that would REACH THE TRACKER, not to
+    // anything that happens to be clean.** Gating it on `read1` being an
+    // ALLOW — which is how it was first written, and what the AI review of
+    // PR #1597 found at round 4 — makes `--label arbiter-override` a cap
+    // bypass: a clause refused for any WAIVABLE reason skips the cap
+    // entirely, the label then waives that refusal, and the filing lands
+    // with the run already over its allowance. It is not a corner either.
+    // The cheapest way to reach it is to DELETE the declaration: an
+    // undeclared filing is `COMMENT_INSTEAD`, which is waivable, so dropping
+    // one line and adding the label beats the gate. A cap that any agent can
+    // step around by making its filing *worse* is not a cap.
+    //
+    // `SAME_CLASS_IN_RUN` keeps its precedence, because a clause refused for
+    // it is not emitted and `wouldEmit` is therefore false — the conversion
+    // only touches clauses that were going to reach the tracker.
+    const wouldEmit = read2.outcome !== "REFUSE" || overrideOf(read2);
+    const verdict: FilingAdjudication =
+      wouldEmit && spent >= FILINGS_PER_RUN
+        ? {
+            ...read2,
+            outcome: "REFUSE",
+            refusal: "OVER_CAP",
+            reason: overCapReason(run, spent, await targetFor(attempt.repo)),
+          }
+        : read2;
+    const overridden = overrideOf(verdict);
     // **This clause's own reading, and nothing about the command.** The
     // command-level decision is not available yet — it needs every clause —
     // so `emitted` here is provisional and `markBlockedCommand` below applies

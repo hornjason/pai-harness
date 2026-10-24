@@ -2636,7 +2636,7 @@ describe("FG-120..FG-135: a filing declares why it cannot be a comment", () => {
  * parse-only test would have asserted is shown to be identical across the
  * real gate and M1.
  */
-describe("FG-137..FG-139, FG-153, FG-156: a mutant turns a case red", () => {
+describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", () => {
   const LIB = join(REPO, "lib");
   const UNIT = "issue-filing-gate.ts";
 
@@ -2686,6 +2686,8 @@ describe("FG-137..FG-139, FG-153, FG-156: a mutant turns a case red", () => {
   const M3 = "spent >= FILINGS_PER_RUN";
   /** `M4` — every refusal becomes waivable, including the cap. */
   const M4 = 'return refusal !== "OVER_CAP";';
+  /** `M5` — the cap stops seeing filings the label would carry through. */
+  const M5 = "|| overrideOf(read2)";
 
   const UNDECLARED =
     'gh issue create --title "zqxjMutantProbe abandons a sweep it started" ' +
@@ -2893,6 +2895,76 @@ describe("FG-137..FG-139, FG-153, FG-156: a mutant turns a case red", () => {
     ).toContain(`re-run with --label ${FILING_OVERRIDE_LABEL}`);
   });
 
+  test("FG-158: M5 — the cap sees what the LABEL would carry through, not what is clean", async () => {
+    // The round-4 bypass, as a mutation. `wouldEmit` is what makes the cap
+    // read the clause's fate after any override; dropping the override term
+    // restores the shape the review found, where a waivable refusal plus the
+    // label walks straight past the allowance.
+    const mutant: Gate = await import(buildMutant("cap-blind-to-override", M5, "|| false"));
+    const real: Gate = await import("../lib/issue-filing-gate");
+    const dir = join(scratch, "mut-bypass-run");
+    mkdirSync(dir, { recursive: true });
+
+    const at = "2026-10-24T12:00:00.000Z";
+    // UNDECLARED on purpose: the cheapest route to the bypass is to make the
+    // filing worse, because `COMMENT_INSTEAD` is waivable and `OVER_CAP` is
+    // not. The declared twin is the baseline below.
+    const body =
+      "`zqxjBypass` in lib/zqxj-bypass.ts drops 13 of 61 commands over 4703 runs. Claim 4.";
+    const undeclared =
+      `gh issue create --title "zqxjBypass abandons a sweep it started" --body "${body}" ` +
+      `--label ${FILING_OVERRIDE_LABEL}`;
+    const declared =
+      `gh issue create --title "zqxjBypass abandons a sweep it started" --body "${body} ${DECLARED}"`;
+
+    const runOn = (gate: Gate, prior: unknown[], cmd: string) =>
+      gate.filingGate(cmd, {
+        projectRoot: dir,
+        now: at,
+        readExisting: async () => gate.measuredCorpus([]),
+        readLedger: () => prior as never,
+        readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
+      });
+
+    // BASELINE FIRST, both gates, empty ledger: a declared filing is allowed,
+    // so neither is refusing everything when the rows below are read.
+    expect((await runOn(mutant, [], declared)).rows[0].refusal, "the mutant loaded").toBeNull();
+    expect((await runOn(real, [], declared)).rows[0].refusal, "as did the real gate").toBeNull();
+
+    const spent = [
+      {
+        at,
+        key: `b.1/${at}/0`,
+        id: "new",
+        title: "already filed by this run",
+        symptomHash: "h",
+        category: "correctness" as const,
+        severity: null,
+        disposition: "ISSUE" as const,
+        refusal: null,
+        emitted: true,
+        withheldBy: null,
+        jury: null,
+        duplicateOf: [],
+        overridden: false,
+        refiledAfter: null,
+        exemption: "out-of-pr-diff" as const,
+        run: real.runIdFor(dir),
+      },
+    ];
+
+    const realRow = (await runOn(real, spent, undeclared)).rows[0];
+    expect(realRow.refusal).toBe("OVER_CAP");
+    expect(realRow.emitted, "nothing reached the tracker").toBe(false);
+
+    const mutantRow = (await runOn(mutant, spent, undeclared)).rows[0];
+    expect(mutantRow.refusal, "the cap never looked at a clause it thought was refused").toBe(
+      "COMMENT_INSTEAD",
+    );
+    expect(mutantRow.overridden, "and the label waived that refusal instead").toBe(true);
+    expect(mutantRow.emitted, "so an over-cap run filed anyway — the bypass, restored").toBe(true);
+  });
+
   test("FG-140: a directory that is not a git repository is UNMEASURED, naming it", async () => {
     const notARepo = join(scratch, "not-a-repo");
     mkdirSync(notARepo, { recursive: true });
@@ -2972,7 +3044,7 @@ describe("FG-137..FG-139, FG-153, FG-156: a mutant turns a case red", () => {
  * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
  * the half FG-91 surrendered. Nothing else in the file moved.
  */
-describe("FG-143..FG-155: a numeric cap, which no argument defeats", () => {
+describe("FG-143..FG-157: a numeric cap, which no argument defeats", () => {
   const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
   const AT = "2026-10-24T12:00:00.000Z";
 
@@ -3092,6 +3164,29 @@ describe("FG-143..FG-155: a numeric cap, which no argument defeats", () => {
       "COMMENT_INSTEAD",
     );
     expect(waivable.refusal ?? "").toContain(`re-run with --label ${FILING_OVERRIDE_LABEL}`);
+  });
+
+  test("FG-157: the label does not carry an over-cap filing past the cap", async () => {
+    // Found by the AI review of PR #1597 at round 4, and the cheapest route
+    // to it is to make the filing WORSE. An undeclared filing is refused
+    // `COMMENT_INSTEAD`, which IS waivable — so with the cap reading only
+    // clauses that were already clean, the label waived the declaration
+    // refusal and the filing landed with the run over its allowance. Delete
+    // one line, add one flag, beat the gate.
+    const cmd = `${undeclaredSecond} --label ${FILING_OVERRIDE_LABEL}`;
+    const over = (await gateIn(cmd, runA, [landed(runIdFor(runA))])).rows[0];
+    expect(over.refusal).toBe("OVER_CAP");
+    expect(over.overridden, "the label waives nothing once the cap has converted").toBe(false);
+    expect(over.emitted).toBe(false);
+
+    // CONTROL, and ONE axis moves — the run has filed nothing. Same command,
+    // same waivable refusal, same label. The override must still work where
+    // the cap is not what is being argued with, or this row would pass under
+    // a gate that had simply stopped honouring the label at all.
+    const under = (await gateIn(cmd, runA, [])).rows[0];
+    expect(under.refusal).toBe("COMMENT_INSTEAD");
+    expect(under.overridden).toBe(true);
+    expect(under.emitted).toBe(true);
   });
 
   test("FG-147: a REFUSED filing does not consume the allowance", async () => {
