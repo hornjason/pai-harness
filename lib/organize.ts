@@ -22,7 +22,7 @@ import {
 import { join, relative, dirname, basename } from "path";
 import { loadComplianceConfig, type OrganizeExternalSource } from "./config-loader.js";
 import { matchesAnyAlias, projectAliases } from "./project-aliases.js";
-import { writeSpec } from "./write-spec";
+import { maySpecBeReplaced, writeSpec } from "./write-spec";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -482,6 +482,17 @@ function executeProposals(root: string, proposals: OrganizeProposal[]): void {
     const tgtPath = join(root, proposal.target);
 
     if (!existsSync(srcPath)) continue;
+
+    // #1552: `renameSync` below REPLACES its destination silently, and
+    // `organizeProjectReport` picks a target from the filename alone — a
+    // stray `API-SPEC.md` at the root is proposed onto `specs/API-SPEC.md`,
+    // annihilating a generator-owned spec without any write primitive ever
+    // touching it. Ask who owns the destination, not the source.
+    const dest = maySpecBeReplaced(tgtPath, { label: proposal.target });
+    if (!dest.allowed) {
+      console.warn(dest.refusal!);
+      continue;
+    }
 
     const tgtDir = dirname(tgtPath);
     if (!existsSync(tgtDir)) {

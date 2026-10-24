@@ -46,6 +46,7 @@ import {
   SWEPT_DIRS,
   WRITE_PRIMITIVES,
   blankComments,
+  callArguments,
   expandView,
   identifiersIn,
   shellCorpus,
@@ -54,7 +55,7 @@ import {
   writeSites,
   type WriteSite,
 } from "../lib/spec-write-sweep";
-import { writeSpec, maySpecBeWritten } from "../lib/write-spec";
+import { writeSpec, maySpecBeWritten, maySpecBeReplaced } from "../lib/write-spec";
 import { DERIVED_KEY } from "../lib/derived-spec";
 
 const REPO = join(import.meta.dir, "..");
@@ -430,6 +431,40 @@ ${DERIVED_KEY}: scripts/sync-spec.ts
     expect(readFileSync(p, "utf-8")).toBe("fresh");
   });
 
+  test("a move onto a generator-owned destination is refused, and says why", () => {
+    // Round-4 AI-review finding. POSIX rename replaces its destination
+    // silently, and `organizeProject` picks that destination from a
+    // filename, so a stray `API-SPEC.md` could annihilate a generated spec
+    // with no write primitive ever touching it. The question is about the
+    // bytes being destroyed, never about the ones being moved.
+    const root = tempRoot("replace");
+    const dest = join(root, "API-SPEC.md");
+    writeFileSync(dest, DERIVED_SPEC);
+    const verdict = maySpecBeReplaced(dest, { label: "specs/API-SPEC.md" });
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.refusal).toContain("specs/API-SPEC.md");
+    expect(verdict.refusal).toContain("scripts/sync-spec.ts");
+  });
+
+  test("NEGATIVE CONTROL: a move onto an absent or authored destination proceeds", () => {
+    // Without this, the guard above is satisfied by refusing every move.
+    const root = tempRoot("replace-ok");
+    expect(maySpecBeReplaced(join(root, "ABSENT.md")).allowed).toBe(true);
+    const authored = join(root, "A.md");
+    writeFileSync(authored, "---\ndoc-type: spec\n---\n\n# Plain\n");
+    expect(maySpecBeReplaced(authored).allowed).toBe(true);
+  });
+
+  test("MUTANT: the move guard flips with mayWrite, so it is not a third decider", () => {
+    const mutantReplace = require(join(mutantDir, "lib", "write-spec.ts"))
+      .maySpecBeReplaced as typeof maySpecBeReplaced;
+    const root = tempRoot("replace-mutant");
+    const dest = join(root, "API-SPEC.md");
+    writeFileSync(dest, DERIVED_SPEC);
+    expect(maySpecBeReplaced(dest).allowed, "the real guard refuses").toBe(false);
+    expect(mutantReplace(dest).allowed, "the mutant permits").toBe(true);
+  });
+
   test("MUTANT: removing mayWrite's comparison makes the chokepoint write the derived spec", () => {
     const root = tempRoot("mutant-write");
     const p = join(root, "D.md");
@@ -498,6 +533,13 @@ describe("#1552: writers the static sweep cannot see are declared, not silent", 
    */
   const GUARDED_UPSTREAM: Record<string, string> = {
     "hooks/DocHygiene.hook.ts": "lib/frontmatter.ts",
+    // #1552 round 4. `executeProposals` renames a file onto a target chosen
+    // from its NAME, and POSIX rename replaces its destination silently, so
+    // a stray `API-SPEC.md` at the root can annihilate a generator-owned
+    // `specs/API-SPEC.md` without any write primitive touching it. The
+    // destination is `join(root, proposal.target)` — dynamic, so the sweep
+    // cannot see it is a spec path, and silence here would be blindness.
+    "lib/organize.ts": "lib/write-spec.ts",
   };
 
   for (const [writer, guard] of Object.entries(GUARDED_UPSTREAM)) {
@@ -548,6 +590,85 @@ describe("#1552: the sweep's reading is what it claims", () => {
     expect(out.split("\n").length).toBe(src.split("\n").length);
     expect(out).toContain('"//not a comment"');
     expect(out).not.toContain("writeFileSync");
+  });
+
+  test("a rename or copy is read at its DESTINATION, not its source", () => {
+    // Round-4 AI-review finding. `renameSync(src, dest)` and
+    // `copyFileSync(src, dest)` write their second argument; reading the
+    // first makes a copy INTO specs/ invisible and a copy OUT of specs/ a
+    // false positive. Both directions, because one of them alone is
+    // satisfied by reading neither argument.
+    const root = tempRoot("dest-arg");
+    plant(
+      root,
+      "lib/cp.ts",
+      [
+        'copyFileSync(join(assetsDir, "blank.md"), join(specsDir, "NEW-SPEC.md"));',
+        'copyFileSync(join(specsDir, "OLD-SPEC.md"), join(backupDir, "copy.md"));',
+      ].join("\n"),
+    );
+    const found = specChokepointViolations(root, ["lib"]);
+    expect(found.map((s) => s.line), "only the write INTO specs/ is a violation").toEqual([1]);
+    expect(found[0].target).toBe('join(specsDir, "NEW-SPEC.md")');
+  });
+
+  test("callArguments splits one call in one pass, whatever the nesting", () => {
+    // The depth bug this fix first shipped with: restarting the scan at each
+    // comma loses the depth the open paren contributed, so argument two ran
+    // to the end of the file. Measured on this repo's own renameSync sites.
+    const src = 'f(join(a, b), `x${g(1, 2)}y`, /a,b/, "c,d");';
+    expect(callArguments(src, src.indexOf("("))).toEqual([
+      "join(a, b)",
+      "`x${g(1, 2)}y`",
+      "/a,b/",
+      '"c,d"',
+    ]);
+  });
+
+  test("MECHANICALLY GENERATED: no surrounding fragment hides a planted spec write", () => {
+    // Four review rounds found four edge cases in this hand-rolled scanner,
+    // each by example. Examples are what the reviewer called the approach
+    // problem, and its own suggested remedy was a generator rather than more
+    // examples. `typescript` is a devDependency and `lib/` is published, so
+    // swapping in a real parser cannot land here — this is the other remedy.
+    //
+    // Every PAIR of fragments from the alphabet is placed before and after a
+    // known spec write. The write must be found in all of them, and a known
+    // non-spec write in the same contexts must never be.
+    const ALPHABET = [
+      "",
+      "const re = /[\"']x/;",
+      'const b = text.replace(/`/g, "");',
+      "const t = `a${nested(`b${deep}`)}c`;",
+      "// writeFileSync(specPath, commented)",
+      "/* writeFileSync(specPath, blocked) */",
+      'const s = "a string with specs/ inside it";',
+      "const div = total / count / 2;",
+      "const tagged = sql`select ${col}`;",
+      'const obj = { "key, with comma": [1, 2] };',
+    ];
+    const PLANTED = 'writeFileSync(join(specsDir, "PLANTED-SPEC.md"), body);';
+    const INNOCENT = 'writeFileSync(join(outDir, "report.json"), body);';
+
+    const missed: string[] = [];
+    const falsePositives: string[] = [];
+    for (const before of ALPHABET) {
+      for (const after of ALPHABET) {
+        const root = tempRoot("gen");
+        plant(root, "lib/g.ts", [before, PLANTED, INNOCENT, after].join("\n"));
+        const found = specChokepointViolations(root, ["lib"]);
+        const targets = found.map((s) => s.target);
+        if (!targets.includes('join(specsDir, "PLANTED-SPEC.md")')) {
+          missed.push(`${before} ⟦…⟧ ${after}`);
+        }
+        if (targets.includes('join(outDir, "report.json")')) {
+          falsePositives.push(`${before} ⟦…⟧ ${after}`);
+        }
+      }
+    }
+    expect(ALPHABET.length ** 2, "the generator produced no cases").toBe(100);
+    expect(missed, "these contexts hid a planted spec write from the sweep").toEqual([]);
+    expect(falsePositives, "these contexts made an unrelated write look like a spec").toEqual([]);
   });
 
   test("a backtick inside a regex literal does not swallow the next statements", () => {

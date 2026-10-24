@@ -260,16 +260,74 @@ function scanExpression(
   return src.length;
 }
 
+/**
+ * The arguments of the call whose `(` is at `open`, as source text.
+ *
+ * ONE pass. Restarting `scanExpression` at each comma loses the depth the
+ * open paren contributed, so the second argument's scan never sees itself as
+ * nested and runs to the end of the file — measured, on this repository's
+ * own `renameSync` sites, while fixing the AI review's second finding.
+ */
+export function callArguments(src: string, open: number): string[] {
+  const args: string[] = [];
+  let start = open + 1;
+  let depth = 0;
+  let i = open;
+  let prevSignificant = "";
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === "`") {
+      i = skipQuoted(src, i, c);
+      prevSignificant = c;
+      continue;
+    }
+    if (c === "/" && regexCanStartAfter(prevSignificant)) {
+      i = skipRegex(src, i);
+      prevSignificant = "/";
+      continue;
+    }
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      depth--;
+      if (depth === 0) {
+        args.push(src.slice(start, i).trim());
+        return args;
+      }
+    } else if (c === "," && depth === 1) {
+      args.push(src.slice(start, i).trim());
+      start = i + 1;
+    }
+    if (!/\s/.test(c)) prevSignificant = c;
+    i++;
+  }
+  args.push(src.slice(start).trim());
+  return args;
+}
+
+/** Argument `index` (0-based), or `""` when the call has no such argument. */
+export function argumentAt(src: string, open: number, index: number): string {
+  return callArguments(src, open)[index] ?? "";
+}
+
 /** The first argument of the call whose `(` is at `open`, as source text. */
 export function firstArgument(src: string, open: number): string {
-  const start = open + 1;
-  const end = scanExpression(
-    src,
-    open,
-    (c, depth) => (depth === 0 && ")]}".includes(c)) || (c === "," && depth === 1),
-  );
-  return src.slice(start, end).trim();
+  return argumentAt(src, open, 0);
 }
+
+/**
+ * Which argument of each primitive names the path that gets WRITTEN.
+ *
+ * `renameSync(src, dest)` and `copyFileSync(src, dest)` write their SECOND
+ * argument. Reading the first means a `copyFileSync(join(assetsDir,
+ * "blank.md"), join(specsDir, "NEW-SPEC.md"))` is invisible — the sweep
+ * answering a weaker question than the one it is named for. Found by the AI
+ * review on #1552; today's population is zero, so nothing live was hidden
+ * and the next one would have been.
+ */
+const WRITTEN_ARGUMENT: Record<string, number> = {
+  renameSync: 1,
+  copyFileSync: 1,
+};
 
 /**
  * EVERY local initialiser of a bare identifier in the file, joined, or `""`.
@@ -483,7 +541,7 @@ export function writeSites(root: string, dirs: readonly string[] = SWEPT_DIRS): 
     const src = blankComments(raw);
     for (const m of src.matchAll(pattern)) {
       const open = m.index! + m[0].length - 1;
-      const target = firstArgument(src, open).replace(/\s+/g, " ");
+      const target = argumentAt(src, open, WRITTEN_ARGUMENT[m[1]] ?? 0).replace(/\s+/g, " ");
       const view = expandView(src, target);
       sites.push({
         file,

@@ -106,3 +106,33 @@ export function maySpecBeWritten(currentContent: string): {
   const reading = readDerivedDeclaration(currentContent);
   return { allowed: mayWrite(reading), reading };
 }
+
+/**
+ * The same decision about bytes that are about to be DESTROYED rather than
+ * rewritten — a rename or a copy whose destination already exists.
+ *
+ * POSIX `rename()` replaces its destination silently, so a move into `specs/`
+ * can annihilate a generator-owned spec without ever calling a write
+ * primitive on it. The PR that built this chokepoint claimed otherwise —
+ * *"a move does not rewrite bytes, so no reading applies"* — which is true of
+ * the bytes moved and says nothing about the bytes overwritten. Found by the
+ * AI review on #1552.
+ *
+ * A destination that does not exist is a creation and is allowed; this
+ * function never looks at the source, because the question is only ever about
+ * who owns what is already there.
+ */
+export function maySpecBeReplaced(
+  targetPath: string,
+  opts?: WriteSpecOptions,
+): { allowed: boolean; reading: DerivedReading; refusal: string | null } {
+  if (!existsSync(targetPath)) {
+    return { allowed: true, reading: { status: "authored" }, refusal: null };
+  }
+  const { allowed, reading } = maySpecBeWritten(readFileSync(targetPath, "utf-8"));
+  return {
+    allowed,
+    reading,
+    refusal: allowed ? null : skipLine(opts?.label ?? targetPath, reading),
+  };
+}
