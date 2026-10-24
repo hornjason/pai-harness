@@ -1,4 +1,4 @@
-# generated-sha: 462c947f8611b677
+# generated-sha: 2443003c1bfde7d8
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # WHICH KIND of unmeasured each unmeasured AI review round was (#1488).
@@ -71,7 +71,7 @@ jobs:
           #
           # --write, because a reading taken and not stored is a log fetched one day
           # before it expired and thrown away.
-          bunx rungate@0.8.3 record-ai-review-unmeasured \
+          bunx rungate@0.8.4 record-ai-review-unmeasured \
             --repo "${AI_REVIEW_UNMEASURED_REPO}" \
             --head-sha "${AI_REVIEW_UNMEASURED_HEAD_SHA}" \
             --write
