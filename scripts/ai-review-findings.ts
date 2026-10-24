@@ -39,7 +39,47 @@
  * here would be a second non-zero exit that the mutation cannot reach, and
  * the case would go green over a refusal that no longer came from the
  * constant.
+ *
+ * ## The one thing this file supplies rather than forwards (CRC-B4)
+ *
+ * `aiReviewJuryGate` — the verifier quorum that counts the ballot before a
+ * finding is allowed to block. It is handed in here because the reader
+ * cannot import it: three mutation batteries copy
+ * `lib/scaffold/ai-review-findings.ts` into a scratch directory carrying
+ * only its one dependency, and this gate pulls the finding arbiter and the
+ * filing gate behind it. A mutant that died on module resolution would
+ * report zero findings, which reads exactly like a guard behaving
+ * differently.
+ *
+ * **The ballot directory binds HERE, out of the environment, and never as
+ * a third positional.** `argumentsBeyondTheContract` refuses `argv[2]` and
+ * up, and one invocation it catches is a changed-file path containing a
+ * space that an unquoted expansion word-split in two (CF-6 in
+ * `test/ai-review-changed-files-step.test.ts`). Widening the argv contract
+ * by one slot to carry a ballot would make that refusal an accepted argv
+ * whose second half is read as a directory, so the refusal keeps its full
+ * width and the path arrives by a channel word-splitting cannot reach.
+ *
+ * With no `AI_REVIEW_BALLOT_DIR_ENV` set, the gate handed over is `null`
+ * and the reader behaves exactly as it did before the group existed. There
+ * is no third state: a ballot directory nothing can read is impossible
+ * here rather than refused, because the reader never learns a path it has
+ * no gate for. `test/ai-review-findings-command.test.ts` holds this file
+ * to supplying the gate when the variable is set.
  */
+import { aiReviewJuryGate } from "../lib/ai-review-jury";
 import { main } from "../lib/scaffold/ai-review-findings";
+import { AI_REVIEW_BALLOT_DIR_ENV } from "../lib/scaffold/ai-review-step";
 
-process.exit(main(process.argv.slice(2)));
+const ballotDir = process.env[AI_REVIEW_BALLOT_DIR_ENV];
+const jury =
+  ballotDir === undefined || ballotDir === ""
+    ? null
+    : (blocking: readonly unknown[]) => aiReviewJuryGate(blocking, ballotDir);
+
+// One line, and `process.exit(main(` is load-bearing text: AC-4 in
+// `test/ai-review-findings-command.test.ts` reads it to prove this file
+// declares no exit code of its own. Wrapping the call across lines makes
+// that case red for a formatting reason, which is worth knowing before
+// reformatting it.
+process.exit(main(process.argv.slice(2), jury));

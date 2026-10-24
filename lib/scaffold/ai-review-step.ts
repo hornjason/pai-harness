@@ -3167,6 +3167,95 @@ export const AI_REVIEW_FINDING_FIELDS = {
 } as const;
 
 /**
+ * The key the verifier group's ballot hangs its per-finding votes off
+ * (CRC-B4, #1476).
+ *
+ * Declared HERE, beside the prompt that asks a verifier group to write the
+ * file, and imported by `lib/ai-review-jury.ts`, which reads it. The
+ * direction is forced — this module has no relative imports — and it is the
+ * right one anyway: #295 is the measured instance of a reader and a writer
+ * that merely agreed, where the reader asked for a key no writer ever
+ * produced and the absent key read as an empty list read as clean.
+ */
+export const AI_REVIEW_BALLOT_KEY = "ballots";
+
+/**
+ * The member each ballot entry hangs its votes off.
+ *
+ * The entry names its finding by the finding's OWN declared `file` and
+ * `summary` rather than by an identity token, and that is deliberate.
+ * `advisoryKey` is an FNV-1a hash and the writer here is a language model: a
+ * contract that asks an agent to reproduce a hash gets a plausible hex
+ * string, and a ballot filed under a key nothing matches is silently
+ * counted as no ballot at all. Two strings it is already holding cannot be
+ * got wrong that way, and the hash stays in one place — the reader computes
+ * it from the pair, so there is still exactly one identity function.
+ */
+export const AI_REVIEW_BALLOT_VOTES_KEY = "votes";
+
+/**
+ * The members of one verifier's vote, in the one spelling both sides use.
+ *
+ * `parseVotes` in `lib/finding-jury.ts` refuses an entry missing any of
+ * them, and refuses rather than coercing: a vote that cannot be read is not
+ * a vote that was cast, and reading it as a dissent invents one. `real` in
+ * particular must be a JSON boolean — the string `"false"` is truthy, and a
+ * verifier who wrote it was once counted as agreeing with the finding they
+ * had just rejected.
+ */
+export const AI_REVIEW_BALLOT_VOTE_FIELDS = {
+  verifier: "verifier",
+  real: "real",
+  reason: "reason",
+} as const;
+
+/**
+ * What ONE verifier's ballot file is called, inside that verifier's own
+ * directory.
+ *
+ * **One file per verifier, never one file holding the group**, and the
+ * difference is the only structural evidence of independence available to
+ * anything downstream. `AI_REVIEW_ALLOWED_TOOLS` grants
+ * `Read,Grep,Glob,Write` and `AI_REVIEW_DENY_RULES` denies `Task`, so a
+ * single invocation of the review action cannot spawn verifiers: a lone
+ * file claiming `VERIFIER_GROUP_SIZE` votes is exactly the shape one model
+ * in one context produces, and once written down it is indistinguishable
+ * from a real group. N files, written by N invocations, is a claim a reader
+ * can at least count.
+ *
+ * **No generated step writes one yet**, and that is stated here rather than
+ * left to be discovered. The workflow half needs one action invocation per
+ * verifier, each with its own writable directory — the findings directory
+ * cannot be shared, because the reviewer holds `Write` on it and runs
+ * first, so branch content that prompt-injects the reviewer could plant the
+ * ballot. That is #1476's remaining work. `lib/ai-review-jury.ts` reads
+ * whatever is present and records UNMEASURED when nothing is, so the
+ * contract is declared in one place before either side of it exists.
+ */
+export const AI_REVIEW_BALLOT_BASENAME = "ai-review-ballot.json";
+
+/**
+ * The environment variable naming the directory those per-verifier files
+ * are written into.
+ *
+ * **An environment variable and not a third positional argument.** The
+ * adjudicator's argv contract is two positionals and
+ * `argumentsBeyondTheContract` refuses the rest; one invocation that
+ * refusal catches is a changed-file path containing a space that an
+ * unquoted `${...}` word-split into two words. Adding a third accepted
+ * slot would turn that catch into an accepted argv whose stray half is
+ * read as a ballot directory — a refusal traded for a silent
+ * misreading, which is the trade `.claude/rules/checks-must-be-able-to-
+ * fail.md` calls a check that stopped being able to fail.
+ *
+ * Read by `scripts/ai-review-findings.ts`, which binds it into the gate
+ * it hands `main`. `lib/scaffold/ai-review-findings.ts` never sees a
+ * path, so it has no "a ballot was named and nothing read it" state to
+ * get wrong.
+ */
+export const AI_REVIEW_BALLOT_DIR_ENV = "AI_REVIEW_BALLOT_DIR";
+
+/**
  * Every severity the contract recognises, and whether it blocks.
  *
  * A closed table, and the single one: the prompt's "use one of these words"

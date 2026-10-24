@@ -274,10 +274,29 @@ export const AI_REVIEW_ADVISORY_TITLE = "AI review advisory findings";
  * FNV-1a, written out, rather than `node:crypto`. Not a preference: this
  * module is copied into a temp directory by the mutation battery in
  * `test/ai-review-advisory-findings.test.ts`, and every import it carries has
- * to be carried with it. The property wanted here is determinism and a short
- * printable token, not collision resistance against an adversary — a finding
- * that forged another finding's key would buy the forger an answer on the
- * wrong row, which is a worse annotation and not a bypass of anything.
+ * to be carried with it. The property wanted is determinism and a short
+ * printable token, not collision resistance against an adversary.
+ *
+ * ## WHAT A COLLISION COSTS, and it is no longer only an annotation
+ *
+ * This docblock used to end *"a finding that forged another finding's key
+ * would buy the forger an answer on the wrong row, which is a worse
+ * annotation and not a bypass of anything."* That stopped being true the
+ * moment CRC-B4 made the verifier quorum read a ballot filed under this
+ * key: a collision between two BLOCKING findings would let one group's vote
+ * decide both. The sentence is corrected rather than deleted because a
+ * comment asserting a property the code no longer has is the reason nobody
+ * checks it — `lib/cli-commands.ts` carried *"runs every command for real"*
+ * over a test that ran one command of ten.
+ *
+ * What holds instead, and it is a property of the CALLER rather than of
+ * this hash: `juryGate` derives the identity once over the whole blocking
+ * set, refuses a key two of them share, and carries its decision back to
+ * the reader **by position**. So a collision is seen and both findings keep
+ * blocking; it cannot silently credit one finding's vote to another. The
+ * hash is still not adversary-resistant and is not asked to be — nothing
+ * downstream of it decides anything a collision could not already be
+ * refused for.
  */
 export function advisoryKey(finding: Record<string, unknown>): string {
   const f = AI_REVIEW_FINDING_FIELDS;
@@ -956,6 +975,22 @@ function readPayload(
           return;
         }
       }
+      // CRC-B4's verifier quorum does NOT appear here, and its absence is
+      // the decision rather than an omission.
+      //
+      // A quorum that subtracts from this list is a gate whose input is the
+      // thing it gates: the verifier reads the cited file at the HEAD
+      // checkout, so code that argues itself clean would be voting on the
+      // finding about itself. And the group that would cast those votes is
+      // not independent — `AI_REVIEW_ALLOWED_TOOLS` grants
+      // `Read,Grep,Glob,Write` and `AI_REVIEW_DENY_RULES` denies `Task`, so
+      // a verifier step cannot spawn anything and N votes from one
+      // invocation are one opinion written down N times.
+      //
+      // Until both are fixed — structural independence, and a base-ref read
+      // — the ballot is RECORDED and never acted on. `main` runs the gate
+      // for the ledger and the annotation; this list is untouched by it.
+      // See `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` under CRC-B4.
       blocking.push(item);
       detail.push(renderFinding(i, finding));
     }
@@ -1183,6 +1218,79 @@ export function aiReviewExitCode(reading: AiReviewFindingsReading): number {
   return reading.outcome === "CLEAN" ? 0 : AI_REVIEW_REQUIRED_EXIT;
 }
 
+/** The annotation title the verifier quorum's own reading is printed under. */
+export const AI_REVIEW_JURY_NOTICE_TITLE = "AI review verifier quorum";
+
+/**
+ * The title the quorum's UNMEASURED state is named under.
+ *
+ * A SEPARATE title, because it is a different fact with a different fix: a
+ * group that met and disagreed is a reading, and a group that did not meet
+ * is not one. GitHub groups annotations by title, so one title for both
+ * would make the absence read as part of the vote.
+ */
+export const AI_REVIEW_JURY_UNMEASURED_TITLE = "AI review verifier quorum UNMEASURED";
+
+/**
+ * The verifier quorum, as `main` consumes it (CRC-B4).
+ *
+ * **Injected, not imported**, and the reason is mechanical rather than
+ * stylistic. This module is copied into a scratch directory by three
+ * mutation batteries, which carry its one relative dependency —
+ * `./ai-review-step`, which has none — along with it. `lib/ai-review-jury.ts`
+ * pulls in the finding arbiter and the filing gate behind it, and a mutant
+ * that dies on module resolution reports zero findings, which reads exactly
+ * like a guard behaving differently
+ * (`.claude/rules/self-referential-tests.md`, Tier 1, last row).
+ *
+ * **The gate decides nothing.** It is consulted after the reading is
+ * complete, its answer reaches an annotation and the finding ledger, and
+ * `reading` is not rebuilt from it.
+ *
+ * So a gate that is absent, unreadable, malformed **or throwing** leaves
+ * the verdict alone — and the last of those four is enforced by a `try`
+ * at the call site rather than by this sentence. It is listed explicitly
+ * because the first draft of this docblock claimed all four while only
+ * three held: the call was outside any `catch`, so a throwing gate
+ * propagated out of `main` and killed the process above the outcome
+ * marker. A comment asserting a property the code lacks is the reason
+ * nobody checks it — the instance this repository keeps is
+ * `lib/cli-commands.ts`'s "runs every command for real" over a test that
+ * ran one command of ten. `JG-6h` is now the assertion.
+ *
+ * That is the only honest arrangement while the group casting the votes
+ * is not yet structurally independent. See `AI_REVIEW_JURY_NOTICE_TITLE`.
+ *
+ * **It takes the findings and nothing else.** The ballot directory is
+ * bound by whoever supplies the gate, so this module never learns a path
+ * and the CLI's argv contract — two positionals, `argv[2]` and up refused
+ * — is untouched. A gate that is `null` is the whole of "no ballot".
+ */
+export interface AiReviewJuryGate {
+  (blocking: readonly unknown[]): {
+    /**
+     * One entry per blocking finding, **in input order** — the sentence
+     * saying the group would have withheld it, or `null`.
+     *
+     * Positional rather than keyed, and that is the contract rather than a
+     * convenience. A map from a finding identity would be a SECOND
+     * derivation of that identity over a list already produced in order,
+     * and two findings sharing a key would share a vote.
+     * `lib/finding-arbiter.ts`'s `SHARED_BALLOT` refuses exactly that one
+     * level down — *"a vote is about a finding"*.
+     *
+     * **"Would have".** Nothing here subtracts: the entry is recorded and
+     * announced, and the finding blocks exactly as it did before the group
+     * met.
+     */
+    wouldWithhold: readonly (string | null)[];
+    /** Non-null when the ballot source could not be read. Never fatal. */
+    unmeasured: string | null;
+    /** One sentence per finding voted on. */
+    detail: readonly string[];
+  };
+}
+
 /**
  * The line recording how the scope reading was taken, and the two counts a
  * reader needs to see differ when the gate fires (#1204).
@@ -1301,8 +1409,83 @@ function readArgv(argv: string[]): AiReviewFindingsReading {
  * Returns the exit code rather than calling `process.exit`, so a test can run
  * it in-process as well as spawn it.
  */
-export function main(argv: string[]): number {
+export function main(argv: string[], jury: AiReviewJuryGate | null = null): number {
   const reading = readArgv(argv);
+
+  // CRC-B4, AFTER the reading and feeding nothing back into it.
+  //
+  // The group votes on `blockingReported` — the existing decider's own
+  // answer to "which of these block", never a list re-derived from the
+  // severities, which is the criterion's first clause: a quorum over the
+  // advisory tail spends a full agent context per nit.
+  //
+  // WHAT IT DOES NOT DO IS SUBTRACT, and that is a decision with two
+  // reasons, both of them properties of the tree rather than of this
+  // function:
+  //
+  //  - **The group is not independent yet.** `AI_REVIEW_ALLOWED_TOOLS`
+  //    grants the review action `Read,Grep,Glob,Write` and
+  //    `AI_REVIEW_DENY_RULES` denies `Task`, so one invocation cannot spawn
+  //    verifiers. Independence has to be a property of the WORKFLOW — one
+  //    action invocation per verifier — and a ballot that subtracts before
+  //    that holds is a quorum wired to a constant: populated, plausible,
+  //    and filtering nothing. That is the counterfeit CRC-B4 names.
+  //  - **The verifier reads the head checkout.** A subtracting ballot would
+  //    make the branch under review an input to the gate on the branch
+  //    under review.
+  //
+  // So the votes are counted, written to the finding ledger at decision
+  // time, and announced. Nothing below reads `gate` except the annotation.
+  // CRC-B4's *"surfaced only if enough agree"* clause is therefore NOT
+  // satisfied, and the spec says so rather than this comment alone.
+  //
+  // **The ballot directory is NOT a third positional argument**, and that
+  // is deliberate rather than incidental. `argumentsBeyondTheContract`
+  // refuses `argv[2]` and up, and one of the invocations it catches is a
+  // changed-file path containing a space that an unquoted expansion
+  // word-split into two — `test/ai-review-changed-files-step.test.ts`
+  // CF-6 names that case. Widening the contract by one slot to carry a
+  // ballot would turn that refusal into an accepted argv whose second
+  // half is read as a ballot directory. So the directory binds at the
+  // wrapper, which closes over it and hands this function a gate or
+  // `null`; "no ballot" and "a ballot nothing reads" collapse into one
+  // state that cannot be reached.
+  let juryDetail: readonly string[] = [];
+  let juryUnmeasured: string | null = null;
+  if (jury !== null && reading.blockingReported !== null && reading.blockingReported.length > 0) {
+    try {
+      const gate = jury(reading.blockingReported);
+      juryDetail = gate.detail;
+      juryUnmeasured = gate.unmeasured;
+    } catch (e) {
+      // A FAIL-OPEN, DELIBERATELY, and this is the one arrangement where
+      // that is the correct choice rather than the first thing
+      // `.claude/rules/checks-must-be-able-to-fail.md` tells you to
+      // distrust. Its warning is about a guard that converts its own
+      // breakage into "no problems found". This gate finds no problems
+      // and gates nothing: the verdict is `aiReviewExitCode(reading)`
+      // either way, so catching here cannot hide a finding — it can only
+      // stop an advisory recorder from deciding a review it has no vote
+      // in. The day the ballot is allowed to subtract, this catch must
+      // become a refusal, and that is the line to change.
+      //
+      // Without it the throw propagates out of `main`, so
+      // `process.exit(main(...))` never runs and a CLEAN review dies
+      // non-zero. Worse than the exit code: this block sits ABOVE the
+      // `AI_REVIEW_OUTCOME_LINE` print, which the generated step greps
+      // for before it will read an exit code as a verdict, so the step
+      // sees an adjudicator that could not run rather than a verdict.
+      //
+      // Three things inside the real gate are outside any catch of their
+      // own — `juryReading`, `advisoryKey` over a hostile payload, and
+      // all of `juryLedgerRow`. `JG-6h` is this case.
+      juryUnmeasured =
+        `the verifier quorum threw and was not counted, so no vote was recorded for this ` +
+        `run: ${(e as Error).message}. The verdict below is the adjudicator's own and is ` +
+        `unchanged — the group decides nothing this round — but the votes for these findings ` +
+        `are lost rather than merely unfavourable, and the ledger has no row to recover`;
+    }
+  }
 
   // FIRST, and before any branch below can return. The generated workflow step
   // greps its own output for this prefix and will not read the exit code as a
@@ -1339,6 +1522,43 @@ export function main(argv: string[]): number {
   const advisory = advisoryNotice(reading);
   if (advisory !== null) {
     console.log(`::notice title=${AI_REVIEW_ADVISORY_TITLE}::${escapeAnnotation(advisory)}`);
+  }
+
+  // The quorum's own reading, on its own title, and emitted whatever the
+  // outcome was. The ledger row is the durable record and it lives on the
+  // runner, which dies with the job; this annotation is the only part of
+  // the vote that outlives the run, so it carries the whole reading rather
+  // than a count.
+  //
+  // A `::notice`, never an `::error`. The ballot decides nothing this round
+  // and an annotation that reddened a check would be a gate arriving by the
+  // back door — see the block above `juryDetail`.
+  if (juryDetail.length > 0) {
+    console.log(
+      `::notice title=${AI_REVIEW_JURY_NOTICE_TITLE}::${escapeAnnotation(
+        `A separate verifier group voted on the ${juryDetail.length} finding(s) that would ` +
+          `otherwise block. ${juryDetail.join("; ")}. THE VOTE IS RECORDED AND CHANGES ` +
+          `NOTHING: every finding above blocks exactly as it would have without it. The ` +
+          `group is not yet structurally independent and reads the head checkout, so acting ` +
+          `on it would be a gate whose input is the thing it gates.`,
+      )}`,
+    );
+  }
+
+  // A `::warning`, and the state is NAMED. An absent or unreadable ballot
+  // exiting 0 with no output is the Silent Default Substitution
+  // `.claude/rules/config-access.md` forbids: `0`, `{}` and `null` are
+  // indistinguishable from success and UNMEASURED is not. It does not
+  // refuse, because the consumer decides whether an unmeasured quorum is
+  // fatal and the honest default for a mechanism with no readings yet is an
+  // annotation rather than a red pipeline.
+  if (juryUnmeasured !== null) {
+    console.log(
+      `::warning title=${AI_REVIEW_JURY_UNMEASURED_TITLE}::${escapeAnnotation(
+        `The verifier quorum is UNMEASURED for this run: ${juryUnmeasured}. No finding's ` +
+          `status changed either way.`,
+      )}`,
+    );
   }
 
   return aiReviewExitCode(reading);
