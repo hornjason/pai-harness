@@ -42,10 +42,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PROJECT_DIR}/hooks/TopLevelCdGuard.hook.ts"
-          },
-          {
-            "type": "command",
             "command": "bun ${CLAUDE_PROJECT_DIR}/hooks/BunTestPathGuard.hook.ts"
           }
         ]

@@ -532,6 +532,58 @@ describe("#479: the live reconciliation, over what the repo owns", () => {
     // has started claiming to see a file the repo does not own.
     expect(names.has("BashToolGuard")).toBe(true);
   });
+
+  /**
+   * #1578 — TopLevelCdGuard was `project` and that classification was built on
+   * a premise the issue measured false.
+   *
+   * The docblock's justification was *"`${CLAUDE_PROJECT_DIR}` resolves to the
+   * worktree a session is in, every worktree carries the committed
+   * `.claude/settings.json`"*. The worktree does carry it. The session does not
+   * load it: measured in a worktree whose committed settings DO register this
+   * hook, three bare `cd` calls went unrefused while a user-scoped COMP-7
+   * refusal fired on the same Bash matcher in the same session.
+   *
+   * What the hook protects decides the scope, and it protects the SESSION's
+   * primary working directory — the thing `isolation: 'worktree'` resolves
+   * against. A session may be rooted anywhere while working on this repo, so
+   * that is machine-wide state and SC-518 governs it.
+   *
+   * UNMEASURED is the deliverable here, not a side effect. A repo test saying
+   * *this cannot be verified from here* beats one reporting a registration
+   * nobody loads as satisfied — which is `.claude/rules/config-access.md`
+   * applied to a check, and Claim 4 stated as a remedy rather than a failure.
+   */
+  test("SC-1659: TopLevelCdGuard is UNMEASURED — it guards the SESSION's directory (#1578)", () => {
+    const unmeasured = new Set(
+      live()
+        .filter(f => f.kind === "unmeasured")
+        .map(f => f.hook),
+    );
+    expect(
+      unmeasured.has("TopLevelCdGuard"),
+      "TopLevelCdGuard does not read as UNMEASURED. It guards the session's primary " +
+        "working directory, which is machine-wide state under SC-518, so the repo cannot " +
+        'honestly report its registration as satisfied. Set its scope to "user" in ' +
+        ".claude/rungate/hooks.json.",
+    ).toBe(true);
+  });
+
+  /**
+   * The complement, and the reason the case above cannot pass by accident: a
+   * user-scoped entry the repo ALSO registers is `dual-scope`, not
+   * `unmeasured`. So flipping the scope while leaving the `.claude/settings.json`
+   * block in place would fail the first test in this describe rather than
+   * satisfying this one — SC-518 says the two scopes are not de-duplicated and
+   * the hook would fire twice.
+   */
+  test("TopLevelCdGuard is registered in exactly one scope, so it cannot double-fire (#1578)", () => {
+    const dual = live().filter(f => f.kind === "dual-scope");
+    expect(
+      dual.map(f => f.hook),
+      "a user-scoped hook is still registered in .claude/settings.json; SC-518 says it fires twice",
+    ).not.toContain("TopLevelCdGuard");
+  });
 });
 
 describe("#479: an entry that is off records why", () => {
