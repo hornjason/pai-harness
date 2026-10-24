@@ -18,6 +18,7 @@ import {
   AI_REVIEW_TRUNCATION_STATED,
   AI_REVIEW_TRUNCATION_UNKNOWN,
   AI_REVIEW_TURNS_NOT_RECORDED,
+  AI_REVIEW_VERDICT_NOT_RECORDED,
   type LedgerReading,
 } from "../lib/ai-review-rounds";
 import {
@@ -40,6 +41,7 @@ function ledger(n: number, dropped = 0): LedgerReading {
       // recorded, and nobody having tried to read a turn count.
       mergeSha: "",
       turns: { status: AI_REVIEW_TURNS_NOT_RECORDED } as const,
+      verdict: { status: AI_REVIEW_VERDICT_NOT_RECORDED } as const,
       measured: true,
       keyable: true,
       findings: [],
@@ -60,6 +62,7 @@ function truncatedUnknown(n: number): LedgerReading {
       // recorded, and nobody having tried to read a turn count.
       mergeSha: "",
       turns: { status: AI_REVIEW_TURNS_NOT_RECORDED } as const,
+      verdict: { status: AI_REVIEW_VERDICT_NOT_RECORDED } as const,
       measured: true,
       keyable: true,
       findings: [],
