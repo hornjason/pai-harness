@@ -252,6 +252,40 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
       });
   }
 
+  /**
+   * The third divergence class, carved out per file (#1286).
+   *
+   * The comment on the case below predicted this: `#1482` narrowed
+   * `repoRootIdents` so that an identifier bound to
+   * `mkdtempSync(join(import.meta.dir, ...))` is no longer a repo root — a
+   * directory unique by construction is not the shared checkout — and it
+   * shipped with ZERO live instances, so the frozen reference and the live
+   * parse agreed over the whole tree by accident rather than by design.
+   * *"The first file that does write one makes this case red for a CORRECT
+   * change."* `test/derived-spec-guard.test.ts` is that file.
+   *
+   * Keyed by the EXPECTED READINGS, never by filename alone. A carve-out
+   * that said only "this file may disagree" would retire the check for that
+   * file permanently; this one retires exactly the disagreement #1482
+   * predicts, so any other divergence in the same file is still red — and a
+   * carve-out the tree stops needing is reported stale rather than lingering.
+   */
+  const CARVED_IDENT_DIVERGENCES: Record<string, { live: string[]; reference: string[] }> = {
+    "derived-spec-guard.test.ts": {
+      // `root` and `dir` are each bound to an inline-rooted `mkdtempSync`.
+      live: ["REPO"],
+      reference: ["REPO", "dir", "root"],
+    },
+  };
+
+  function isCarvedIdentDivergence(file: string, live: string[], reference: string[]): boolean {
+    const carved = CARVED_IDENT_DIVERGENCES[file];
+    if (!carved) return false;
+    const same = (a: string[], b: string[]) =>
+      JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+    return same(carved.live, live) && same(carved.reference, reference);
+  }
+
   test("every file in test/ parses to the same idents, roots and prefixes as the frozen reference", () => {
     // NOT a witness of the fix — it is GREEN on the pre-#793 module too, and
     // has to be, because that is the whole claim. It is the equivalence
@@ -274,6 +308,7 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
     // that does write one makes this case red for a CORRECT change — see the
     // third divergence class in the message below.
     const divergences: string[] = [];
+    const carvedUsed = new Set<string>();
     let identTotal = 0;
     let prefixTotal = 0;
     let fixedTotal = 0;
@@ -284,7 +319,11 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
       const refIdents = [...refRepoRootIdents(stripped)].sort();
       identTotal += refIdents.length;
       if (JSON.stringify(liveIdents) !== JSON.stringify(refIdents)) {
-        divergences.push(`test/${file} idents: live ${JSON.stringify(liveIdents)} vs reference ${JSON.stringify(refIdents)}`);
+        if (isCarvedIdentDivergence(file, liveIdents, refIdents)) {
+          carvedUsed.add(file);
+        } else {
+          divergences.push(`test/${file} idents: live ${JSON.stringify(liveIdents)} vs reference ${JSON.stringify(refIdents)}`);
+        }
       }
       const livePrefixes = uniqueScratchPrefixes(raw);
       // Deduped, because `uniqueScratchPrefixes` dedupes and the two halves
@@ -330,6 +369,15 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
       "the inline half of the reference matched nothing in test/, so this comparison is the " +
         "pre-#1473 one wearing a new name — the widening is unwitnessed over the real tree",
     ).toBeGreaterThan(0);
+
+    // A carve-out nobody needs is a hole nobody can see. If the frozen
+    // reference is ever taught #1482's narrowing, every entry stops firing
+    // and must be deleted in that commit rather than left standing.
+    expect(
+      Object.keys(CARVED_IDENT_DIVERGENCES).filter(f => !carvedUsed.has(f)).sort(),
+      "a carved ident divergence no longer occurs — delete the entry from " +
+        "CARVED_IDENT_DIVERGENCES rather than leaving the file exempt",
+    ).toEqual([]);
 
     expect(
       divergences,

@@ -15,6 +15,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { execFileSync } from "child_process";
 import { join } from "path";
 import { localCalendarDay } from "../lib/local-calendar-day";
+import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -77,6 +78,17 @@ for (const file of specFiles) {
 
   // Read and transform content before moving
   let content = readFileSync(srcPath, "utf-8");
+
+  // #1286: the write below is IN PLACE — it rewrites the source file's own
+  // bytes (injected frontmatter, renumbered criteria) before `git mv` moves
+  // it. A spec a generator owns must be migrated by changing its generator,
+  // not by editing output the next run discards.
+  const reading = readDerivedDeclaration(content);
+  if (!mayWrite(reading)) {
+    console.warn(`  ${skipLine(`docs/specs/${file}`, reading)}`);
+    continue;
+  }
+
   content = ensureFrontmatter(content);
   content = convertNumberedCriteria(content);
 

@@ -8,6 +8,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { localCalendarDay } from "../local-calendar-day";
 import { SC_ID_SOURCE } from "../sc-ids";
+import { mayWrite, readDerivedDeclaration, skipLine } from "../derived-spec";
 
 /**
  * SC-278: Detect specs that exceed 500 lines and suggest splitting.
@@ -61,6 +62,15 @@ export function addFrontmatterToSpecs(specsDir: string, actions: string[]): void
   for (const file of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
     const filePath = join(specsDir, file);
     const content = readFileSync(filePath, "utf-8");
+
+    // #1286: both writes below rewrite this spec's own bytes. On a spec a
+    // generator owns, the frontmatter belongs in the generator — injecting
+    // it here is discarded at the next run after breaking what pins it.
+    const derived = readDerivedDeclaration(content);
+    if (!mayWrite(derived)) {
+      actions.push(skipLine(`specs/${file}`, derived));
+      continue;
+    }
 
     if (!content.startsWith("---\n")) {
       const frontmatter = `---\ndoc-type: spec\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\ngoverns: TODO — describe what this spec governs\ntestable: false\n---\n\n`;
@@ -143,6 +153,18 @@ export function addFrontmatterToAdrs(adrDir: string, actions: string[]): void {
   for (const file of readdirSync(adrDir).filter(f => f.endsWith(".md"))) {
     const filePath = join(adrDir, file);
     const content = readFileSync(filePath, "utf-8");
+
+    // #1286: the same guard as `addFrontmatterToSpecs` above, for the same
+    // reason. The declaration is about who PRODUCES a file, not about which
+    // directory it sits in — a generated ADR loses its injected frontmatter
+    // at the next regeneration exactly as a generated spec does, and an
+    // unguarded sibling beside a guarded one reads as an oversight because
+    // that is what it was.
+    const derived = readDerivedDeclaration(content);
+    if (!mayWrite(derived)) {
+      actions.push(skipLine(`docs/adr/${file}`, derived));
+      continue;
+    }
 
     if (!content.startsWith("---\n")) {
       const frontmatter = `---\ndoc-type: adr\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\n---\n\n`;

@@ -5223,9 +5223,15 @@ export function runAuditSpecsFix(root: string, actions: string[]): void {
     actions.push(`KEPT: specs/${r.specFile} ${r.scId} — ${r.kept}`);
   }
 
-  if (entries.length === 0) {
+  // #1286: a spec a generator owns is named here, individually, with the
+  // reason. This is the path that edited a consumer's hash-pinned
+  // `specs/POV-SPEC.md` under a `UPDATED:` line; a refusal it did not print
+  // would be the same failure with the bytes left alone.
+  for (const s of result.skipped) actions.push(s.message);
+
+  if (entries.length === 0 && result.skipped.length === 0) {
     actions.push("SKIP: audit-specs (all SCs already matchable)");
-  } else {
+  } else if (entries.length > 0) {
     actions.push(
       `SKIP: audit-specs summary (rewrote ${rewritten.length} SCs, left ${kept.length} unmatched but intact)`,
     );

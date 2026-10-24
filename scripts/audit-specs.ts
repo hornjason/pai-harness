@@ -19,6 +19,12 @@ import {
 } from "../lib/conformity";
 import { parseScDeclarations } from "../lib/sc-ids";
 import { collectSpecFiles } from "../lib/spec-files";
+import {
+  mayWrite,
+  readDerivedDeclaration,
+  skipLine,
+  type DerivedReading,
+} from "../lib/derived-spec";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -74,6 +80,22 @@ export interface RewriteEntry {
   kept?: string;
 }
 
+/**
+ * A spec `--fix` declined to write because a generator owns it (#1286).
+ *
+ * Separate from `RewriteEntry.kept`, which records a CRITERION left alone
+ * inside a file that was still written. This records a FILE that was not
+ * opened for writing at all, so a caller cannot report it as `UPDATED:`.
+ */
+export interface SkippedSpec {
+  specFile: string;
+  reading: DerivedReading;
+  /** The one-line refusal, naming the file and why. */
+  message: string;
+  /** How many criteria would have been edited had the file been writable. */
+  wouldHaveEdited: number;
+}
+
 export interface AuditResult {
   specs: SpecAuditResult[];
   totalSCs: number;
@@ -83,6 +105,12 @@ export interface AuditResult {
   totalBehavioral: number;
   strictUnmatched: number;
   rewrites?: RewriteEntry[];
+  /**
+   * Always present in fix mode, and empty is a reading rather than an
+   * absence — a `--fix` that skipped a file silently is the same defect as
+   * one that wrote it silently.
+   */
+  skipped: SkippedSpec[];
 }
 
 // ── Registry loading ──────────────────────────────────────────
@@ -670,6 +698,7 @@ export function auditSpecs(
   const specsDir = join(root, "specs");
   const specs: SpecAuditResult[] = [];
   const rewrites: RewriteEntry[] = [];
+  const skipped: SkippedSpec[] = [];
 
   if (!existsSync(specsDir)) {
     return {
@@ -681,6 +710,7 @@ export function auditSpecs(
       totalBehavioral: 0,
       strictUnmatched: 0,
       rewrites,
+      skipped,
     };
   }
 
@@ -744,6 +774,23 @@ export function auditSpecs(
 
     // ── Fix mode: rewrite unmatched SCs in-place ──────────────
     const rewritable = unmatchedDecls.filter(isRewriteCandidate);
+
+    // #1286: asked BEFORE the rewrite loop, not beside the `writeFileSync`.
+    // A derived file must not contribute `RewriteEntry`s either — the
+    // scaffold turns those into `UPDATED: specs/<file>` and stages the path,
+    // so recording rewrites for a file nobody wrote reports an edit that did
+    // not happen and dirties a tree that is clean.
+    const reading = readDerivedDeclaration(content);
+    if (opts?.fix && rewritable.length > 0 && !mayWrite(reading)) {
+      skipped.push({
+        specFile,
+        reading,
+        message: skipLine(specFile, reading),
+        wouldHaveEdited: rewritable.length,
+      });
+      continue;
+    }
+
     if (opts?.fix && rewritable.length > 0) {
       let modified = content;
       let hasChanges = false;
@@ -825,6 +872,7 @@ export function auditSpecs(
     totalBehavioral,
     strictUnmatched,
     rewrites,
+    skipped,
   };
 }
 
@@ -883,6 +931,18 @@ export function formatReport(result: AuditResult): string {
       `matched/unmatched/behavioral classify the ${result.totalSCs - result.totalTicked} UNTICKED criteria only.`,
   );
   lines.push("");
+
+  // #1286: named individually, never summarised. "1 spec skipped" is not
+  // something a reader can act on, and a skip nobody can see is the same
+  // defect as the write it replaced.
+  if (result.skipped.length > 0) {
+    lines.push(`Not written — a generator owns these (${result.skipped.length}):`);
+    for (const s of result.skipped) {
+      lines.push(`  ${s.message}`);
+      lines.push(`    ${s.wouldHaveEdited} criteria would have been edited.`);
+    }
+    lines.push("");
+  }
 
   return lines.join("\n");
 }

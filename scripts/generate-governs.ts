@@ -11,6 +11,7 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
+import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
 
 const ROOT = join(import.meta.dir, "..");
 const SPECS_DIR = join(ROOT, "specs");
@@ -48,6 +49,15 @@ function processFile(filePath: string, relPath: string): void {
 
   console.log(`${apply ? "✅" : "⬜"} ${relPath}`);
   console.log(`   governs: ${truncated}`);
+
+  // #1286: `governs:` is frontmatter the generator emits. Writing it here
+  // is discarded at the next regeneration, after breaking what pins the file.
+  const derived = readDerivedDeclaration(content);
+  if (apply && !mayWrite(derived)) {
+    console.warn(`   ${skipLine(relPath, derived)}`);
+    count++;
+    return;
+  }
 
   if (apply) {
     let newContent: string;

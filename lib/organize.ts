@@ -22,6 +22,7 @@ import {
 import { join, relative, dirname, basename } from "path";
 import { loadComplianceConfig, type OrganizeExternalSource } from "./config-loader.js";
 import { matchesAnyAlias, projectAliases } from "./project-aliases.js";
+import { mayWrite, readDerivedDeclaration, skipLine } from "./derived-spec";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -549,6 +550,15 @@ function updateInternalReferences(root: string, moveMap: Map<string, string>): v
         content = content.replace(linkPattern, `](${newRelativeFormatted})`);
         changed = true;
       }
+    }
+
+    // #1286: organize moves docs into `specs/`, `docs/` and `reference/` and
+    // then rewrites links INSIDE them. A moved file can be a spec a generator
+    // owns, and rewriting its links is discarded at the next regeneration.
+    const derived = readDerivedDeclaration(content);
+    if (changed && !mayWrite(derived)) {
+      console.warn(skipLine(newPath, derived));
+      continue;
     }
 
     if (changed) {

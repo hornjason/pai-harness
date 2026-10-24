@@ -6,6 +6,7 @@
 
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
 
 const PROJECT_ROOT = join(import.meta.dir, "..");
 const REGISTRY_PATH = join(PROJECT_ROOT, "config/matcher-registry.json");
@@ -59,6 +60,16 @@ function main() {
   const before = template.substring(0, beginIndex + BEGIN_MARKER.length);
   const after = template.substring(endIndex);
   const updated = `${before}\n${generatedContent}\n${after}`;
+
+  // #1286: in place, on an existing spec. SPEC-TEMPLATE.md itself declares
+  // no generator — its `<!-- BEGIN GENERATED PATTERNS -->` delimits a region
+  // rather than the file — so this reads `authored` and proceeds. The guard
+  // is here for a consumer whose template IS produced by something else.
+  const derived = readDerivedDeclaration(template);
+  if (!mayWrite(derived)) {
+    console.error(skipLine(TEMPLATE_PATH, derived));
+    process.exit(1);
+  }
 
   // Write back
   writeFileSync(TEMPLATE_PATH, updated, "utf-8");

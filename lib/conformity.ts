@@ -10,6 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSyn
 import { tmpdir } from "os";
 import type { Dirent } from "fs";
 import { collectSpecFiles } from "./spec-files";
+import { mayWrite, readDerivedDeclaration, skipLine } from "./derived-spec";
 import {
   ambiguousSpecNames,
   readSpecRequirements,
@@ -328,6 +329,17 @@ export function flipPassingCheckboxes(): number {
   for (const [specPath, ids] of byFile) {
     if (!existsSync(specPath)) continue;
     let content = readFileSync(specPath, "utf-8");
+
+    // #1286: the second checkbox flipper, asked BEFORE any counting. A tick
+    // on a spec a generator owns is discarded at the next regeneration,
+    // after breaking whatever pins the file — and a criterion counted as
+    // flipped in a file nobody wrote is a number that means nothing.
+    const derived = readDerivedDeclaration(content);
+    if (!mayWrite(derived)) {
+      console.warn(skipLine(specPath, derived));
+      continue;
+    }
+
     let changed = false;
     for (const id of ids) {
       const unchecked = `- [ ] ${id}:`;
