@@ -191,6 +191,33 @@ reviewer *less likely to block on a real defect*. The recall readings below
 are `DETECTED` at a fresh round, so it did not happen here; two drawn
 `DETECTED` is not a bound on how often it would.
 
+#### One unplanned draw, from a different instrument
+
+On 2026-10-24 a local `security-guidance` batch — nothing to do with this
+experiment, run by another session from its own working directory — read a
+file at `lib/full-suite-command.ts` and wrote a `MEDIUM` finding about
+`isFullSuite` being fail-open. It took the path for production code and
+reviewed it on the merits rather than skipping it as unreferenced.
+
+That is **one draw from a different instrument**. It is not an AC-3 reading,
+it is not a measurement of the AI reviewer, and it is not scored. It is worth
+recording only because it is evidence on the AC-1 question from outside the
+experiment, and it points the same way as the eight payloads above.
+
+Two things it is **not** evidence of, both checked rather than assumed:
+
+- **Not that the plant is one a reviewer writes independently.** The remedy
+  the batch offered contained `suite-lock-redirect`'s planted regex. Every
+  commit carrying that path was enumerated by committer date against the
+  finding's own timestamp: the only one in existence when the review ran was
+  a scratch commit byte-identical to `planted.ts`, so the remedy preserved a
+  literal already in the file under review rather than deriving it. The
+  measurement that *would* settle it is to stage **`baseline.ts`** at the
+  `reviewPath` — the `&` present — and see whether a reviewer asked to harden
+  `isFullSuite` removes it. Until then: `UNMEASURED`.
+- **Not a defect to fix.** The subject's job is to carry defects. A subject
+  edited to survive review is no longer the thing the premise tests pin.
+
 #### Two things the title and the round number leak
 
 Both were found by running the protocol, both are the instrument reading
@@ -412,6 +439,20 @@ measurement and the gate is what was re-asked.
 **No reviewer reading has been taken of either `suite-lock-redirect` case.**
 The obstacle is gone and the subject is stageable; nobody has staged it. That
 is still N = 0, and it is the next reading to take rather than a box to tick.
+
+**Before taking it, know that this subject carries a second confound, and it
+is one severity band from breaking the clean arm.** `isFullSuite` returns
+`false` on any command it cannot parse, and its own docblock says `false` is
+the permissive answer — so a reviewer can truthfully flag it as fail-open.
+`baseline.ts` and `planted.ts` differ on **exactly one line**, and it is not
+that one, so the property belongs to the subject *family* and appears in the
+clean arm identically. It has been priced `medium` once, which
+`AI_REVIEW_SEVERITIES` does not block, and at `medium` it costs an advisory
+slot and nothing else. Priced `high` or `critical` it makes
+`suite-lock-redirect/clean` score `FIRED` on a finding that has nothing to do
+with the plant — the same failure #1513 removed from `worktree-state-write`,
+reached by a different route. Read the advisory findings on a clean draw
+before concluding the arm is quiet.
 
 ## The five readings
 
