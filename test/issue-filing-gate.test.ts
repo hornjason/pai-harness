@@ -1104,7 +1104,45 @@ describe("the ledger carries every row of a blocked command", () => {
  * Flip `emitted` on the rows **before** `cleanClauseNote` is built. The count
  * goes right, and the refusal stops naming the clauses the agent has to
  * re-run — which is the half that makes blocking a mixed command affordable
- * at all (#1338). FG-94 is red under it.
+ * at all (#1338). FG-94 is red under it, and M2 below is it applied.
+ *
+ * ## What was broken to prove it, run and counted
+ *
+ * Over this file (96 tests). Every row's failing SET was predicted before the
+ * battery ran, not just its count, and **the baseline row was read first** —
+ * `bun` writes its summary to stderr, so a reader parsing stdout alone makes
+ * every row below unreadable.
+ *
+ * | Row | Predicted | Measured |
+ * |---|---|---|
+ * | **baseline** — unmutated | 96 pass, 0 fail | **96 pass, 0 fail** |
+ * | M1 `markBlockedCommand` short-circuited to `rows.map(r => ({...r}))` — the genuine pre-#1344 accounting | 6: FG-37, FG-58, FG-90, FG-92, FG-95, FG-96 | **6 of 96, exactly that set** |
+ * | M2 the cheapest wrong fix: `clean` read from the MARKED rows, so the note empties | 2: FG-46, FG-94 | **2 of 96, exactly that set** |
+ * | M3 `COMMAND_BLOCKED` collapsed to `"DUPLICATE"` — the third state folded into the second | 1: FG-92 | **1 of 96, exactly that set** |
+ *
+ * **M3 is 1 and not 4 on purpose, and it is the row worth reading.** FG-90,
+ * FG-95 and FG-37 compare against the exported constant, so they agree with
+ * the mutant by construction — two deciders that agree
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). FG-92 is
+ * the only case that spells `"DUPLICATE"` on one side and reads the constant
+ * on the other, and asserts the two values are DISTINCT. Delete FG-92 and
+ * nothing in this file notices the two states being merged.
+ *
+ * Before believing M1, the input on which mutant and original differ, run
+ * rather than assumed — `${DUPLICATE_FILING} && ${NOVEL_FILING}`, the second
+ * row:
+ *
+ * ```
+ * mutant:   emitted=true  disposition=ISSUE withheldBy=null
+ * original: emitted=false disposition=ISSUE withheldBy="COMMAND_BLOCKED"
+ * ```
+ *
+ * and for M2, the same input: the refusal contains `1 of 2` on the original
+ * and does not on the mutant.
+ *
+ * None of the three is left in the tree; all were run and reverted, and
+ * `lib/issue-filing-gate.ts` was confirmed byte-identical afterwards by
+ * sha256.
  */
 describe("FG-90..FG-96: a blocked command filed nothing (#1344)", () => {
   /**

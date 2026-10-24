@@ -54,6 +54,13 @@
       "note": "#1348 - a provenance reading states the directory it was taken in. Above every declared block, which is what the allocator hands an owner who has none; 2460-2479 looked free by eyeballing headroom and collided with PARALLEL-AGENT-COORDINATION-SPEC.md, caught by test/spec-sc-ids-unique.test.ts. Delete when the PR merges."
     },
     {
+      "owner": "rg/1344",
+      "from": 90,
+      "to": 99,
+      "namespace": "FG",
+      "note": "#1344 - a blocked command records its clean clauses as not emitted. test/issue-filing-gate.test.ts holds FG-1..FG-89 on main and FG has no allocator, so this is the eyeballed-headroom method the rule names, declared before the ids were consumed. NOT pushed to main ahead of the branch: main requires the `test` and `ai-review` status checks with enforce_admins on, so a reservation-only push is refused and the entry can only reach main through this PR. FG-90..FG-96 are consumed. Delete when the PR merges."
+    },
+    {
       "owner": "rg/crc-b4-jury-ledger",
       "from": 21,
       "to": 35,
