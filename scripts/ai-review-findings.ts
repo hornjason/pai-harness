@@ -51,13 +51,33 @@
  * report zero findings, which reads exactly like a guard behaving
  * differently.
  *
- * That seam cannot become a bypass. `main` refuses a ballot path it has no
- * gate for — `BALLOT_UNWIRED`, UNMEASURED, non-zero — so an entry point that
- * forgot this argument fails loudly instead of adjudicating the vote away.
- * `test/ai-review-jury-gate.test.ts`'s `JG-6d` is that case, and
- * `test/ai-review-findings-command.test.ts` holds this file to passing it.
+ * **The ballot directory binds HERE, out of the environment, and never as
+ * a third positional.** `argumentsBeyondTheContract` refuses `argv[2]` and
+ * up, and one invocation it catches is a changed-file path containing a
+ * space that an unquoted expansion word-split in two (CF-6 in
+ * `test/ai-review-changed-files-step.test.ts`). Widening the argv contract
+ * by one slot to carry a ballot would make that refusal an accepted argv
+ * whose second half is read as a directory, so the refusal keeps its full
+ * width and the path arrives by a channel word-splitting cannot reach.
+ *
+ * With no `AI_REVIEW_BALLOT_DIR_ENV` set, the gate handed over is `null`
+ * and the reader behaves exactly as it did before the group existed. There
+ * is no third state: a ballot directory nothing can read is impossible
+ * here rather than refused, because the reader never learns a path it has
+ * no gate for. `test/ai-review-findings-command.test.ts` holds this file
+ * to supplying the gate when the variable is set.
  */
 import { aiReviewJuryGate } from "../lib/ai-review-jury";
 import { main } from "../lib/scaffold/ai-review-findings";
+import { AI_REVIEW_BALLOT_DIR_ENV } from "../lib/scaffold/ai-review-step";
 
-process.exit(main(process.argv.slice(2), aiReviewJuryGate));
+const ballotDir = process.env[AI_REVIEW_BALLOT_DIR_ENV];
+
+process.exit(
+  main(
+    process.argv.slice(2),
+    ballotDir === undefined || ballotDir === ""
+      ? null
+      : blocking => aiReviewJuryGate(blocking, ballotDir),
+  ),
+);

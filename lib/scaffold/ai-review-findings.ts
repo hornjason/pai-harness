@@ -50,6 +50,51 @@
  * reads as clean, and the derived decision is WITHHELD rather than defaulted:
  * `blocked` is `null` under an UNMEASURED reading.
  *
+ * ## Where a finding points, and why that is not a question about whether it
+ * is right (#1204)
+ *
+ * A blocking finding may name a file the pull request never touched. #1166
+ * made a finding missing `file`, `line`, `summary` or `failure_scenario` its
+ * own reading; that is a check on whether the payload is SELF-consistent, and
+ * the payload is all it needs. "The file is not in the diff" compares the
+ * payload against the PULL REQUEST, so it needs a second input — the list of
+ * paths the pull request changed — and the reading is withheld until it has
+ * one.
+ *
+ * **This is not a correctness filter and must never become one.** Nothing
+ * here asks whether a finding is RIGHT. A reviewer that is wrong about real
+ * code is a review problem, and suppressing findings on suspicion of being
+ * wrong is the fail-open this module exists against. The only question asked
+ * is whether the finding can be LOCATED, which is decidable from the diff
+ * without reading the claim at all.
+ *
+ * And an unlocatable finding is **demoted, never dropped**. The tempting
+ * repair is to filter it out of the blocking list and let the run go green —
+ * which makes a review that discarded a finding byte-indistinguishable from a
+ * review that found nothing. So CRC-B7 tags it `Pre-existing`: the finding is
+ * carried in `reported` and in `unlocatableReported`, named in the
+ * annotation, counted on the scope line, and does not get to block on its
+ * own.
+ *
+ * #1204 wrote that refusal as `BLOCKING_FINDING_UNLOCATABLE`, a red required
+ * check. CRC-B7's demotion satisfies #1204's own stated criterion — the
+ * finding is not DROPPED — and does not redden a pull request over a defect
+ * that was already on main, so the refusal is gone and the demotion is what
+ * ships. The two were written against the same input on different branches;
+ * this is the resolution, not an accident of the merge.
+ *
+ * The second input is NOT SUPPLIED by any generated job yet, and the absent
+ * state is named rather than silently skipped — `scope.status` is
+ * `NOT_SUPPLIED`, `main` prints it on every run, and the verdict is exactly
+ * what it was before. That is deliberately the third option, against the two
+ * #1204 tabulated: skipping silently is Silent Default Substitution, and
+ * refusing an absent list would redden consumers for a reason about our
+ * release rather than about their code. The generated step runs
+ * `bunx rungate@<generating version>`, so a consumer's workflow and its
+ * adjudicator always come from the SAME release and cannot skew apart; the
+ * absent state is reachable from a hand-run CLI and from a workflow older
+ * than the half that supplies the list.
+ *
  * ## The exit code
  *
  * Every refusal routes through `AI_REVIEW_REQUIRED_EXIT`, imported from
@@ -376,6 +421,13 @@ export type AiReviewUnmeasuredReason =
   | "SEVERITY_ABSENT"
   | "SEVERITY_UNRECOGNISED"
   | "BLOCKING_FINDING_INCOMPLETE"
+  // `BLOCKING_FINDING_UNLOCATABLE` was here and is gone with the merge of
+  // #1204 into CRC-B7. Nothing produces it: a blocking finding naming a file
+  // outside the diff is DEMOTED to `Pre-existing` and the run stays readable,
+  // rather than refusing the whole reading. A member nothing emits is a state
+  // no test can reach, and `not.toContain` against it passes vacuously for
+  // ever — which is how a deleted check goes on looking guarded.
+  | "ARGUMENTS_UNREADABLE"
   | "VERDICT_ABSENT"
   | "VERDICT_UNRECOGNISED"
   /**
@@ -437,6 +489,164 @@ export function blockingContractViolations(finding: Record<string, unknown>): st
   });
 }
 
+// `AI_REVIEW_CHANGED_FILES_FLAG` lived here and is gone. #1204 argued for a
+// FLAG over a second positional, citing #675: `--project-root <cwd>` "would
+// arrive as a second positional and be read as a second payload".
+//
+// That hazard was CHECKED before the constant was removed, not waved away.
+// `bin/rungate.ts` appends `--project-root` only when a command declares
+// `projectRootFlag`, and `ai-review-findings` declares none — which is the
+// very fact #1204 cited. So nothing injects a stray positional into THIS
+// command, and the argument does not reach it.
+//
+// The positional wins because the deployed workflow passes one and #1356
+// builds on that. Two spellings for one argument would be two deciders, and
+// the spelling the generated step does not use is the one that would rot.
+
+/**
+ * The prefix of the line recording how the scope reading was taken.
+ *
+ * Distinct from `AI_REVIEW_OUTCOME_LINE`, which the generated step lifts its
+ * verdict out of by parameter expansion on the FIRST occurrence of that
+ * marker. This line is printed after it and contains neither that marker nor
+ * a newline, so nothing about the verdict extraction moves.
+ */
+export const AI_REVIEW_SCOPE_LINE = "ai-review findings scope:";
+
+/** Whether the pull request's changed-file list was read, and if not, why. */
+export type AiReviewScopeStatus = "MEASURED" | "NOT_SUPPLIED" | "UNMEASURED";
+
+/**
+ * The changed-file reading. One discriminator, `status`, and the producing
+ * code's own sentence beside it.
+ *
+ * `NOT_SUPPLIED` and `UNMEASURED` are different facts with different fixes.
+ * Nobody handed this run a list is a property of the workflow that invoked
+ * it; a list that could not be read is a property of this run. Collapsing
+ * them would make a release in which the input does not exist yet look like
+ * a `git diff` that failed.
+ */
+export type AiReviewScopeReading =
+  | { status: "NOT_SUPPLIED"; files: null; detail: string; reason: null }
+  | { status: "MEASURED"; files: string[]; detail: string; reason: null }
+  | {
+      status: "UNMEASURED";
+      files: null;
+      detail: string;
+      reason: Extract<
+        AiReviewUnmeasuredReason,
+        "CHANGED_FILES_UNREADABLE" | "CHANGED_FILES_EMPTY"
+      >;
+    };
+
+/** The reading for a run nobody handed a changed-file list. */
+export function scopeNotSupplied(): AiReviewScopeReading {
+  return {
+    status: "NOT_SUPPLIED",
+    files: null,
+    reason: null,
+    detail:
+      `no changed-file list was given (second positional argument), so whether ` +
+      `a blocking finding names a file this pull request touches was not checked. ` +
+      `This is a reading, not a pass: the generated job does not supply the list yet`,
+  };
+}
+
+/**
+ * The reading for a run whose changed-file list was supplied directly rather
+ * than read from disk.
+ *
+ * Exists so a caller holding an array does not have to spell the discriminated
+ * union by hand. `files` is carried raw; `readPayload` normalises.
+ *
+ * An EMPTY array is still MEASURED here and is refused downstream, on purpose:
+ * "a list was supplied and it was empty" is a fact this type can represent and
+ * `readAiReviewChangedFiles` cannot produce, so the refusal lives where every
+ * caller passes through rather than only on the disk path.
+ */
+export function scopeMeasured(files: readonly string[]): AiReviewScopeReading {
+  return {
+    status: "MEASURED",
+    files: [...files],
+    reason: null,
+    detail: `${files.length} changed path(s) supplied directly`,
+  };
+}
+
+/**
+ * Read the changed-file list from disk. Three states, each its own fact.
+ *
+ * A list that could not be read REFUSES and must never produce an empty list:
+ * an empty changed set makes every blocking finding unlocatable, which is the
+ * loud direction and loud for the wrong reason — it reads as the reviewer
+ * having hallucinated every finding it wrote.
+ *
+ * A list that WAS read and names no paths refuses too, under its own reason.
+ * A pull request that changes nothing is not a state this input can honestly
+ * be in, so an empty file is a diff that was lost rather than a diff that was
+ * empty — and the two reasons are kept apart because the fixes differ.
+ *
+ * The list must be taken from the RESTORED tree, before the reviewer could
+ * have written to the checkout. That is why this function is handed a path
+ * and never takes the diff itself: this module runs after the review, from
+ * the payload's own directory, so a diff computed here is one the subject of
+ * the review had an opportunity to edit.
+ */
+export function readAiReviewChangedFiles(path: string | undefined): AiReviewScopeReading {
+  if (path === undefined || path === "") return scopeNotSupplied();
+
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (e) {
+    return {
+      status: "UNMEASURED",
+      files: null,
+      reason: "CHANGED_FILES_UNREADABLE",
+      detail:
+        `the changed-file list at ${path} could not be read: ${(e as Error).message}. ` +
+        `A diff that could not be taken is not a pull request that touches nothing`,
+    };
+  }
+
+  // Entries are carried RAW, trimmed only. This function decides whether the
+  // list is a reading; `readPayload` decides what each path means, through
+  // `normaliseRepoPath`. Normalising here too would be two normalisers over
+  // one input — and the weaker one would win silently, because it runs first.
+  // `normaliseRepoPath` collapses dot segments, strips a `:line` suffix and
+  // refuses git's C-quoted form; stripping `./` is the only thing the reader
+  // that used to live here could do.
+  const files = raw.split("\n").map(l => l.trim()).filter(p => p.length > 0);
+  if (files.length === 0) {
+    return {
+      status: "UNMEASURED",
+      files: null,
+      reason: "CHANGED_FILES_EMPTY",
+      detail:
+        `the changed-file list at ${path} names no paths at all. A pull request that ` +
+        `changes nothing is not a state this input can be in, so the diff was taken and ` +
+        `lost rather than taken and empty — and reading it as empty would report every ` +
+        `blocking finding as naming a file outside the pull request`,
+    };
+  }
+
+  return {
+    status: "MEASURED",
+    files,
+    reason: null,
+    detail: `${files.length} changed path(s) read from ${path}`,
+  };
+}
+
+// `unlocatableBlockingFinding` lived here and is gone. It was #1204's
+// refusal predicate, and the merge with CRC-B7 retired the refusal; the
+// comparison it performed now happens inside `readPayload` against
+// `normaliseRepoPath`, which is the stronger reader. Deleted rather than
+// left exported with no caller — `lib/ai-review-rounds.ts` (CRC-N4) and
+// `lib/finding-jury.ts` (CRC-B4) are both open issues about exactly that,
+// and adding a third would be the cheapest way to pretend this merge kept
+// more than it did.
+
 export interface AiReviewFindingsReading {
   /** The single discriminator. Everything else is a projection of the same pass. */
   outcome: AiReviewOutcome;
@@ -455,6 +665,17 @@ export interface AiReviewFindingsReading {
   unmeasuredReasons: AiReviewUnmeasuredReason[];
   /** The producing code's own sentences, one per reason or blocking finding. */
   detail: string[];
+  /** How the pull request's changed-file list was read, and whether it was. */
+  scope: AiReviewScopeReading;
+  /**
+   * Blocking findings naming a file the pull request does not touch — CARRIED,
+   * never dropped, and `null` when the scope check did not run.
+   *
+   * `null` rather than `[]` for the did-not-run case on purpose: an empty list
+   * and a check nobody performed are the states this module exists to keep
+   * apart. `scope.status` is the discriminator; this is a projection of it.
+   */
+  unlocatableReported: unknown[] | null;
 }
 
 /**
@@ -482,7 +703,38 @@ function unmeasured(
     verdict: null,
     unmeasuredReasons: reasons,
     detail,
+    scope: scopeNotSupplied(),
+    unlocatableReported: null,
   };
+}
+
+/**
+ * The ONE place a scope reading meets a payload reading.
+ *
+ * Every reading is built carrying the NOT_SUPPLIED default and passes through
+ * here. A second site that set `scope`, or that raised a reading on a refused
+ * scope, would be a second statement about the same input and the two could
+ * disagree.
+ *
+ * A scope reading that REFUSES raises the whole reading, carrying the
+ * payload's own reasons and findings with it rather than replacing them:
+ * "the diff could not be taken" and "the payload is not JSON" are both true
+ * of such a run, and a reader fixing one needs to see the other.
+ */
+function withScope(
+  reading: AiReviewFindingsReading,
+  scope: AiReviewScopeReading,
+  unlocatableReported: unknown[] | null,
+): AiReviewFindingsReading {
+  const merged =
+    scope.status === "UNMEASURED"
+      ? unmeasured(
+          [...reading.unmeasuredReasons, scope.reason],
+          [...reading.detail, scope.detail],
+          reading.reported,
+        )
+      : reading;
+  return { ...merged, scope, unlocatableReported };
 }
 
 /**
@@ -492,19 +744,32 @@ function unmeasured(
  * not an error: a job whose reviewer never wrote anything has not passed a
  * review, it has not had one.
  *
- * `changedFiles` is CRC-B7 (CODE-REVIEW-CONVERGENCE-SPEC): a finding naming
- * no file this pull request touched is tagged `Pre-existing` and does not
- * block, so a bug that was already on `main` does not read as the change's
- * fault. `ai-review` reads the MERGE REF, so without this every defect on
- * `main` is reported against whichever pull request is standing closest —
- * nine of them at once on 2026-10-23.
+ * `scope` is the pull request's changed-file reading, and what this function
+ * DOES with it is CRC-B7 (CODE-REVIEW-CONVERGENCE-SPEC): a finding naming no
+ * file this pull request touched is tagged `Pre-existing` and does not block,
+ * so a bug that was already on `main` does not read as the change's fault.
+ * `ai-review` reads the MERGE REF, so without this every defect on `main` is
+ * reported against whichever pull request is standing closest — nine of them
+ * at once on 2026-10-23.
  *
- * **`undefined` and `[]` are different facts.** `undefined` is "no list was
- * supplied", under which nothing is demoted and the reading is exactly what
- * it was before this parameter existed. `[]` is a list that was supplied and
- * is empty, which no real pull request produces, so it is UNMEASURED rather
- * than "every finding is pre-existing" — the direction this is allowed to be
- * wrong in is toward blocking.
+ * ## #1204 and CRC-B7 answered the same question and this merge picked one
+ *
+ * Both asked *does this finding apply to this pull request?* over the same
+ * input. #1204 refused — `BLOCKING_FINDING_UNLOCATABLE`, a red required
+ * check. CRC-B7 demotes. **CRC-B7 owns the case**, because #1204's answer
+ * makes its own motivating measurement worse: under it each of those nine
+ * findings becomes a REFUSING required check, so every pull request standing
+ * near a defect on `main` is unmergeable until somebody fixes `main`. That is
+ * worse than the state it was fixing. CRC-B7 also grades the error direction,
+ * which the refusal does not: an undecidable path keeps blocking, and a
+ * non-string path is a contract violation rather than a demotion input.
+ *
+ * What #1204 keeps is the INPUT layer — `scope`, three states as a type
+ * rather than as conventions over a nullable array. It is the only side that
+ * can tell "nobody handed this run a list" from "every finding was
+ * locatable", and those are the two readings a green check must not conflate.
+ * It defaults to NOT_SUPPLIED, under which nothing is demoted and the reading
+ * is exactly what it was before any of this existed.
  *
  * The finding's DECLARED `file` is the input, not a path mined out of its
  * prose. `blockingContractViolations` already refuses a blocking finding that
@@ -514,7 +779,31 @@ function unmeasured(
  */
 export function readAiReviewFindings(
   raw: string | null,
-  changedFiles?: readonly string[],
+  scope: AiReviewScopeReading = scopeNotSupplied(),
+): AiReviewFindingsReading {
+  const preExisting: unknown[] = [];
+  const base = readPayload(
+    raw,
+    scope.status === "MEASURED" ? scope.files : undefined,
+    preExisting,
+  );
+  return withScope(base, scope, scope.status === "MEASURED" ? preExisting : null);
+}
+
+/**
+ * The payload pass itself. `preExisting` is appended to rather than returned,
+ * because the findings it collects belong to the reading its caller composes
+ * and every early return here is a state in which none were collected.
+ *
+ * It holds the findings CRC-B7 demoted. A COUNT would not do: "three were
+ * demoted" and "these three were demoted" differ exactly when somebody wants
+ * to know whether the demotion was right, which is the only question anybody
+ * asks of a demotion.
+ */
+function readPayload(
+  raw: string | null,
+  changedFiles: readonly string[] | undefined,
+  preExisting: unknown[],
 ): AiReviewFindingsReading {
   if (raw === null) {
     return unmeasured(["FINDINGS_FILE_ABSENT"], ["no findings payload was produced"]);
@@ -671,6 +960,11 @@ export function readAiReviewFindings(
           );
         } else if (!touched.has(named)) {
           demoted += 1;
+          // #1204's half that survived the merge: WHICH findings were
+          // demoted, not just how many. The scope line reports it, so a
+          // reader can ask whether a demotion was right — the only question
+          // anybody asks of one.
+          preExisting.push(item);
           detail.push(
             `finding ${i} is Pre-existing: it names ${JSON.stringify(
               finding[AI_REVIEW_FINDING_FIELDS.file],
@@ -747,6 +1041,8 @@ export function readAiReviewFindings(
     verdict,
     unmeasuredReasons: [],
     detail,
+    scope: scopeNotSupplied(),
+    unlocatableReported: null,
   };
 }
 
@@ -826,21 +1122,17 @@ export function normaliseRepoPath(value: unknown): string | null {
   return /^(?:[\w.@+-]+\/)*[\w.@+-]+$/.test(p) ? p.toLowerCase() : null;
 }
 
-export function readChangedFiles(path: string): string[] | null {
-  try {
-    return readFileSync(path, "utf-8")
-      .split("\n")
-      .map(l => l.trim())
-      .filter(Boolean);
-  } catch {
-    return null;
-  }
-}
+// `readChangedFiles` lived here and is gone. It returned `null` for BOTH an
+// unreadable file and — via its caller — an empty one, and `main` reported
+// that single `null` as `CHANGED_FILES_EMPTY`. A failed `git diff` writes no
+// file at all, so that collapsed "the diff was lost" into "the diff was
+// empty", which are different facts with different repairs.
+// `readAiReviewChangedFiles` replaces it and keeps them apart.
 
 /** Read the payload from disk. An absent file and an unreadable one differ. */
 export function readAiReviewFindingsFile(
   path: string,
-  changedFiles?: readonly string[],
+  scope: AiReviewScopeReading = scopeNotSupplied(),
 ): AiReviewFindingsReading {
   let raw: string;
   try {
@@ -848,14 +1140,22 @@ export function readAiReviewFindingsFile(
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
-      return unmeasured(["FINDINGS_FILE_ABSENT"], [`no findings payload at ${path}`]);
+      return withScope(
+        unmeasured(["FINDINGS_FILE_ABSENT"], [`no findings payload at ${path}`]),
+        scope,
+        null,
+      );
     }
-    return unmeasured(
-      ["FINDINGS_FILE_UNREADABLE"],
-      [`the findings payload at ${path} could not be read: ${(e as Error).message}`],
+    return withScope(
+      unmeasured(
+        ["FINDINGS_FILE_UNREADABLE"],
+        [`the findings payload at ${path} could not be read: ${(e as Error).message}`],
+      ),
+      scope,
+      null,
     );
   }
-  return readAiReviewFindings(raw, changedFiles);
+  return readAiReviewFindings(raw, scope);
 }
 
 /** The sentence a refusal prints, or `null` when there is nothing to refuse. */
@@ -949,12 +1249,14 @@ export const AI_REVIEW_JURY_UNMEASURED_TITLE = "AI review verifier quorum UNMEAS
  * wired wrong cannot change a verdict in either direction — which is the
  * only honest arrangement while the group that casts the votes is not yet
  * structurally independent. See `AI_REVIEW_JURY_NOTICE_TITLE`.
+ *
+ * **It takes the findings and nothing else.** The ballot directory is
+ * bound by whoever supplies the gate, so this module never learns a path
+ * and the CLI's argv contract — two positionals, `argv[2]` and up refused
+ * — is untouched. A gate that is `null` is the whole of "no ballot".
  */
 export interface AiReviewJuryGate {
-  (
-    blocking: readonly unknown[],
-    ballotDir: string,
-  ): {
+  (blocking: readonly unknown[]): {
     /**
      * One entry per blocking finding, **in input order** — the sentence
      * saying the group would have withheld it, or `null`.
@@ -979,45 +1281,125 @@ export interface AiReviewJuryGate {
 }
 
 /**
- * The CLI the generated workflow step runs: one argument, the payload's path.
+ * The line recording how the scope reading was taken, and the two counts a
+ * reader needs to see differ when the gate fires (#1204).
+ *
+ * The number of findings PRODUCED and the number ALLOWED TO BLOCK are both
+ * printed, because a review that quietly demoted a finding and a review that
+ * never had one are otherwise the same output. The blocking count is
+ * `withheld` under an UNMEASURED reading rather than `0` — the decision is
+ * withheld there, and printing a number would be inventing one.
+ */
+export function aiReviewScopeLine(reading: AiReviewFindingsReading): string {
+  const produced = reading.reported?.length ?? 0;
+  const blocking =
+    reading.blockingReported === null ? "withheld" : String(reading.blockingReported.length);
+  const unlocatable =
+    reading.unlocatableReported === null ? "not checked" : String(reading.unlocatableReported.length);
+  return (
+    `${AI_REVIEW_SCOPE_LINE} ${reading.scope.status} — findings reported: ${produced}, ` +
+    `allowed to block: ${blocking}, unlocatable: ${unlocatable}. ${reading.scope.detail}`
+  );
+}
+
+// `parseFindingsArgv` and `AiReviewFindingsArgv` lived here and are gone.
+// The parser refused a SECOND POSITIONAL argument by design, which is
+// exactly the invocation CRC-B7 deploys, so the flag CLI and the
+// positional one could not both stand. See `main` below.
+//
+// What the parser ALSO did is kept, in `argumentsBeyondTheContract`: it
+// refused an argument nothing reads, rather than dropping it. Deleting the
+// parser silently took that with it — measured, not assumed, on the merged
+// tree: `main([payload, list, "extra"])` returned 0 and printed CLEAN. A
+// dropped argument is a caller asking for something that did not happen,
+// which is the same fault as a skipped check wearing different clothes.
+
+/**
+ * The arguments past the two this CLI reads. One exported binding, so the
+ * refusal has a single site to mutate (`checks-must-be-able-to-fail.md`).
+ *
+ * It returns the arguments rather than a boolean because the refusal names
+ * them: "an argument was ignored" is not something an operator can act on,
+ * and the failing invocation is usually a workflow line nobody can see from
+ * the log.
+ */
+export function argumentsBeyondTheContract(argv: readonly string[]): string[] {
+  return argv.slice(2);
+}
+
+/**
+ * The CLI the generated workflow step runs: the payload's path, and
+ * optionally a second POSITIONAL path to the pull request's changed files.
+ *
+ * Positional, not a `--changed-files` flag. #1204 wrote the flag and CRC-B7
+ * wrote the positional; the generated step passes positionally and #1356
+ * builds on that, so the flag is the spelling that goes. Two spellings for
+ * one argument would be two deciders over the same input, and the one the
+ * deployed workflow does not use is the one that would rot.
+ *
+ * The second argument is optional: a caller that does not pass one gets
+ * exactly the reading this module gave before any of this was wired, which
+ * is what keeps every existing consumer working unchanged.
+ *
+ * An unreadable list is NOT silently treated as absent, and `readAiReview-
+ * ChangedFiles` is what keeps those apart — `CHANGED_FILES_UNREADABLE` for a
+ * list that was named and could not be read, `CHANGED_FILES_EMPTY` for one
+ * that was read and names nothing. A failed `git diff` writes no file at
+ * all, so collapsing the two would report a diff that was lost as a diff
+ * that was taken.
+ *
+ * An argument past those two REFUSES. Nothing reads it, and a CLI that
+ * accepts an argument it ignores reports success for an invocation that did
+ * not happen.
+ *
+ * Separate from `main` so the argv contract is decided in one place and
+ * `main` is only the printing. A refusal reached here still prints the
+ * outcome line and the scope line, because the generated step reads the
+ * outcome line before it reads the exit code.
+ */
+function readArgv(argv: string[]): AiReviewFindingsReading {
+  const extra = argumentsBeyondTheContract(argv);
+  if (extra.length > 0) {
+    // Scope is NOT read here. The argv is already known to be a shape this
+    // CLI does not accept, so which file argv[1] names is a question about
+    // an invocation that is being refused.
+    return withScope(
+      unmeasured(
+        ["ARGUMENTS_UNREADABLE"],
+        [
+          `${extra.length} argument(s) past the findings payload and the changed-file ` +
+            `list were given and nothing reads them: ${extra.map(a => JSON.stringify(a)).join(", ")}. ` +
+            `Usage: <path-to-findings.json> [<path-to-changed-files.txt>]`,
+        ],
+      ),
+      scopeNotSupplied(),
+      null,
+    );
+  }
+
+  const path = argv[0];
+  const scope = readAiReviewChangedFiles(argv[1]);
+  return path === undefined || path === ""
+    ? withScope(
+        unmeasured(
+          ["FINDINGS_FILE_ABSENT"],
+          ["no findings payload path was given to the findings reader"],
+        ),
+        scope,
+        null,
+      )
+    : readAiReviewFindingsFile(path, scope);
+}
+
+/**
+ * The CLI entry point. `readArgv` above decides what the arguments mean;
+ * everything here is emission.
  *
  * Returns the exit code rather than calling `process.exit`, so a test can run
  * it in-process as well as spawn it.
  */
 export function main(argv: string[], jury: AiReviewJuryGate | null = null): number {
-  const path = argv[0];
-  // CRC-B7. The SECOND argument is a path to the pull request's changed
-  // files, and it is optional: a caller that does not pass one gets exactly
-  // the reading this module gave before the criterion was wired, which is
-  // what keeps every existing consumer working unchanged.
-  //
-  // An unreadable list is NOT silently treated as absent. "I was told to read
-  // a list and could not" is a reading that failed, and under it a finding
-  // would never be demoted — so the run blocks, loudly, rather than quietly
-  // behaving like a caller that never asked for the tag at all.
-  const changedPath = argv[1];
-  const changed =
-    changedPath === undefined || changedPath === "" ? undefined : readChangedFiles(changedPath);
-  // CRC-B4. The THIRD argument is the directory the verifier group writes
-  // its ballots into, one file per verifier. Optional: a caller that passes
-  // none gets exactly the reading this module gave before the group existed.
-  const ballotDir = argv[2];
-  const reading =
-    path === undefined || path === ""
-      ? unmeasured(
-          ["FINDINGS_FILE_ABSENT"],
-          ["no findings payload path was given to the findings reader"],
-        )
-      : changed === null
-        ? unmeasured(
-            ["CHANGED_FILES_EMPTY"],
-            [
-              `a changed-file list was named at ${changedPath} and could not be read, so no ` +
-                `finding could be tagged Pre-existing. That is a reading that failed, not a ` +
-                `caller declining the tag`,
-            ],
-          )
-        : readAiReviewFindingsFile(path, changed);
+  const reading = readArgv(argv);
 
   // CRC-B4, AFTER the reading and feeding nothing back into it.
   //
@@ -1045,19 +1427,24 @@ export function main(argv: string[], jury: AiReviewJuryGate | null = null): numb
   // time, and announced. Nothing below reads `gate` except the annotation.
   // CRC-B4's *"surfaced only if enough agree"* clause is therefore NOT
   // satisfied, and the spec says so rather than this comment alone.
+  //
+  // **The ballot directory is NOT a third positional argument**, and that
+  // is deliberate rather than incidental. `argumentsBeyondTheContract`
+  // refuses `argv[2]` and up, and one of the invocations it catches is a
+  // changed-file path containing a space that an unquoted expansion
+  // word-split into two — `test/ai-review-changed-files-step.test.ts`
+  // CF-6 names that case. Widening the contract by one slot to carry a
+  // ballot would turn that refusal into an accepted argv whose second
+  // half is read as a ballot directory. So the directory binds at the
+  // wrapper, which closes over it and hands this function a gate or
+  // `null`; "no ballot" and "a ballot nothing reads" collapse into one
+  // state that cannot be reached.
   let juryDetail: readonly string[] = [];
   let juryUnmeasured: string | null = null;
-  if (ballotDir !== undefined && ballotDir !== "") {
-    if (jury === null) {
-      juryUnmeasured =
-        `a verifier ballot directory was named at ${ballotDir} and this entry point has no ` +
-        `quorum wired to read it, so no vote was counted or recorded. That is a group that did ` +
-        `not meet, not a group that agreed`;
-    } else if (reading.blockingReported !== null && reading.blockingReported.length > 0) {
-      const gate = jury(reading.blockingReported, ballotDir);
-      juryDetail = gate.detail;
-      juryUnmeasured = gate.unmeasured;
-    }
+  if (jury !== null && reading.blockingReported !== null && reading.blockingReported.length > 0) {
+    const gate = jury(reading.blockingReported);
+    juryDetail = gate.detail;
+    juryUnmeasured = gate.unmeasured;
   }
 
   // FIRST, and before any branch below can return. The generated workflow step
@@ -1065,6 +1452,16 @@ export function main(argv: string[], jury: AiReviewJuryGate | null = null): numb
   // verdict without it (#1013) — an adjudicator that could not run and one that
   // refused both exit non-zero, and only this line tells them apart.
   console.log(`${AI_REVIEW_OUTCOME_LINE} ${reading.outcome}`);
+
+  // AFTER the outcome line, and never instead of it. The generated step lifts
+  // its verdict from the FIRST occurrence of that marker, so this line cannot
+  // move it. Printed on EVERY run, including the one where no list was
+  // supplied: an absent input that nothing reports is Silent Default
+  // Substitution, and this line is the whole of what makes the skip a
+  // reading. Escaped at emission like the annotation below — a path arriving
+  // on the command line reaches a stream GitHub parses workflow commands out
+  // of, and this module escapes exactly once, at the point of emission.
+  console.log(escapeAnnotation(aiReviewScopeLine(reading)));
 
   // The ONE place a value reaches a workflow command. Everything upstream of
   // here — `renderFinding`, every `detail` sentence, `aiReviewRefusal` — builds

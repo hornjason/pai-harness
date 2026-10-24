@@ -46,6 +46,7 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { spawnSync } from "child_process";
 
 import {
   AI_REVIEW_BALLOT_KEY,
@@ -55,6 +56,7 @@ import {
   aiReviewJuryGate,
   juryGate,
   readBallots,
+  type JuryGateOutcome,
 } from "../lib/ai-review-jury";
 import {
   AI_REVIEW_BLOCK_VERDICT,
@@ -65,7 +67,10 @@ import {
   readAiReviewFindings,
 } from "../lib/scaffold/ai-review-findings";
 import { VERIFIER_GROUP_SIZE, VERIFIER_QUORUM } from "../lib/finding-jury";
-import { AI_REVIEW_BALLOT_BASENAME } from "../lib/scaffold/ai-review-step";
+import {
+  AI_REVIEW_BALLOT_BASENAME,
+  AI_REVIEW_BALLOT_DIR_ENV,
+} from "../lib/scaffold/ai-review-step";
 import { LEDGER_SESSION_ENV, type FilingLedgerRow } from "../lib/issue-filing-gate";
 
 let SCRATCH: string;
@@ -160,6 +165,18 @@ function ballotDir(
   }
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * The gate as `main` takes it: the ballot directory bound in, so the
+ * reader is handed a function of the findings alone.
+ *
+ * This is the same binding `scripts/ai-review-findings.ts` performs out of
+ * `AI_REVIEW_BALLOT_DIR_ENV`, and `JG-6d` runs that one for real rather
+ * than trusting this helper to stand for it.
+ */
+function gateFor(dir: string): (blocking: readonly unknown[]) => JuryGateOutcome {
+  return blocking => aiReviewJuryGate(blocking, dir);
 }
 
 let seq = 0;
@@ -527,7 +544,7 @@ describe("JG-6: main records the quorum and changes no verdict", () => {
 
     const without = captureBoth(() => main([payload]));
     const withBallot = withLedgerResult(() =>
-      captureBoth(() => main([payload, "", dir], aiReviewJuryGate)),
+      captureBoth(() => main([payload], gateFor(dir))),
     );
 
     expect(withBallot.code).toBe(without.code);
@@ -543,18 +560,59 @@ describe("JG-6: main records the quorum and changes no verdict", () => {
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
     const dir = ballotDir([[f, VERIFIER_GROUP_SIZE]]);
     const { code, lines } = withLedgerResult(() =>
-      captureBoth(() => main([payload, "", dir], aiReviewJuryGate)),
+      captureBoth(() => main([payload], gateFor(dir))),
     );
     expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} BLOCKED`))).toBe(true);
     expect(code).not.toBe(0);
   });
 
-  test("JG-6d: a ballot directory with no gate wired is announced UNMEASURED", () => {
+  /**
+   * THE DEPLOYED PATH, spawned, not the in-process seam.
+   *
+   * Every other case in this file hands `main` a gate directly, which
+   * proves the reader records a vote and proves nothing about whether the
+   * published entry point ever supplies one. `scripts/ai-review-findings.ts`
+   * is where the directory binds, out of `AI_REVIEW_BALLOT_DIR_ENV`, and a
+   * wrapper that forgot the binding would leave all of CRC-B4 dead with
+   * every case above still green.
+   *
+   * Spawned rather than imported because the binding happens at module
+   * load from `process.env`, and `.../feedback` on late env edits applies:
+   * a child gets the environment it was spawned with.
+   */
+  test("JG-6d: the published entry point supplies the gate when the env names a directory", () => {
     const f = blocking();
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
-    const { lines } = captureBoth(() => main([payload, "", "/nonexistent/ballots"]));
-    expect(lines.some(l => l.includes(AI_REVIEW_JURY_UNMEASURED_TITLE))).toBe(true);
-    expect(lines.some(l => l.includes("::warning"))).toBe(true);
+    const dir = ballotDir([[f, VERIFIER_QUORUM - 1]]);
+    const ledger = join(SCRATCH, `wrapper-ledger-${seq++}.jsonl`);
+
+    const run = (env: Record<string, string>): { code: number; out: string } => {
+      const r = spawnSync("bun", [join(ROOT, "scripts", "ai-review-findings.ts"), payload], {
+        encoding: "utf-8",
+        env: { ...process.env, RUNGATE_FINDING_LEDGER: ledger, [LEDGER_SESSION_ENV]: "jg6d", ...env },
+      });
+      return { code: r.status ?? -1, out: `${r.stdout}${r.stderr}` };
+    };
+
+    const voted = run({ [AI_REVIEW_BALLOT_DIR_ENV]: dir });
+    expect(voted.out, "the wrapper did not wire the quorum").toContain(AI_REVIEW_JURY_TITLE);
+    expect(voted.out).toContain("RECORDED AND CHANGES");
+
+    // The control, and the half that makes the first assertion mean
+    // something: with the variable unset the same payload prints no jury
+    // annotation at all, and the exit code is identical either way.
+    const silent = run({ [AI_REVIEW_BALLOT_DIR_ENV]: "" });
+    expect(silent.out, "a jury annotation appeared with no ballot directory").not.toContain(
+      AI_REVIEW_JURY_TITLE,
+    );
+    expect(voted.code).toBe(silent.code);
+    expect(voted.code).not.toBe(0);
+
+    // And the vote reached the ledger from the spawned process, which is
+    // the only evidence that the deployed path records anything.
+    const rows = readFileSync(ledger, "utf-8").split("\n").filter(Boolean);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.some(l => (JSON.parse(l) as FilingLedgerRow).jury !== null)).toBe(true);
   });
 
   test("JG-6e: a ballot directory that cannot be listed is UNMEASURED, not fatal", () => {
@@ -562,7 +620,7 @@ describe("JG-6: main records the quorum and changes no verdict", () => {
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
     const without = captureBoth(() => main([payload]));
     const { code, lines } = withLedgerResult(() =>
-      captureBoth(() => main([payload, "", join(SCRATCH, "absent-dir")], aiReviewJuryGate)),
+      captureBoth(() => main([payload], gateFor(join(SCRATCH, "absent-dir")))),
     );
     expect(lines.some(l => l.includes(AI_REVIEW_JURY_UNMEASURED_TITLE))).toBe(true);
     // An unreadable quorum must not change a verdict in either direction.
@@ -577,7 +635,7 @@ describe("JG-6: main records the quorum and changes no verdict", () => {
       }),
     );
     const { code, lines } = withLedgerResult(() =>
-      captureBoth(() => main([payload, "", join(SCRATCH, "absent-dir")], aiReviewJuryGate)),
+      captureBoth(() => main([payload], gateFor(join(SCRATCH, "absent-dir")))),
     );
     expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} CLEAN`))).toBe(true);
     expect(code).toBe(0);
@@ -588,7 +646,7 @@ describe("JG-6: main records the quorum and changes no verdict", () => {
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
     const dir = ballotDir([[f, VERIFIER_QUORUM - 1]]);
     const { lines } = withLedgerResult(() =>
-      captureBoth(() => main([payload, "", dir], aiReviewJuryGate)),
+      captureBoth(() => main([payload], gateFor(dir))),
     );
     expect(lines.join("\n")).toContain(String(f.summary));
   });
@@ -617,7 +675,8 @@ function withLedgerResult<T>(fn: () => T): T {
 const AGREE_BINDING = "const agree = votes.filter(v => v.real).length;";
 const AGREE_MUTANT = "const agree = groupSize;";
 
-const LIB = join(import.meta.dir, "..", "lib");
+const ROOT = join(import.meta.dir, "..");
+const LIB = join(ROOT, "lib");
 
 /**
  * A copy of the gate whose `lib/finding-jury.ts` is `mutate(source)` and
