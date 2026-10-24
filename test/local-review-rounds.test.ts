@@ -52,12 +52,20 @@ import { AI_REVIEW_ROUND_CAP } from "../lib/ai-review-rounds.ts";
  * Rounds 2-5 on #1304 returned variants of one class — "the gate reads a
  * different value than `gh`". `classA1`/`classA2` are two spellings of that:
  * different titles, different prose, the same measured symptom underneath
- * (`file:lib/issue-filing-gate.ts`, `qty:38`, `qty:12`, `sym:resolveFiling`,
- * `sym:headRefOid`). `classB` names a different file and different readings
- * and shares zero keys with either. Those three key sets were read out of
- * `symptomKeys` before this file was written, not asserted from a guess —
- * `AC-LR1` re-reads them here so a later change to the keying shows up as a
- * red row in this file rather than as a silent change of meaning.
+ * (`file:lib/issue-filing-gate.ts`, `qty:38:findings`, `qty:12:allowed`,
+ * `sym:resolveFiling`, `sym:headRefOid`). `classB` names a different file
+ * and different readings and shares zero keys with either. Those three key
+ * sets were read out of the arbiter before this file was written, not
+ * asserted from a guess — `AC-LR1` re-reads them here so a later change to
+ * the keying shows up as a red row in this file rather than as a silent
+ * change of meaning.
+ *
+ * That is what it did. #1536 made a reading carry what it counted, and the
+ * two spellings had said *"38 open findings, 12 were allowed"* against
+ * *"38 findings, 12 still allowed"* — the same integers measuring the same
+ * thing, described differently, which is now two different readings. The
+ * bodies were corrected rather than the assertion: they are meant to be one
+ * class, and under the new keying a class agrees on what it counted.
  */
 
 interface Round {
@@ -70,7 +78,7 @@ const classA1 = {
   title: "The filing gate reads a different value than `gh` for `headRefOid`",
   body:
     "`lib/issue-filing-gate.ts` has `resolveFiling` compare its own reading against what `gh pr view` returns. " +
-    "Measured over 38 open findings, 12 were allowed through.",
+    "Measured over 38 findings, 12 allowed through.",
 };
 
 /** The same class, as a later round spelled it. Nothing in common but the symptom. */
@@ -79,7 +87,7 @@ const classA2 = {
   title: "`resolveFiling` still disagrees with `gh` about `headRefOid`",
   body:
     "In `lib/issue-filing-gate.ts` the `resolveFiling` path still reads a different `headRefOid` than `gh` does. " +
-    "Re-measured after the fix: 38 findings, 12 still allowed.",
+    "Re-measured after the fix: 38 findings, 12 allowed and still wrong.",
 };
 
 /** A class no round before it raised. */
@@ -139,7 +147,7 @@ describe("local review rounds (#1342)", () => {
     ).toBe(LOCAL_REVIEW_SETTLED);
     expect(r.newClasses).toEqual([]);
     expect(r.repeats).toHaveLength(1);
-    expect(r.repeats[0].keys).toContain("qty:38");
+    expect(r.repeats[0].keys).toContain("qty:38:findings");
     expect(runAnotherRound(r)).toBe(false);
   });
 

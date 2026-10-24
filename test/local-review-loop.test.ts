@@ -60,13 +60,23 @@ import { AI_REVIEW_ROUND_CAP } from "../lib/ai-review-rounds.ts";
 const REPO_ROOT = join(import.meta.dir, "..");
 const MAX_TURNS = 12;
 
-/** #1304's class, as round 1 spelled it. */
+/**
+ * #1304's class, as round 1 spelled it.
+ *
+ * Every pair of fixtures in this file that is meant to be ONE class now
+ * agrees on what its integers counted — `38 findings`, `12 allowed` — and
+ * not merely on the integers. #1536 made a reading carry that word, so two
+ * spellings saying *"38 open findings, 12 were allowed"* and *"38 findings,
+ * 12 still allowed"* stopped being one reading. The bodies were corrected
+ * rather than the assertions: a class that disagrees about what it counted
+ * is two classes, which is the whole point of the change.
+ */
 const classA1 = {
   id: "new",
   title: "The filing gate reads a different value than `gh` for `headRefOid`",
   body:
     "`lib/issue-filing-gate.ts` has `resolveFiling` compare its own reading against what `gh pr view` returns. " +
-    "Measured over 38 open findings, 12 were allowed through.",
+    "Measured over 38 findings, 12 allowed through.",
 };
 
 /** The same class, as a later round spelled it. */
@@ -75,7 +85,7 @@ const classA2 = {
   title: "`resolveFiling` still disagrees with `gh` about `headRefOid`",
   body:
     "In `lib/issue-filing-gate.ts` the `resolveFiling` path still reads a different `headRefOid` than `gh` does. " +
-    "Re-measured after the fix: 38 findings, 12 still allowed.",
+    "Re-measured after the fix: 38 findings, 12 allowed and still wrong.",
 };
 
 /** A reviewer that restates one class forever — #1304's rounds 2-5. */
@@ -260,7 +270,7 @@ const contractA1 = {
   summary: "The filing gate reads a different value than `gh` for `headRefOid`",
   failure_scenario:
     "`resolveFiling` compares its own reading against what `gh pr view` returns. Measured over " +
-    "38 open findings, 12 were allowed through.",
+    "38 findings, 12 allowed through.",
 };
 const contractA2 = {
   severity: "high",
@@ -268,7 +278,7 @@ const contractA2 = {
   line: 412,
   summary: "`resolveFiling` still disagrees with `gh` about `headRefOid`",
   failure_scenario:
-    "Re-measured after the fix: 38 findings, 12 still allowed through `resolveFiling`, and the " +
+    "Re-measured after the fix: 38 findings, 12 allowed through `resolveFiling`, and the " +
     "`headRefOid` it reads is still not the one `gh` reports.",
 };
 const contractB = {
@@ -344,11 +354,11 @@ describe("the loop reads the payload a real reviewer writes (#1421)", () => {
   test("AC-LL12: two findings sharing only a file and their readings are still one class", () => {
     const first = plain(
       "The gate reads a different value than the tracker does",
-      "Over 38 attempts, 12 were allowed through.",
+      "Over 38 attempts, 12 allowed through.",
     );
     const second = plain(
       "The gate and the tracker still disagree about the pull request head",
-      "Re-measured after the change: 38 attempts, 12 allowed.",
+      "Re-measured after the change: 38 attempts, 12 allowed and still wrong.",
     );
     const { turns } = driveLoop("real", turn => [turn === 1 ? first : second]);
     expect(turns).toHaveLength(2);

@@ -281,6 +281,13 @@ const PLANT_CLAIM_LINE = "Claim 1.";
  * known positive whatever the tracker contains. It names three quantities
  * because `duplicateOverlap` requires **two** shared `qty:` keys — one is not
  * a duplicate, and a plant built on one number is a plant that lands by luck.
+ *
+ * Each of those numbers also says what it counted — `60571 rows`, `60573
+ * entries` — and that is load-bearing since #1536: a bare integer is no
+ * longer a key at all, so a twin whose numbers ended a clause would report
+ * no reading, fall under the containment floor on its two location keys,
+ * and stop landing. `test/single-adjudicator-variance.test.ts` asserts the
+ * two-quantity property directly, so this does not rest on the comment.
  */
 export const DUPLICATE_PLANT_TWIN: Finding = {
   id: "plant-twin",
