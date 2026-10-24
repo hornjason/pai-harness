@@ -453,6 +453,94 @@ None of the thirteen mutations is left in the tree; all were run and reverted
 from a `cp` backup — never `git checkout --` — and `lib/line-citation.ts` was
 confirmed byte-identical to the measured source afterwards by `shasum -a 256 -c`.
 
+### The stamping hook's skip list names classes of markdown, not places to work (#1432)
+
+`SKIP_PATTERNS` in `hooks/DocHygiene.hook.ts` is a list of markdown the hook
+must not stamp. Each entry identifies a **class of document whose first line
+belongs to a different consumer than the doc index**: a payload on its way to
+the GitHub API (`/tmp/`, `/.rungate/`), an agent brief, a mutation record.
+
+`.claude/worktrees/` was in that list and is not a member of that set. It named
+a **checkout** — a place work happens — and every document inside one is an
+ordinary project document on its way to `main`. It is the same file it will be
+after the merge, and the worktree is the only place the hook could stamp it
+before it is committed.
+
+It was never argued for. The comment above the list reasons about four of the
+ten entries and never reaches this one; the entry arrived wholesale with the
+#713 hook migration (`83385d17`), which was a file move.
+
+#### The measurement that removed it
+
+The question #1432 posed was the right one: a doc written in a worktree may be
+getting stamped later, by a plain-checkout edit, in which case the skip costs
+nothing. So the rate was measured in both arms rather than assumed.
+
+**Arm assignment is the hook's own input.** Every `.md` `file_path` passed to
+`Write`/`Edit` across this machine's session transcripts (3,278 distinct
+values) was classified by whether it contains `.claude/worktrees/` — the exact
+string `SKIP_PATTERNS.some(p => filePath.includes(p))` tests — then matched
+against the markdown tracked on `main`.
+
+The instrument's one real hazard is a filter that discards one arm. Resolving a
+checkout by reading its `origin` remote does exactly that: a worktree is
+deleted when its branch merges, so of 409 distinct `.claude/worktrees/` roots
+seen in transcripts only 106 still exist, against ~100% survival for plain
+checkouts. That filter discards ~74% of one arm and ~0% of the other, and the
+WT rows that survive it are the ones whose work never merged. A worktree is
+therefore resolved through its **parent** checkout, which outlives it.
+
+Population: markdown tracked on `main`, excluding `.claude/agents/`,
+`.claude/rules/mutations/` and `archive/` — classes the hook skips for a
+written reason not under dispute. "Unstamped" means missing at least one of
+`doc-type:`, `status:`, `updated:`.
+
+| Arm | n | unstamped | rate |
+|---|---|---|---|
+| written only from a `.claude/worktrees/` path | 6 | 3 | **50.0%** |
+| written only from a plain checkout | 64 | 9 | 14.1% |
+| written from both | 54 | 5 | 9.3% |
+| no transcript write found | 74 | 48 | 64.9% |
+
+Including `test/fixtures/` (a 235-file population rather than 198) moves the
+first two rows to 61.5% (13) and 13.4% (67) — same direction, same conclusion.
+105 writes were dropped as UNRESOLVED and 112 as belonging to another
+repository; both are reported rather than assigned to an arm.
+
+Two things follow. The rates do **not** match, so the prefix was suppressing
+the hook where it was most needed. And the `both` arm at 9.3% shows why the
+damage stayed bounded and invisible: a doc that is also edited from a plain
+checkout gets stamped on that edit, so only documents touched exclusively from
+a worktree carry the defect.
+
+#### Why removing the entry is narrow
+
+Every remaining entry is a **substring** test, so nothing nested inside a
+worktree checkout lost its protection: `…/.claude/worktrees/x/.claude/agents/a.md`
+still matches `.claude/agents/`, and payload markdown still goes to `/tmp/` or
+`~/.rungate/` wherever it is written from.
+
+There is also no walk here to make expensive. Excluding `.claude/worktrees/`
+from a **directory scan** is well-founded in this repo —
+`specs/SCAFFOLD-DECOMPOSITION-SPEC.md` records a citation scan that the prefix
+took to twelve seconds and inflated to 126 citing files — but this hook is
+handed one path on stdin and tests it against a ten-element list. Measured cost
+of the change, 30 invocations per arm over three trials: 23 ms per invocation
+when the path was skipped, 33 ms when it is stamped. **+10 ms per markdown
+write** that previously exited early, and no change to any other path.
+
+#### What was broken to prove it (#1432)
+
+- `#1432 WITNESS: a doc inside a `.claude/worktrees/` checkout is stamped` was
+  run against the unmodified hook and failed, the file still reading
+  `# My Doc\n\nbody\n` — the prefix being the only difference from the
+  neighbouring stamp witnesses, which passed.
+- `#1432 CONTROL: the nested content classes stay skipped inside a worktree`
+  passes trivially while the prefix exists, so it was proved against a mutant
+  with `'.claude/agents/'` deleted from the list: it failed, naming
+  `.claude/agents/marcus.md` as stamped. The mutation was reverted and the list
+  confirmed to differ from `origin/main` by the removed line only.
+
 ## Constraints
 
 - All new content-alignment checks MUST start as WARN, not FAIL (spec-policies.json Decision #9)

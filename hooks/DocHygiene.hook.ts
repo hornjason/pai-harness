@@ -47,13 +47,14 @@ if (!filePath.endsWith('.md')) process.exit(0);
 // consumer than the doc index. A mutation record is identified by its one `# `
 // heading, so a stamp there is not a missing field being filled in, it is a
 // convention being broken one file at a time.
+// Every entry names a CLASS of markdown, never a place to work, which is why
+// `.claude/worktrees/` left in #1432 — see DOC-HYGIENE-ARCHITECTURE-SPEC.md.
 const SKIP_PATTERNS = [
   '/archive/',
   '/MEMORY/WORK/',
   '/.pai-work/',
   '/config/',
   '/test-results/',
-  '.claude/worktrees/',
   '.claude/agents/',
   '.claude/rules/mutations/',
   '/tmp/',
