@@ -425,6 +425,32 @@ const REDIRECT = /^(?:\d*|&)>>?(&\d+)?(.*)$/;
  * because the `&&` inside the message split the command, and
  * `bash -c "bun test; echo done"` went unguarded because the `;` inside the body
  * split it before the shell-wrapper pattern could match a balanced quoted string.
+ *
+ * ## TWO GUARDS READ THIS. Loosening it for one breaks the other silently.
+ *
+ * 1. `isFullSuiteCommand` — the cross-session concurrency cap (DIR-L29, #67,
+ *    SC-516). It fails CLOSED: a missed full suite is unlimited concurrency,
+ *    which rebooted this machine on 2026-10-05.
+ * 2. `suitePathArguments` / `suitePathArgumentsBySegment` — the path-existence
+ *    guard behind `lib/bun-test-paths.ts` and `hooks/BunTestPathGuard.hook.ts`
+ *    (#1544). It fails OPEN, because a false refusal blocks the agent in
+ *    front of it.
+ *
+ * The two want opposite error directions from the same reading, so a change
+ * here needs a case on both sides. `test/bun-test-path-guard.test.ts` AC-8e
+ * is the control that `&&` and a backgrounding `&` still end a segment —
+ * added when #1544 taught this splitter that an `&` adjacent to a `>` is part
+ * of a redirect, which is exactly the kind of loosening that could have
+ * quietly changed what the concurrency cap sees.
+ *
+ * ## This is NOT the same question `lib/top-level-cd.ts` answers
+ *
+ * `topLevelSegments` there splits only at parenthesis depth 0, returning a
+ * subshell as ONE opaque segment — correct for "did a `cd` move the SESSION",
+ * since a `cd` inside a subshell cannot. Adopting it here would hide every
+ * `bun test` inside a subshell from the anchored invocation pattern. One
+ * parser must treat a subshell as opaque and the other must see inside it, so
+ * they are not two deciders that agree (#1544, SC-2547).
  */
 function splitTopLevel(command: string): string[] {
   const out: string[] = [];
