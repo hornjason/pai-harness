@@ -471,7 +471,12 @@ both under a title naming no case.
 | case | pull request | round | N | `score` outcome, every draw | what the reviewer wrote |
 |---|---|---|---|---|---|
 | `suite-lock-redirect/planted` | #1525 | 1 | 2 | **`DETECTED`**, both — plus **two `UNMEASURED`** draws | one `high` at line **5**, the changed line, naming the dropped `&` and the permissive misreading exactly. Zero advisory, both draws. |
-| `suite-lock-redirect/clean` | #1526 | 1 | 2 | **`FIRED`**, both | one `high` at line **19** and one `medium` at line **34** — and **neither is a changed line**. |
+| `suite-lock-redirect/clean` | #1526 | 1 | 2 | scored **`FIRED`** both — **arm reading `UNMEASURED`** | one `high` at line **19** and one `medium` at line **34** — and **neither is a changed line**. |
+
+The clean row carries two values on purpose. `FIRED` is what `score`
+returned and is recorded verbatim; **`UNMEASURED` is what the draw supports**,
+and it is the one to read. The distinction, and why `score` was not taught
+the rule, is below and in `thirdReadings[].armReading` (#1534).
 
 The planted arm's full outcome set across four attempts of run
 `40091835904` is `DETECTED`, `UNMEASURED`, `UNMEASURED`, `DETECTED`. Both
@@ -483,10 +488,26 @@ cure each time was one bare `gh run rerun`. `capture` **refuses** those
 draws rather than writing an empty findings list, which is the distinction
 the instrument exists for.
 
-### The clean arm is red, and the cause is not the arm
+### The clean arm could not be read, and `FIRED` says otherwise
 
-`FIRED` is a failing outcome and it is reported as one. What it is *about*
-is the part a number cannot carry.
+**This section said "the clean arm is red" until #1534 corrected it.** That
+was an attribution the draw does not support, and the correction is the point
+of the section, so the original wording is left standing here rather than
+quietly swapped.
+
+`score` returned `FIRED`, correctly under the rule it applies today: a
+blocking finding on a clean subject is a precision failure. But `FIRED` is
+defined in the table below as *"a blocking finding — precision, **measured**"*,
+and on this draw precision was **not** measured. A true finding — true of the
+**base**, on a line the diff never touched — occupied the blocking slot, so
+the draw never reached the question the precision half asks. A reading that
+could not be taken is not one that passed, and symmetrically not one that
+failed.
+
+So the arm reads **`UNMEASURED`**, and the scored `FIRED` stands beside it
+unedited. Both are recorded: `scoreOutcome` is the instrument's output and is
+never hand-written, because a file that cannot distinguish a scored value from
+a corrected one has moved the conflation up a level rather than fixing it.
 
 The clean arm changes new-side lines 7–11, 22, 25, 28, 30, 38 and 41 — the
 renamed locals and the extracted `looksLikePath`. The reviewer flagged lines
@@ -500,11 +521,17 @@ by reading them: `isFullSuite("  bun test")` returns `false` in `baseline.ts`
 compacted subject copy. It did not invent them, and it said nothing about the
 refactor.
 
-So the reading is a red precision outcome whose cause is the reviewer
-reviewing the **file** rather than the **diff** — and the control has no way
-to tell that from a precision failure about the arm. That is the sentence the
-`critical`@39 confound already earned, arriving again from a different
-direction. `critical`@39 itself is **absent from all four measured payloads**.
+The cause is the reviewer reviewing the **file** rather than the **diff** —
+and the control has no way to tell that from a precision failure about the
+arm. That is the sentence the `critical`@39 confound already earned, arriving
+again from a different direction. `critical`@39 itself is **absent from all
+four measured payloads**.
+
+**`score` was deliberately not taught to ignore findings on unchanged lines.**
+That is a real candidate fix and it is one of the two options under decision
+in **#1533**. Applying it here would pre-decide that issue and silently
+re-scale every reading banked under the current rule — `DETECTED` ×4,
+`QUIET` ×2, `FIRED` ×2 — leaving this file a mix of two scales.
 
 **This is the second confound, predicted above and now drawn.** The warning
 named the mechanism exactly — `isFullSuite` is fail-open and a reviewer can
@@ -524,12 +551,15 @@ number is the one move that would make all of this worthless.
 Not CRC-A4, and not any other criterion. Two draws is not a variance
 estimate, and these two per arm are attempts of a **single** run on a
 byte-identical tree — the same weakness #1513 recorded, not a new independent
-sample. And half this subject's reading is red: a control with one green arm
-and one red arm is evidence of exactly what it says.
+sample. And half this subject's reading **could not be taken**: recall was
+measured, precision was not. A control with one green arm and one
+`UNMEASURED` arm is evidence of exactly what it says, and `UNMEASURED` fails
+the run — it is simply not a precision failure.
 
-Gaps, as gaps: `suite-lock-redirect/clean-loop` is still N = 0; the clean
-arm's `FIRED` is uninterpretable as a precision number until a finding set
-can be scoped to the diff; and both arms were drawn from one run each.
+Gaps, as gaps: `suite-lock-redirect/clean-loop` is still N = 0; no precision
+number can be read from the clean arm until a finding set can be scoped to
+the diff or the subject's baseline carries nothing true to say (**#1533**);
+and both arms were drawn from one run each.
 
 ## The five readings
 
@@ -544,6 +574,31 @@ can be scoped to the diff; and both arms were drawn from one run each.
 `UNMEASURED` is a distinct outcome from `QUIET` and it fails. "The reviewer
 found nothing" and "nobody can say what the reviewer found" are different
 facts, and the whole of #1169 is that today they print the same.
+
+### `FIRED` carries the word *measured*, and a reading can fail to earn it
+
+`FIRED` means precision was **measured** and failed. A blocking finding is
+necessary for that and it is not sufficient: the finding also has to be
+**about the arm**. A finding that is true of the pull request's *base*, on a
+line the diff never touched, occupies the blocking slot without the draw ever
+reaching the question — so the honest outcome is `UNMEASURED`, in exactly the
+sense the row above gives it.
+
+`score` cannot see this, by design-as-it-stands: it reads severity, file and
+line, and it has no notion of which lines the diff changed. Whether it should
+is **#1533**. Until that is decided, a reading in this state is recorded with
+**both** values and they are never merged:
+
+| field | what it is | may it be hand-written? |
+|---|---|---|
+| `scoreOutcome` | `run.ts`'s output, verbatim | **never** |
+| `armReading` / `armInterpretation` | what the draw supports, with its reason | yes — it *is* the human reading |
+
+Writing the interpretation into `scoreOutcome` would make the file claim
+`score` returned something it did not, and then nothing on disk could tell a
+scored result from a correction of one — the same conflation this whole
+table exists to prevent, moved one level up. The first reading in this state
+is `suite-lock-redirect/clean` (#1524, corrected by #1534).
 
 Advisory findings are counted and never fatal — they are the cheap tail. The
 line that costs something is the blocking one, and `AI_REVIEW_SEVERITIES`
