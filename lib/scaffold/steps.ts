@@ -3996,6 +3996,26 @@ on:
   # See the block comment in lib/scaffold/steps.ts: no branches: filter, and
   # its absence hangs a merge queue silently rather than failing it (#867).
   merge_group:
+  # #1469. PROTECT-1 (lib/branch-protection.ts) refuses to recommend
+  # required_status_checks.strict = false on a repository whose required
+  # contexts do not run on push: to the default branch, and refuses
+  # strict = true on a user-owned account because it serialises every PR.
+  # A required ai-review that runs only on pull_request therefore has no
+  # reading that clears, and this trigger is the refusal's own remedy.
+  #
+  # It does NOT review the commit. The review action throws
+  # "Unsupported event type: push" before reading anything, exactly as it
+  # does on merge_group, so every step that wants a pull request says it
+  # had none and the report step annotates UNMEASURED and passes. What
+  # push-CI buys here is the semantic-conflict net, and in this generated
+  # set that is ci.yml's test job, which has had this trigger all along.
+  #
+  # The branch list is the consumer's own ci.branches, the same reading
+  # ci.yml and gates.yml use. A literal here would be a second decider and
+  # would be wrong on every repository whose default branch is not ours.
+  push:
+    branches:
+${branchList}
 ${AI_REVIEW_PULL_REQUEST_TRIGGER}
 
 ${aiReviewPermissions}

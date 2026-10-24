@@ -4105,6 +4105,22 @@ if [ "\${${AI_REVIEW_EVENT_VAR}:-}" = merge_group ]; then
   exit 0
 fi
 
+# #1469. Same reading for a push to the default branch, and taken here rather
+# than left to the refusal below. \`AI_REVIEW_ROUNDS_BRANCH\` is
+# \`github.event.pull_request.head.ref\` and is EMPTY on a push, so without
+# this the step would refuse with \${AI_REVIEW_REQUIRED_EXIT} and red the
+# check on every commit that lands — reporting "this job cannot tell which
+# round it is on", which is a true sentence about a question that does not
+# apply.
+${aiReviewPushBranch(
+  `  echo "${AI_REVIEW_ROUND_OUTPUT}=" >> "\${GITHUB_OUTPUT}"
+  echo "${AI_REVIEW_AT_CAP_OUTPUT}=" >> "\${GITHUB_OUTPUT}"
+  echo "${AI_REVIEW_INTENT_OUTPUT}=${AI_REVIEW_INTENT_NONE}" >> "\${GITHUB_OUTPUT}"
+  echo "ai-review rounds: push to the default branch, no review and so no round"
+  exit 0
+`,
+)}
+
 # \`AI_REVIEW_ROUNDS_SINCE\` is in this refusal and not defaulted, deliberately
 # (#1281). An unset value would widen the query back to the whole branch NAME
 # — the exact defect — and it would do it silently, because the response is
@@ -4379,8 +4395,17 @@ if [ "\${${AI_REVIEW_EVENT_VAR}:-}" = merge_group ]; then
   exit 0
 fi
 
+# #1469. A push to the default branch carries no pull request either, and the
+# same distinction applies: ABSENT is a complete reading, UNMEASURED is a
+# failed one. Without this branch a push falls into the refusal below and
+# reports that the history "could not be read", which names a lookup that was
+# never applicable rather than one that failed.
+${aiReviewPushBranch(`  carry_state '${AI_REVIEW_CARRY_ABSENT}'
+  exit 0
+`)}
+
 if [ -z "\${${AI_REVIEW_LEDGER_PR_VAR}:-}" ]; then
-  carry_unmeasured "this run is not a merge_group entry and no pull request number reached this step, so there was nowhere to look for the history."
+  carry_unmeasured "this run is neither a merge_group entry nor a push, and no pull request number reached this step, so there was nowhere to look for the history."
 fi
 
 if [ -z "\${${AI_REVIEW_LEDGER_TOKEN_VAR}:-}" ] || [ -z "\${${AI_REVIEW_LEDGER_REPO_VAR}:-}" ]; then
@@ -5584,6 +5609,32 @@ export function buildReviewRunScript(version: string): string {
     `happened. Unset ${AI_REVIEW_REQUIRE_VAR}, or keep ai-review a required ` +
     `context on pull_request and accept the per-head review as sufficient.`;
 
+  // #1469. The same shape as the two above and a DIFFERENT argument, which is
+  // the whole reason it is a separate branch rather than an extra alternative
+  // on the queue test. A queue entry can be passed because the head commit it
+  // batches was already reviewed; a push has no such guarantee available to
+  // this job. Nothing here claims the commit was reviewed elsewhere — it
+  // usually was, on the pull request that produced it, but a direct push to
+  // the default branch is a push too and this step cannot tell them apart.
+  const pushEntry =
+    `This run is a ${AI_REVIEW_PUSH_EVENT} to the default branch, and no AI ` +
+    `review ran on it: the review action does not support the ` +
+    `${AI_REVIEW_PUSH_EVENT} event and refuses it as an unsupported event ` +
+    `type. The trigger exists so that ai-review REPORTS on push, which is ` +
+    `what lets branch protection be reasoned about (#1469) — it is not a ` +
+    `review of this commit and must not be read as one. This check is ` +
+    `UNMEASURED on this ref. What reviewed the content was the pull request ` +
+    `that produced it, if there was one; a direct push to this branch was ` +
+    `reviewed by nothing at all, and this job cannot tell those two apart.`;
+
+  const pushRefusal =
+    `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and this run is ` +
+    `a ${AI_REVIEW_PUSH_EVENT} to the default branch, which the review action ` +
+    `refuses as an unsupported event type, so no AI review ran on this ` +
+    `commit. Failing rather than reporting a green check for a review that ` +
+    `never happened. Unset ${AI_REVIEW_REQUIRE_VAR} if the review on the ` +
+    `pull request that produced this commit is the measurement you want.`;
+
   const absentRefusal =
     `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and the ` +
     `credential-detection step produced no mode output, so this pull ` +
@@ -5693,6 +5744,28 @@ if [ "\${${AI_REVIEW_EVENT_VAR}:-}" = ${AI_REVIEW_QUEUE_EVENT} ]; then
   fi
   exit 0
 fi
+
+# #1469, and SECOND for the reason the branch above is first: on a push the
+# action threw before producing an outcome, so none of the readings below can
+# hold and falling through would report a cause this job did not measure.
+#
+# The flag check is INSIDE the branch, not above it and not below it — the
+# fifth and now sixth spelling of ONE decider, same variable, same \`=\`
+# against the same value, same \${AI_REVIEW_REQUIRED_EXIT}. #939's fence in
+# test/ai-review-merge-group.test.ts runs every no-verdict route through one
+# table precisely so that a branch added here without it reds rather than
+# reintroducing that issue.
+#
+# \`::warning\` and not \`::notice\`: nothing reviewed this commit.
+${aiReviewPushBranch(
+  `  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${pushEntry}"
+  if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
+    echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${pushRefusal}" >&2
+    exit ${AI_REVIEW_REQUIRED_EXIT}
+  fi
+  exit 0
+`,
+)}
 
 if [ -z "\${AI_REVIEW_MODE:-}" ]; then
   echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${absent}"
@@ -6512,6 +6585,78 @@ export const AI_REVIEW_EVENT_VAR = "AI_REVIEW_EVENT";
 export const AI_REVIEW_QUEUE_EVENT = "merge_group";
 
 /**
+ * The event a push to the default branch fires (#1469).
+ *
+ * ## Why the trigger exists at all
+ *
+ * `PROTECT-1` in `lib/branch-protection.ts` REFUSES to recommend
+ * `required_status_checks.strict = false` on a repository whose required
+ * contexts do not run on `push:` to the default branch, and it refuses
+ * `strict = true` on a user-owned account because it serialises every swarm's
+ * pull requests. A repository whose `ai-review` is required and runs only on
+ * `pull_request` therefore has no reading that clears: both directions are
+ * refused, and the refusal's own remedy is this trigger. `readPushCi` reads
+ * `.github/workflows/` and asks exactly one question of each file — does it
+ * run on push to this branch, and which contexts does it name — so the
+ * trigger is what moves `ai-review` out of that reading's `missing` list.
+ *
+ * ## What the job can DO on it: nothing, and that is measured
+ *
+ * Read from `anthropics/claude-code-action` at the SHA `lib/claude-code-action.ts`
+ * pins, the same way #867 established it for `merge_group`:
+ * `parseGitHubContext()` in `src/github/context.ts` switches on
+ * `context.eventName`, and `push` appears in neither of its two event-name
+ * lists, so the `default:` branch throws `Unsupported event type: push`
+ * before the action reads anything. There is no version to bump to.
+ *
+ * So this is #867's distinction again, and it has to be drawn the same way:
+ * an argument about what the job can DO on an event is not an argument about
+ * whether it REPORTS on one. The job reports; every step that reads a pull
+ * request says it had none rather than reading an empty value.
+ *
+ * ## And it is NOT a review of the merged commit
+ *
+ * Worth stating where the constant is, because the tempting reading of "the
+ * required context now runs on push" is that main is being reviewed. It is
+ * not. The honest severity is `::warning` and the honest word is UNMEASURED:
+ * nothing read this commit. What push-CI buys under `strict: false` is the
+ * SEMANTIC-conflict net PROTECT-1's header argues for — two changes green
+ * alone and broken together — and in this repository that net is `test`,
+ * which has run on push since the scaffold's first CI file. `ai-review` adds
+ * no part of it and must not be read as adding one.
+ */
+export const AI_REVIEW_PUSH_EVENT = "push";
+
+/**
+ * The one spelling of "this run is a push, so there is no pull request".
+ *
+ * A function and not four hand-written `if` lines, for the reason this module
+ * gives everywhere else: four copies of one comparison are four things to
+ * mutate, and a battery that removes one of them leaves the other three
+ * holding the case up. `AI_REVIEW_PUSH_EVENT` decides the name and this
+ * decides the comparison — exact string, `:-` default, the same shape the
+ * `merge_group` branches use — so a test can remove the branch in one place
+ * and watch every push case go red at once.
+ *
+ * The BODY is the caller's, because the four sites say four different true
+ * things: the rounds step has outputs to blank, the carry step has a state to
+ * declare, the restore step has nothing to restore, and the report step has a
+ * verdict to reach. A shared body would be one of those four wearing the
+ * other three's names.
+ *
+ * Trailing newlines are stripped so a call site can close its template
+ * literal on a line of its own, and that is not cosmetic. `AC-6b` in
+ * `test/ai-review-scaffold.test.ts` reads every line of THIS MODULE whose
+ * trimmed form begins `exit ` and requires it to be `0` or the exported
+ * constant — so a body ending ``  exit 0`,`` reads as the literal ``0`,``
+ * and reds the guard that keeps every refusal mutable in one place.
+ * Measured: it did, on the first draft of this change.
+ */
+export function aiReviewPushBranch(body: string): string {
+  return `if [ "\${${AI_REVIEW_EVENT_VAR}:-}" = ${AI_REVIEW_PUSH_EVENT} ]; then\n${body.replace(/\n+$/, "")}\nfi`;
+}
+
+/**
  * The bash that restores the untrusted path set BEFORE the baseline is read.
  *
  * ## What it is fixing, measured on a real run
@@ -6588,10 +6733,45 @@ export function buildRestoreScript(): string {
     `empty value as a write that never happened, and the drift step would ` +
     `refuse every run for a cause nothing names. Refusing`;
 
+  // #1469. What a push to the default branch does here, and why it is a
+  // branch rather than a third reading in the expression that sets
+  // AI_REVIEW_BASE_REF_VAR.
+  //
+  // The tempting fix is `|| github.ref_name`, which is one token and makes
+  // the refusal below stop firing. It is Silent Default Substitution: on a
+  // push the checkout IS the branch, so "restore the untrusted paths from
+  // the base" would fetch `origin/<branch>` — a ref that may already have
+  // moved past the commit being built — and overwrite the tree with it. The
+  // step would report success having done something nobody asked for, and
+  // the drift reading downstream would carry the difference.
+  //
+  // There is no base here, and no review either: the action refuses `push`
+  // as an unsupported event type, so nothing will read the paths this step
+  // exists to make trustworthy. Saying that and publishing no base-remote
+  // output is the complete reading. Both downstream consumers of that output
+  // already treat an empty value as a reading rather than a failure — the
+  // changed-files step warns and exits 0, and the drift step asks for the
+  // base only when a restored path was modified, which cannot happen when
+  // the reviewer never ran.
+  const pushNoBase =
+    `This run is a ${AI_REVIEW_PUSH_EVENT} to the default branch, so there is ` +
+    `no pull request base to restore the untrusted paths from and no review ` +
+    `that could read them — the review action refuses this event as an ` +
+    `unsupported event type. Nothing was restored and nothing needed to be. ` +
+    `The base-ref output is left empty deliberately, so the steps that read ` +
+    `it report UNMEASURED rather than measuring against a ref this step ` +
+    `invented.`;
+
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
 set -uo pipefail
 
 ${AI_REVIEW_ANNOTATION_ESCAPE}
+
+# FIRST, above the empty-base refusal, because on this event an empty base
+# ref is the correct reading rather than the failure that refusal describes.
+${aiReviewPushBranch(`  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${pushNoBase}"
+  exit 0
+`)}
 
 if [ -z "\${${AI_REVIEW_BASE_REF_VAR}:-}" ]; then
   echo "::error title=${AI_REVIEW_DRIFT_TITLE}::${noRef}" >&2
@@ -9959,6 +10139,12 @@ export function buildReviewRunStep(
     // workflow expression has no string operations and a second spelling
     // introduced here would be a decider the script could not see.
     `    ${AI_REVIEW_BASE_REF_VAR}: \${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}`,
+    // #1469. NOT a third `||` alternative above: a push has no base, and the
+    // script needs to say so rather than be handed a ref that looks like
+    // one. Same binding the rounds, carry and report steps read, and the
+    // same reason it is `github.event_name` — the runner sets it and no
+    // repository setting can.
+    `    ${AI_REVIEW_EVENT_VAR}: \${{ github.event_name }}`,
     // The job's own token, for one fetch. It is not persisted into
     // `.git/config` and the reviewer runs in a later step with its own
     // environment, so nothing of it reaches the agent.

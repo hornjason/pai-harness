@@ -323,20 +323,27 @@ there is nothing for it to drift from; the number below is what replaces that.
 
 Of the 56: **9 bound**, **8 where a mechanism exists that nothing in this
 repository can observe**, **4 that cannot be meaningful in this deployment**,
-**3 blocked on an owner decision**, **2 declared deviations**, **30 not done**.
+**2 blocked on an owner decision**, **1 contested**, **2 declared
+deviations**, **30 not done**.
 
 Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4, and
 again after #1448 bound CRC-M11. The audit above was taken the same day, at 0
 bound; the four moved by engineering, and none of the other four categories
 changed, which is the point of keeping them separate.
 
-An unticked box is one of the last five, and they are five different facts.
-Four of them are recorded here because an unticked box nobody can ever tick,
-one waiting on a person, and one nobody has started all look identical, and
-only the last is work.
+Re-counted again on 2026-10-24 (#1469): CRC-F1 moved out of *blocked on an
+owner decision* into a sixth state, **contested**, which did not exist
+before and is not a refinement of the fifth. Nothing was ticked and nothing
+was built; one criterion was re-described, because the description it had
+was false in a way that cost a repo-wide outage.
 
-The split is load-bearing rather than tidy: 42 unticked boxes read as 42
-pieces of engineering. Eight of them are not engineering at all.
+An unticked box is one of the last six, and they are six different facts.
+Five of them are recorded here because an unticked box nobody can ever tick,
+one waiting on a person, one the repository itself argues both sides of, and
+one nobody has started all look identical, and only the last is work.
+
+The split is load-bearing rather than tidy: 47 unticked boxes read as 47
+pieces of engineering. Seventeen of them are not engineering at all.
 
 ### A mechanism exists; this repository cannot observe it
 
@@ -366,20 +373,66 @@ fourth turns on a setting, and both can change.
 
 ### Blocked on an owner decision, not on engineering
 
-Three criteria are satisfiable by **repository configuration** and cost no
+Two criteria are satisfiable by **repository configuration** and cost no
 engineering. They are listed apart because "nobody has built it" and
 "somebody has to decide" are different debts, and the second does not get
 smaller by working on it.
 
-All three are also unobservable from inside this tree for the same reason
-CRC-C2 is — they are GitHub state, not tree state. Binding any of them needs
-a check that reads the API, which is a design decision in its own right.
+Both are also unobservable from inside this tree for the same reason CRC-C2
+is — they are GitHub state, not tree state. Binding either of them needs a
+check that reads the API, which is a design decision in its own right.
 
 | Criterion | The setting | What it closes |
 |---|---|---|
-| CRC-F1 — a merge queue re-runs every check against main | `strict: true`, or a merge queue. The `merge_group:` trigger is already generated and already handles the event. | `strict` is `false` today, so an armed pull request can merge green against a base it never ran against. **Caveat, stated rather than buried: a merge queue serialises merges**, which at this repository's concurrency may cost more than the hole. `strict: true` is the cheaper half and closes the same gap. And on `merge_group` the review annotates UNMEASURED and passes, so a queue re-runs `test` against main but not `ai-review` — "every check" would be half true. |
 | CRC-C3 — a false positive clears by closing the thread with a reason | `required_conversation_resolution`, currently `false`. | The native mechanism for "a finding blocks merge until it is dispositioned", which is also half of CRC-B8. |
 | CRC-E8 — an approval covers one specific commit | `required_pull_request_reviews` with `dismiss_stale_reviews`. | Nothing today: with no required reviews there is no approval to carry or dismiss. `gh pr merge --match-head-commit` is a convention agents follow by hand. |
+
+### Contested — this repository gives two opposite instructions
+
+A sixth state, added by #1469, and it is not a shade of the one above.
+*Blocked on an owner decision* means nobody has answered yet. **Contested
+means the repository has answered twice, in opposite directions, and both
+answers are current and deliberate.** An unticked box reads as "not done" in
+both cases, and the difference is what an agent does next: a blocked item
+waits, and a contested item must not be actioned from either document alone.
+
+That distinction is not bookkeeping. On 2026-10-23 this criterion was read
+out of the Phase 0 list above as a setting costing no engineering, and
+applied. `PROTECT-1` in `test/scaffold-conformity.test.ts` runs inside the
+managed **pre-push hook** and reads the live GitHub API, so it is not a
+function of anybody's diff: every session in every worktree was refused the
+moment the setting changed, with no commit anywhere to revert. Reverted
+about four minutes later; the reading was re-run at 1 pass, 0 fail.
+
+| Criterion | What this spec says | What the tree says | Standing |
+|---|---|---|---|
+| CRC-F1 — a merge queue re-runs every check against main | Phase 0 names `strict: true` as the cheaper half of a merge queue, costing minutes and no engineering. | `PROTECT-1` (`lib/branch-protection.ts`) **fails on `strict: true`** for a user-owned account, because it serialises every swarm's pull requests — measured at ~2.5 min per PR, 18 open PRs all `BEHIND` and none broken — and merge queues are unavailable on a user-owned repo. | **PROTECT-1 wins.** It is executed on every push by every session; this spec is prose. A rule nothing executes is not a rule, and this one has already been followed into an outage. |
+
+**PROTECT-1 refuses the obvious reverse too, and #1469 removed the reason.**
+It declines to *recommend* `strict: false` while any required context does
+not run on `push:` to the default branch, because push-CI is then the only
+thing catching the semantic conflict — two changes green alone and broken
+together. Measured 2026-10-24: `test` and `ai-review` are the required
+contexts, and `readPushCi` reported `missing: ["ai-review"]`. #1469 gave the
+generated `.github/workflows/ai-review.yml` a `push: branches:` trigger and the same reading
+now returns `missing: []`, so the precondition is satisfied and the decision
+is unblocked in both directions.
+
+**What that trigger does NOT do, stated here because the tempting reading is
+the wrong one.** `ai-review` on a push reviews nothing: the review action
+throws `Unsupported event type: push` before it reads anything, exactly as
+it does on `merge_group`, so the job annotates UNMEASURED and passes. The
+semantic-conflict net PROTECT-1's argument rests on is `test`, which has run
+on push since the first scaffold. What changed is that a required context
+now REPORTS on push; nothing about main is more reviewed than it was.
+
+So CRC-F1's honest reading is: the *hole* it names is real — with
+`strict: false` an armed pull request can merge green against a base it
+never ran against — and the remedy it names is one this repository's own
+conformity suite refuses. Ticking it would certify a setting the tree
+rejects; counting it as remaining engineering would be false too, because
+there is nothing to build. The decision is the owner's and the owner now has
+both readings. `test/ai-review-push-trigger.test.ts` holds the trigger.
 
 ### Deliberately not adopted
 
@@ -464,8 +517,7 @@ same "needs a second person" constraint CRC-E5 and CRC-E7 carry, and it is a
 hard stop rather than a cost. It was listed here in the plan's first draft
 and that was wrong.
 
-So Phase 0 is **one setting applied, one waiting on a quiet queue, one
-withdrawn**:
+So Phase 0 is **one setting applied, one CONTESTED, one withdrawn**:
 
 CRC-F1 (`strict: true`), CRC-C3 (`required_conversation_resolution`), CRC-E8
 (`required_pull_request_reviews` with `dismiss_stale_reviews`). Minutes, by
@@ -473,22 +525,38 @@ the owner. They are first because two further criteria — CRC-E6 and CRC-M9 —
 are **vacuous rather than unbuilt** until they land: there is no approval to
 count, so nothing can be built that counts one.
 
-Read CRC-F1's caveat before flipping it. A merge queue serialises merges, and
-on `merge_group` the review annotates UNMEASURED and passes, so "every check"
-would be half true. `strict: true` is the cheaper half and closes the same
-hole.
+**DO NOT ACT ON CRC-F1 FROM THIS LIST. Read its row in *Contested* above
+first (#1469).** `PROTECT-1` in `test/scaffold-conformity.test.ts` fails on
+`strict: true` by design, it runs inside the managed pre-push hook, and it
+reads the live GitHub API rather than the diff — so setting it refuses every
+session's push in every worktree, repo-wide, with no commit anywhere to
+revert. That is not a prediction: it happened on 2026-10-23, read out of
+this paragraph in its previous form, and was reverted about four minutes
+later. The paragraph said "minutes, by the owner" and it was right about the
+duration and wrong about everything else.
 
-**The trigger for `strict: true` is a number, not a judgement call: open
-pull requests ≤ 2, with no agent mid-push.** Under `strict`, every merge
-stales every other open pull request, and the repair is
+The cost argument below is the one this plan originally made, and it stands
+as a cost argument. It is not the binding objection; the binding objection
+is a check in this tree that refuses the setting outright.
+
+**If the setting is flipped anyway, the trigger is a number, not a judgement
+call: open pull requests ≤ 2, with no agent mid-push.** Under `strict`,
+every merge stales every other open pull request, and the repair is
 `gh pr update-branch`, which **force-rewrites the contributor's branch** —
 including one an agent is pushing to. On 2026-10-23 this repository merged
 eleven pull requests with four sessions running; flipping it in that state
 converts each merge into five forced rewrites. The hole it closes is real
 (an armed PR merging green against a base it never ran against) and it is
-not urgent enough to pay that. Flip it at the next quiet queue and then
-watch rounds-to-pass: if `strict` costs more rounds than the stale-base hole
-does, that is measurable and the criterion should say so.
+not urgent enough to pay that. If it is ever flipped, watch rounds-to-pass:
+if `strict` costs more rounds than the stale-base hole does, that is
+measurable and the criterion should say so.
+
+**The other direction is now open, which is what #1469 changed.** PROTECT-1
+also refused to *recommend* `strict: false` while a required context was
+absent from `push:` to the default branch. `ai-review` was that context;
+it now carries the trigger, `readPushCi` reports nothing missing, and the
+`strict: false` recommendation is available for the first time. The trigger
+is not itself a review of main — see the Contested row.
 
 ### Phase 1 — stop the repeats
 
