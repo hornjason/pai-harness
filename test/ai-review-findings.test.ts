@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -13,6 +13,9 @@ import {
   AI_REVIEW_FINDINGS_KEY,
   AI_REVIEW_SEVERITIES,
   AI_REVIEW_VERDICT_KEY,
+  SEVERITY_RANK,
+  UNTAGGED_RANK,
+  tagOrder,
   advisoryNotice,
   aiReviewExitCode,
   aiReviewRefusal,
@@ -707,9 +710,13 @@ describe("#1178: a CONTRADICTION emits the findings it counted", () => {
       }),
     );
     expect(r.outcome).toBe("BLOCKED");
+    // The ` [Important]` suffix is CRC-B7's tag and arrived with it. The
+    // property this control holds is unchanged and is still an EQUALITY: the
+    // refusal names the blocking finding and ONLY it — `b.ts`, the `low`,
+    // appears nowhere, which is what the one-line move above would break.
     expect(aiReviewRefusal(r)).toBe(
       "The AI review reported 1 blocking finding(s). " +
-        "finding 0 is critical at a.ts:1: creds in a log.",
+        "finding 0 is critical at a.ts:1: creds in a log [Important].",
     );
   });
 
@@ -1233,15 +1240,393 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
     expect(r.outcome).toBe("BLOCKED");
   });
 
-  test("B7-9: a non-blocking severity is unaffected by the tag", () => {
+  test("B7-9: a non-blocking severity is unaffected by the DEMOTION", () => {
     // `info` never blocked, so demoting it changes nothing and must not be
-    // counted as this stage having done something.
+    // counted as this stage having done something. It is still TAGGED
+    // `Pre-existing` — that is B7-23 below, and the two are different jobs:
+    // the demotion changes what blocks, the tag changes what a reader is
+    // told whose defect it is.
     const r = readAiReviewFindings(payloadOf("PASS", [at("lib/untouched.ts", "info")]), scopeMeasured([
       "lib/mine.ts",
     ]));
     expect(r.outcome).toBe("CLEAN");
     expect(r.reported).toHaveLength(1);
   });
+});
+
+/**
+ * Covers CRC-B7 (CODE-REVIEW-CONVERGENCE-SPEC.md) — the two clauses the
+ * demotion above does not reach.
+ *
+ * > Surviving findings are **sorted by severity** and tagged **Important /
+ * > Nit / Pre-existing**, so a pre-existing bug does not read as the author's
+ * > fault.
+ *
+ * ## Why sorting and tagging are one change and not two
+ *
+ * The block above ships the third clause for BLOCKING findings only: a
+ * `critical` naming a file outside the diff stops blocking. Nothing told a
+ * reader what any surviving finding WAS. `renderFinding` printed the
+ * reviewer's own magnitude word — `critical`, `low`, `info` — which is the
+ * question "how bad", and the criterion asks "whose". An `info` about code on
+ * `main` read exactly like an `info` about the author's own change, and the
+ * advisory tail arrived in whatever order the model happened to write.
+ *
+ * ## One vocabulary, and the input that proves there are two questions
+ *
+ * `SEVERITY_RANK` already tagged Important / Nit / Pre-existing in
+ * `lib/finding-jury.ts` and the CI path could not import it. It is now
+ * declared in `lib/scaffold/ai-review-step.ts` — the contract module, which
+ * has no relative imports and so is the one thing the mutation batteries can
+ * carry — and `finding-jury.ts` re-exports it. One declaration, no third
+ * vocabulary.
+ *
+ * It does NOT merge with `AI_REVIEW_SEVERITIES`, and B7-24 is the input that
+ * says why: a `critical` naming a file the pull request does not touch must
+ * read `critical` to the severity table (it blocks; magnitude is a property
+ * of the defect) and `Pre-existing` to the tag (attribution is a property of
+ * the diff). Two answers, both right, about one finding. Folding them would
+ * need the reviewer to write `Pre-existing` itself, and the reviewer is
+ * deliberately not given the file list — which is why `readPayload` measures
+ * verdict agreement BEFORE the demotion.
+ *
+ * ## The vacuous shapes this block is written against
+ *
+ * A sort that never reorders and a payload that arrived sorted are the same
+ * observation, so `OUT_OF_ORDER` below is planted in the exact reverse of tag
+ * order and B7-21 is the already-sorted control beside it. The battery at the
+ * end performs the removals and states predicted membership per row.
+ */
+describe("CRC-B7: surviving findings are sorted by tag and carry it", () => {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const DIFF = ["lib/touched.ts"];
+  const at = (file: string, severity: string, summary: string) => ({
+    [f.severity]: severity,
+    [f.file]: file,
+    [f.line]: 1,
+    [f.summary]: summary,
+    [f.failureScenario]: `calling it with 0 returns 1 in ${file}`,
+  });
+
+  /**
+   * Planted in the EXACT REVERSE of tag order, against a diff of
+   * `lib/touched.ts`:
+   *
+   *   payload 0  low       lib/touched.ts     alpha  -> Nit           rank 2
+   *   payload 1  critical  lib/elsewhere.ts   beta   -> Pre-existing  rank 1
+   *   payload 2  critical  lib/touched.ts     gamma  -> Important     rank 0
+   *
+   * So the rendered order must be 2, 1, 0 and the payload numbering must
+   * stay 0, 1, 2. A comparator that does nothing leaves 0, 1, 2 and reds.
+   */
+  const OUT_OF_ORDER = [
+    at("lib/touched.ts", "low", "alpha"),
+    at("lib/elsewhere.ts", "critical", "beta"),
+    at("lib/touched.ts", "critical", "gamma"),
+  ];
+
+  /** Where each `finding <n> is` label sits in a rendered annotation. */
+  const order = (said: string, howMany: number): number[] =>
+    Array.from({ length: howMany }, (_, i) => ({ i, at: said.indexOf(`finding ${i} is`) }))
+      .filter(e => e.at >= 0)
+      .sort((a, b) => a.at - b.at)
+      .map(e => e.i);
+
+  test("B7-20: the rendered order is TAG order, and the labels stay payload order", () => {
+    const r = readAiReviewFindings(payloadOf("PASS", OUT_OF_ORDER), scopeMeasured(DIFF));
+    // PASS over a payload with a blocking finding — the contradiction arm,
+    // which is the one place every counted finding is printed together.
+    expect(r.outcome).toBe("CONTRADICTION");
+    const said = aiReviewRefusal(r)!;
+
+    expect(order(said, 3), "the display was not reordered by tag").toEqual([2, 1, 0]);
+    // And the numbering is the PAYLOAD's. `renderFinding` prints
+    // `finding <index>` and the refusal and the advisory notice share it, so
+    // a sort that renumbered would make `finding 0` mean two findings.
+    expect(said).toContain("gamma [Important]");
+    expect(said).toContain("beta [Pre-existing]");
+    expect(said).toContain("alpha [Nit]");
+    expect(said).toContain("finding 2 is critical at lib/touched.ts:1: gamma [Important]");
+  });
+
+  test("B7-21 CONTROL: a payload that ARRIVED in tag order is left alone", () => {
+    // Without this row B7-20 is satisfied by a comparator that reverses, and
+    // by one that sorts on anything correlated with the plant. Same three
+    // findings, supplied already sorted: the order out must equal the order
+    // in, which a reverse fails and a correct sort passes.
+    const sorted = [OUT_OF_ORDER[2], OUT_OF_ORDER[1], OUT_OF_ORDER[0]];
+    const r = readAiReviewFindings(payloadOf("PASS", sorted), scopeMeasured(DIFF));
+    expect(r.outcome).toBe("CONTRADICTION");
+    expect(order(aiReviewRefusal(r)!, 3)).toEqual([0, 1, 2]);
+  });
+
+  test("B7-22: the advisory tail is ordered too, Pre-existing above Nit", () => {
+    const r = readAiReviewFindings(
+      payloadOf("PASS", [
+        at("lib/touched.ts", "low", "alpha"),
+        at("lib/elsewhere.ts", "medium", "beta"),
+      ]),
+      scopeMeasured(DIFF),
+    );
+    expect(r.outcome).toBe("CLEAN");
+    const notice = advisoryNotice(r)!;
+    expect(order(notice, 2), "the advisory tail printed in payload order").toEqual([1, 0]);
+    expect(notice).toContain("beta [Pre-existing]");
+    expect(notice).toContain("alpha [Nit]");
+    // The tail is still indexed against the WHOLE payload — AD-2's property,
+    // restated here because the sort is the thing that would break it.
+    expect(notice).toContain("finding 1 is");
+    expect(notice).toContain("finding 0 is");
+  });
+
+  test("B7-23: an ADVISORY finding outside the diff is tagged Pre-existing", () => {
+    // The clause the demotion cannot reach. `readPayload` only compares
+    // BLOCKING findings against the changed-file list, because demoting an
+    // `info` changes nothing it could change. Misattributing one costs
+    // exactly as much as misattributing a `critical`, so the TAG is wider
+    // than the demotion on purpose.
+    const r = readAiReviewFindings(
+      payloadOf("PASS", [at("lib/elsewhere.ts", "info", "beta")]),
+      scopeMeasured(DIFF),
+    );
+    expect(r.findingTags).toEqual(["Pre-existing"]);
+    expect(advisoryNotice(r)).toContain("beta [Pre-existing]");
+  });
+
+  test("B7-24: each of the three tags, from the input that must produce it", () => {
+    // The disagreement that proves `AI_REVIEW_SEVERITIES` and the tag are two
+    // questions: payload 1 is `critical` — the severity table's own answer is
+    // "this blocks" — and `Pre-existing`. Both are correct and neither can be
+    // derived from the other.
+    const r = readAiReviewFindings(payloadOf("BLOCK", OUT_OF_ORDER), scopeMeasured(DIFF));
+    expect(r.findingTags).toEqual(["Nit", "Pre-existing", "Important"]);
+    expect(severityBlocks(OUT_OF_ORDER[1][f.severity])).toBe(true);
+    expect(r.outcome).toBe("BLOCKED");
+  });
+
+  test("B7-25: with no changed-file list nothing is Pre-existing, and it says so", () => {
+    // The direction this is allowed to be wrong in. An unread diff must not
+    // silently tag everything in-scope OR everything pre-existing — the
+    // attribution axis is simply unavailable, and the scope line is where
+    // that is said out loud rather than inferred from a missing bracket.
+    const r = readAiReviewFindings(payloadOf("BLOCK", OUT_OF_ORDER));
+    expect(r.findingTags).toEqual(["Nit", "Important", "Important"]);
+    expect(r.findingTags).not.toContain("Pre-existing");
+    expect(aiReviewScopeLine(r)).toContain("NOT_SUPPLIED");
+  });
+
+  test("B7-26: an unrecognised severity has NO tag, and untagged sorts last", () => {
+    const r = readAiReviewFindings(
+      payloadOf("BLOCK", [
+        at("lib/touched.ts", "critical", "alpha"),
+        at("lib/touched.ts", "catastrophic", "beta"),
+      ]),
+      scopeMeasured(DIFF),
+    );
+    expect(r.outcome).toBe("UNMEASURED");
+    // `null`, not a guessed `Important`. A word nobody declared is a word
+    // nobody has decided about, and the reading is already UNMEASURED.
+    expect(r.findingTags).toEqual(["Important", null]);
+    expect(UNTAGGED_RANK).toBeGreaterThan(Math.max(...Object.values(SEVERITY_RANK)));
+    expect(tagOrder(["Nit", "Important", null], [0, 1, 2])).toEqual([1, 0, 2]);
+  });
+
+  test("B7-27: ties break on the payload index, so the order is total", () => {
+    // Not `Array.prototype.sort`'s stability — the comparator says it. A run
+    // that printed one order and a re-run that printed another would be two
+    // readings of one payload.
+    expect(tagOrder(["Nit", "Nit", "Nit"], [2, 0, 1])).toEqual([0, 1, 2]);
+    expect(tagOrder(null, [2, 0, 1])).toEqual([0, 1, 2]);
+  });
+
+  test("B7-28: a long summary cannot truncate the tag away", () => {
+    // The tag is appended AFTER the cap. The finding whose attribution a
+    // reader most needs is the verbose one, and "this is not your bug" cut
+    // off reads as "this is your bug".
+    const line = renderFinding(
+      0,
+      {
+        [f.severity]: "low",
+        [f.file]: "lib/a.ts",
+        [f.line]: 1,
+        [f.summary]: "x".repeat(AI_REVIEW_DETAIL_MAX * 2),
+      },
+      "Pre-existing",
+    );
+    expect(line.endsWith("[Pre-existing]")).toBe(true);
+    expect(line).toContain("…");
+  });
+
+  test("B7-29: the tag and the order decide nothing", () => {
+    // Behavioural: the same payload, tagged and untagged, exits the same.
+    // Structural: neither binding is named inside the exit code's body, so
+    // "does not decide" is not "happens to agree today".
+    const scoped = readAiReviewFindings(payloadOf("PASS", OUT_OF_ORDER), scopeMeasured(DIFF));
+    expect(aiReviewExitCode(scoped)).toBe(AI_REVIEW_REQUIRED_EXIT);
+    const body = /export function aiReviewExitCode[\s\S]*?\n}/.exec(source)?.[0];
+    expect(body, "the exit code's body was not found, so this witnesses nothing").toBeDefined();
+    expect(body).not.toContain("tagOrder");
+    expect(body).not.toContain("findingTag");
+  });
+
+  test("B7-30: the tag reaches the annotation through the one escaper", () => {
+    // The tag is appended AFTER the cap, which moved where the join happens,
+    // and the line it joins is attacker-shaped. Both streams, because the
+    // generated step captures the reader with `2>&1`: a case watching one
+    // could be satisfied by output the runner groups with the other.
+    const hostile = at("lib/elsewhere.ts", "info", "benign\n::stop-commands::deadbeef");
+    const changed = join(SCRATCH, `changed-${fixtureSeq++}.txt`);
+    writeFileSync(changed, `${DIFF.join("\n")}\n`);
+
+    const written: string[] = [];
+    const log = console.log;
+    const err = console.error;
+    console.log = (...a: unknown[]) => void written.push(a.map(String).join(" "));
+    console.error = (...a: unknown[]) => void written.push(a.map(String).join(" "));
+    try {
+      main([fixtureFile(payloadOf("PASS", [hostile])), changed]);
+    } finally {
+      console.log = log;
+      console.error = err;
+    }
+    const lines = written.join("\n").split("\n").filter(l => l.length > 0);
+
+    expect(lines.filter(l => l.startsWith("::stop-commands::"))).toEqual([]);
+    expect(lines.some(l => l.includes("[Pre-existing]"))).toBe(true);
+  });
+});
+
+/**
+ * CRC-B7's battery — the sort and the tag, removed and observed.
+ *
+ * `.claude/rules/checks-must-be-able-to-fail.md`. Four observations, three
+ * mutants, and the predicted membership written down BEFORE the run because
+ * rows that all match usually mean the battery varied the wrong axis:
+ *
+ * | mutant                            | O1 order | O2 Important/Nit | O3 Pre-existing | O4 demotion |
+ * |-----------------------------------|----------|------------------|-----------------|-------------|
+ * | (none — the baseline)             | holds    | holds            | holds           | holds       |
+ * | M-A comparator removed            | FAILS    | holds            | holds           | holds       |
+ * | M-B tag's severity arm → `null`   | FAILS    | FAILS            | holds           | holds       |
+ * | M-C scope never says PRE_EXISTING | FAILS    | holds            | FAILS           | FAILS       |
+ *
+ * No two rows are identical, which is what makes the three mutants three
+ * measurements rather than one repeated. M-A moves only the display; M-B
+ * moves only the two tags the severity table decides, and it moves the order
+ * as a CONSEQUENCE (an untagged finding sorts last), which is why O1 is
+ * predicted to fail there too; M-C moves the one decider shared by the tag
+ * and the demotion, which is the whole reason there is one of it.
+ *
+ * The baseline row is read first and on its own: a row of zeros under an
+ * empty baseline is an instrument that stopped reporting, not a finding.
+ */
+describe("CRC-B7: the sort and the tag can fail", () => {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const DIFF = ["lib/touched.ts"];
+  const at = (file: string, severity: string, summary: string) => ({
+    [f.severity]: severity,
+    [f.file]: file,
+    [f.line]: 1,
+    [f.summary]: summary,
+    [f.failureScenario]: `calling it with 0 returns 1 in ${file}`,
+  });
+  const OUT_OF_ORDER = [
+    at("lib/touched.ts", "low", "alpha"),
+    at("lib/elsewhere.ts", "critical", "beta"),
+    at("lib/touched.ts", "critical", "gamma"),
+  ];
+  const LONE_PRE_EXISTING = [at("lib/elsewhere.ts", "critical", "delta")];
+
+  interface Row {
+    O1: boolean;
+    O2: boolean;
+    O3: boolean;
+    O4: boolean;
+  }
+
+  /** The four observations, re-made against whichever module is handed in. */
+  function observe(mod: typeof import("../lib/scaffold/ai-review-findings")): Row {
+    const r = mod.readAiReviewFindings(payloadOf("PASS", OUT_OF_ORDER), mod.scopeMeasured(DIFF));
+    const said = mod.aiReviewRefusal(r) ?? "";
+    const seen = [0, 1, 2]
+      .map(i => ({ i, at: said.indexOf(`finding ${i} is`) }))
+      .filter(e => e.at >= 0)
+      .sort((a, b) => a.at - b.at)
+      .map(e => e.i);
+    const lone = mod.readAiReviewFindings(
+      payloadOf("BLOCK", LONE_PRE_EXISTING),
+      mod.scopeMeasured(DIFF),
+    );
+    return {
+      O1: JSON.stringify(seen) === JSON.stringify([2, 1, 0]),
+      O2: said.includes("[Important]") && said.includes("[Nit]"),
+      O3: said.includes("[Pre-existing]"),
+      O4: lone.outcome === "CLEAN" && lone.blockingReported?.length === 0,
+    };
+  }
+
+  const MUTANTS: { id: string; needle: string; with: string; expect: Row }[] = [
+    {
+      id: "M-A the comparator is removed",
+      needle: "return [...indices].sort((a, b) => rankOf(a) - rankOf(b) || a - b);",
+      with: "return [...indices];",
+      expect: { O1: false, O2: true, O3: true, O4: true },
+    },
+    {
+      id: "M-B the tag's severity arm returns null",
+      needle: 'return blocks === null ? null : blocks ? "Important" : "Nit";',
+      with: "return null;",
+      expect: { O1: false, O2: false, O3: true, O4: true },
+    },
+    {
+      id: "M-C the scope decider never says PRE_EXISTING",
+      needle: 'touched.has(named) ? "IN_DIFF" : "PRE_EXISTING"',
+      with: '"IN_DIFF"',
+      expect: { O1: false, O2: true, O3: false, O4: false },
+    },
+  ];
+
+  test("B7-B0 BASELINE: every observation holds on the real module", async () => {
+    const real = (await import(
+      "../lib/scaffold/ai-review-findings"
+    )) as typeof import("../lib/scaffold/ai-review-findings");
+    expect(observe(real)).toEqual({ O1: true, O2: true, O3: true, O4: true });
+  });
+
+  for (const m of MUTANTS) {
+    test(`B7-B: ${m.id}`, async () => {
+      expect(
+        source.split(m.needle).length - 1,
+        `could not build the mutant: ${m.id}'s binding is not spelled exactly once`,
+      ).toBe(1);
+      // A directory PER MUTANT, as the advisory battery does. Bun resolves a
+      // dynamic import against a cached listing of the containing directory,
+      // so a second file written into a directory something has already
+      // imported from is `Cannot find module` — measured here: row one
+      // loaded and row two did not, with `existsSync` true for both. That
+      // failure reads exactly like a mutant being rejected on the merits.
+      const dir = join(SCRATCH, `b7-${m.id.split(" ")[0]}`);
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, "ai-review-findings.ts");
+      writeFileSync(
+        path,
+        source
+          .replace(m.needle, m.with)
+          .replace(
+            /from "\.\/ai-review-step"/g,
+            `from "${join(import.meta.dir, "..", "lib", "scaffold", "ai-review-step")}"`,
+          ),
+      );
+      const mutant = (await import(path)) as typeof import("../lib/scaffold/ai-review-findings");
+      expect(
+        typeof mutant.readAiReviewFindings,
+        "the mutant did not load, which reads exactly like the mutation being rejected",
+      ).toBe("function");
+      expect(observe(mutant), `${m.id}: observed membership differs from the prediction`).toEqual(
+        m.expect,
+      );
+    });
+  }
 });
 
 /**

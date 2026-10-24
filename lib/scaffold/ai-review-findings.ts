@@ -131,6 +131,8 @@ import {
   AI_REVIEW_SEVERITIES,
   AI_REVIEW_SEVERITY_KEY,
   AI_REVIEW_VERDICT_KEY,
+  SEVERITY_RANK,
+  type Severity,
 } from "./ai-review-step";
 
 export {
@@ -142,7 +144,9 @@ export {
   AI_REVIEW_SEVERITIES,
   AI_REVIEW_SEVERITY_KEY,
   AI_REVIEW_VERDICT_KEY,
+  SEVERITY_RANK,
 };
+export type { Severity };
 
 /**
  * Percent-encode a value before it is interpolated into a workflow command.
@@ -176,8 +180,25 @@ export const AI_REVIEW_DETAIL_MAX = 300;
  * site in `main()`, because two escapers applied in sequence turn `%` into
  * `%2525` and the bug that produces is invisible until someone reads a log.
  * One rule, one binding, applied last.
+ *
+ * `tag` is CRC-B7's Important / Nit / Pre-existing, appended AFTER the cap
+ * rather than before it. A tag inside the capped region is a tag a long
+ * summary deletes, and the one finding whose attribution a reader most needs
+ * is the verbose one — "this is not your bug" truncated away reads as "this
+ * is your bug". `null` renders nothing at all, because a finding whose
+ * severity the contract does not declare has no tag, and an empty bracket
+ * would read as one.
+ *
+ * The INDEX is the payload index and stays the payload index whatever the
+ * display order is. The refusal and the advisory notice share this numbering
+ * (#1178), so a sort that renumbered would make `finding 3` mean two
+ * different findings in two annotations about the same run.
  */
-export function renderFinding(index: number, finding: Record<string, unknown>): string {
+export function renderFinding(
+  index: number,
+  finding: Record<string, unknown>,
+  tag: Severity | null = null,
+): string {
   const f = AI_REVIEW_FINDING_FIELDS;
   const where = finding[f.file] !== undefined
     ? `${String(finding[f.file])}:${String(finding[f.line] ?? "?")}`
@@ -186,7 +207,9 @@ export function renderFinding(index: number, finding: Record<string, unknown>): 
     ? String(finding[f.summary])
     : "(no summary recorded)";
   const line = `finding ${index} is ${String(finding[f.severity])} at ${where}: ${what}`;
-  return line.length > AI_REVIEW_DETAIL_MAX ? `${line.slice(0, AI_REVIEW_DETAIL_MAX)}…` : line;
+  const body =
+    line.length > AI_REVIEW_DETAIL_MAX ? `${line.slice(0, AI_REVIEW_DETAIL_MAX)}…` : line;
+  return tag === null ? body : `${body} [${tag}]`;
 }
 
 /**
@@ -217,12 +240,22 @@ export function renderFinding(index: number, finding: Record<string, unknown>): 
  * arm is unreachable from `aiReviewRefusal`. It exists because the function
  * is exported and `unknown[]` is what it is handed: a renderer that throws
  * on a shape it was told it would never see is a refusal nobody can read.
+ *
+ * The result is indexed BY PAYLOAD INDEX and is deliberately not sorted here.
+ * Callers that display it order it with `tagOrder`, and they have to: this
+ * array is subscripted by `advisoryNotice` (`all[i]`, where `i` is the item's
+ * position in `reported`), so a sort applied inside would silently re-point
+ * every one of those lookups at a different finding. Rendering and ordering
+ * are separate jobs and the bug that merges them is invisible.
  */
-export function renderCountedFindings(reported: unknown[] | null): string[] {
+export function renderCountedFindings(
+  reported: unknown[] | null,
+  tags: readonly (Severity | null)[] | null = null,
+): string[] {
   if (reported === null) return [];
   return reported.map((item, i) =>
     item !== null && typeof item === "object" && !Array.isArray(item)
-      ? renderFinding(i, item as Record<string, unknown>)
+      ? renderFinding(i, item as Record<string, unknown>, tags?.[i] ?? null)
       : `finding ${i} is ${JSON.stringify(item)}`,
   );
 }
@@ -384,9 +417,17 @@ export function advisoryNotice(reading: AiReviewFindingsReading): string | null 
   // out of the full render means this notice and the contradiction arm's list
   // come from one call of one function, which is what keeps them from drifting.
   const reported = reading.reported ?? [];
-  const all = renderCountedFindings(reported);
-  const rendered = advisory.map(item => {
-    const i = reported.indexOf(item);
+  const all = renderCountedFindings(reported, reading.findingTags);
+  // CRC-B7's sort, applied to the DISPLAY and not to the payload. `all` stays
+  // subscripted by payload index — `tagOrder` returns indices into it — so
+  // every line still says `finding <payload index>` and still agrees with the
+  // refusal's numbering. Reordering `advisory` itself and re-rendering would
+  // renumber the tail from zero, which AD-2 reds on.
+  const rendered = tagOrder(
+    reading.findingTags,
+    advisory.map(item => reported.indexOf(item)),
+  ).map(i => {
+    const item = reported[i];
     const key =
       item !== null && typeof item === "object" && !Array.isArray(item)
         ? ` [key ${advisoryKey(item as Record<string, unknown>)}]`
@@ -395,7 +436,8 @@ export function advisoryNotice(reading: AiReviewFindingsReading): string | null 
   });
 
   return (
-    `${advisory.length} advisory finding(s) were counted and block nothing. ` +
+    `${advisory.length} advisory finding(s) were counted and block nothing, ` +
+    `in Important / Pre-existing / Nit order. ` +
     `${rendered.join("; ")}. ` +
     `Each is UNANSWERED: nothing in this pipeline requires it to be fixed, ` +
     `resolved with a reason, or filed, and this annotation is the only place ` +
@@ -690,6 +732,23 @@ export interface AiReviewFindingsReading {
    * Substitution*, in the place it decides a required check.
    */
   scopeDropped: string[] | null;
+  /**
+   * CRC-B7's tag for each entry of `reported`, BY PAYLOAD INDEX, or `null`
+   * when there was no payload to tag.
+   *
+   * Parallel to `reported` rather than keyed, for the reason
+   * `AiReviewJuryGate.wouldWithhold` is positional: a map from a finding
+   * identity would be a second derivation of that identity over a list
+   * already produced in order, and two findings sharing a key would share a
+   * tag. An entry is `null` when the finding's severity is one the contract
+   * does not declare — unclassified, which is not the same as `Nit`.
+   *
+   * Computed ONCE, during the payload pass, where `touched` exists. A
+   * renderer that re-derived it would have to rebuild the changed-path set,
+   * which is a second normaliser over the one input `partitionChangedFiles`
+   * already reduced.
+   */
+  findingTags: (Severity | null)[] | null;
 }
 
 /**
@@ -704,10 +763,135 @@ export function severityBlocks(severity: unknown): boolean | null {
   return blocks === undefined ? null : blocks;
 }
 
+/**
+ * Whether a finding names code this pull request touched. FOUR states, and
+ * the first two are the ones a boolean would destroy.
+ *
+ * `NOT_CHECKED` is "nobody handed this run a changed-file list", and
+ * `UNDECIDABLE` is "a list was read and this finding's path could not be
+ * compared to it". Neither is `PRE_EXISTING`, and collapsing either into it
+ * is the fail-open CRC-B7's first cut shipped: a spelling the comparison
+ * cannot read is never in the set, so every unreadable input demoted a
+ * `critical` to CLEAN. The direction this stage is allowed to be wrong in is
+ * toward blocking.
+ *
+ * **ONE binding, and the only place the question is answered.** `readPayload`
+ * asks it to decide whether a blocking finding is demoted; `findingTag` asks
+ * it to decide what the finding is labelled. Two sites answering it
+ * separately would be the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — behaviourally one decider,
+ * of which a mutation leaves the other holding every case up — and they would
+ * be free to disagree, which is a run whose annotation says `Pre-existing`
+ * about a finding that blocked it.
+ *
+ * Both sides of the comparison go through `normaliseRepoPath`, which is also
+ * what makes the drop in `partitionChangedFiles` safe: an entry is dropped
+ * exactly when it normalises to `null`, and a finding naming that same path
+ * answers `UNDECIDABLE` here.
+ */
+export type FindingPathScope = "NOT_CHECKED" | "UNDECIDABLE" | "IN_DIFF" | "PRE_EXISTING";
+
+export function findingPathScope(
+  finding: Record<string, unknown>,
+  touched: ReadonlySet<string> | null,
+): FindingPathScope {
+  if (touched === null) return "NOT_CHECKED";
+  // `normaliseRepoPath` answers `null` for a non-string as well as for a
+  // string it cannot read, so there is no separate type test here. Whether a
+  // non-string `file` is additionally a CONTRACT violation is a different
+  // question with a different answer per severity, and `readPayload` owns it.
+  const named = normaliseRepoPath(finding[AI_REVIEW_FINDING_FIELDS.file]);
+  if (named === null) return "UNDECIDABLE";
+  return touched.has(named) ? "IN_DIFF" : "PRE_EXISTING";
+}
+
+/**
+ * CRC-B7's tag for one finding — `Important`, `Nit` or `Pre-existing`.
+ *
+ * A COMPOSITION of the two deciders that already exist, and not a third
+ * table. Attribution is asked first because it outranks magnitude: a defect
+ * the change did not introduce is `Pre-existing` whether it is `critical` or
+ * `info`, which is the whole of "a pre-existing bug does not read as the
+ * author's fault". Below that the tag is `severityBlocks`' own answer
+ * re-spelt — blocking is `Important`, advisory is `Nit` — read from
+ * `AI_REVIEW_SEVERITIES` rather than from a second list of severity words.
+ *
+ * `null` for a severity the contract does not declare. That reading is
+ * already UNMEASURED by the time anything displays it, and a guessed
+ * `Important` would be the module inventing the classification it refuses the
+ * payload for omitting.
+ *
+ * Applied to EVERY finding, advisory ones included, which is wider than the
+ * demotion in `readPayload` and deliberately so: the demotion changes what
+ * blocks and must only ever touch findings that would block, while the tag
+ * changes what a maintainer reads and an `info` about code on `main` is
+ * misattributed exactly as badly as a `critical` is. It decides nothing —
+ * `aiReviewExitCode` never sees it.
+ */
+export function findingTag(
+  finding: Record<string, unknown>,
+  touched: ReadonlySet<string> | null,
+): Severity | null {
+  if (findingPathScope(finding, touched) === "PRE_EXISTING") return "Pre-existing";
+  const blocks = severityBlocks(finding[AI_REVIEW_SEVERITY_KEY]);
+  return blocks === null ? null : blocks ? "Important" : "Nit";
+}
+
+/**
+ * The rank an untagged finding sorts at — below every declared tag, derived
+ * from the table rather than written as a literal, so a fourth tag does not
+ * leave this number sitting in the middle of the order.
+ */
+export const UNTAGGED_RANK = Object.keys(SEVERITY_RANK).length;
+
+/**
+ * CRC-B7's sort: payload indices, in the order they should be DISPLAYED.
+ *
+ * Indices rather than rendered strings, because the index is the one thing
+ * the display order must not change. `renderFinding` prints `finding
+ * <payload index>` and the blocking annotation and the advisory notice share
+ * that numbering, so this reorders the lines and renumbers nothing —
+ * `test/ai-review-advisory-findings.test.ts` AD-2 reds on the other
+ * arrangement, correctly.
+ *
+ * **ONE comparator, exported, and the only ordering in this module.** The
+ * ties break on the payload index rather than on `Array.prototype.sort`'s
+ * stability, so the order is a total function of the input: a run that
+ * printed findings in one order and a re-run that printed them in another
+ * would be two readings of one payload.
+ */
+export function tagOrder(
+  tags: readonly (Severity | null)[] | null,
+  indices: readonly number[],
+): number[] {
+  const rankOf = (i: number): number => {
+    const tag = tags?.[i] ?? null;
+    return tag === null ? UNTAGGED_RANK : SEVERITY_RANK[tag];
+  };
+  return [...indices].sort((a, b) => rankOf(a) - rankOf(b) || a - b);
+}
+
+/**
+ * Every finding's tag, by payload index. Non-objects tag `null`: they are
+ * already a `FINDING_NOT_AN_OBJECT` reason, and a shape with no severity has
+ * no tag to carry.
+ */
+function tagsForPayload(
+  list: readonly unknown[],
+  touched: ReadonlySet<string> | null,
+): (Severity | null)[] {
+  return list.map(item =>
+    item !== null && typeof item === "object" && !Array.isArray(item)
+      ? findingTag(item as Record<string, unknown>, touched)
+      : null,
+  );
+}
+
 function unmeasured(
   reasons: AiReviewUnmeasuredReason[],
   detail: string[],
   reported: unknown[] | null = null,
+  findingTags: (Severity | null)[] | null = null,
 ): AiReviewFindingsReading {
   return {
     outcome: "UNMEASURED",
@@ -720,6 +904,7 @@ function unmeasured(
     scope: scopeNotSupplied(),
     unlocatableReported: null,
     scopeDropped: null,
+    findingTags,
   };
 }
 
@@ -748,6 +933,7 @@ function withScope(
           [...reading.unmeasuredReasons, scope.reason],
           [...reading.detail, scope.detail],
           reading.reported,
+          reading.findingTags,
         )
       : reading;
   return { ...merged, scope, unlocatableReported, scopeDropped };
@@ -989,17 +1175,19 @@ function readPayload(
           );
           return;
         }
-        const named = normaliseRepoPath(declared);
+        // THE one decider, shared with `findingTag`. Re-reading the path
+        // here would let the demotion and the tag disagree about one finding.
+        const scoped = findingPathScope(finding, touched);
         // Undecidable is NOT pre-existing. The finding is well-formed and
         // this reader simply cannot resolve its path, so it keeps blocking —
         // the direction this stage is allowed to be wrong in.
-        if (named === null) {
+        if (scoped === "UNDECIDABLE") {
           detail.push(
             `finding ${i} declares ${JSON.stringify(declared)}, which could not be read as a ` +
               `repository path, so it could not be compared to the changed-file list. It ` +
               `keeps blocking: undecidable is not pre-existing`,
           );
-        } else if (!touched.has(named)) {
+        } else if (scoped === "PRE_EXISTING") {
           demoted += 1;
           // #1204's half that survived the merge: WHICH findings were
           // demoted, not just how many. The scope line reports it, so a
@@ -1033,7 +1221,12 @@ function readPayload(
       // for the ledger and the annotation; this list is untouched by it.
       // See `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` under CRC-B4.
       blocking.push(item);
-      detail.push(renderFinding(i, finding));
+      // Tagged through the same binding every other render uses. By here the
+      // tag is `Important` by construction — the severity blocks and the
+      // finding is not Pre-existing, or the branch above would have returned
+      // — so this list is not re-ordered: a sort over one rank reorders
+      // nothing, and applying one would be a comparator no case could redden.
+      detail.push(renderFinding(i, finding, findingTag(finding, touched)));
     }
   });
 
@@ -1054,7 +1247,9 @@ function readPayload(
     }
   }
 
-  if (reasons.length > 0) return unmeasured(reasons, detail, list);
+  const tags = tagsForPayload(list, touched);
+
+  if (reasons.length > 0) return unmeasured(reasons, detail, list, tags);
 
   // The decision, and the only place it is made. `verdict` is compared to it
   // afterwards; it never contributes to it.
@@ -1088,6 +1283,7 @@ function readPayload(
     scope: scopeNotSupplied(),
     unlocatableReported: null,
     scopeDropped: null,
+    findingTags: tags,
   };
 }
 
@@ -1295,9 +1491,16 @@ export function aiReviewRefusal(reading: AiReviewFindingsReading): string | null
       // Used INSTEAD of `detail` rather than appended to it. The two overlap
       // exactly on the blocking findings, so appending would print those
       // twice, and a duplicate reads as two findings.
-      const counted = renderCountedFindings(reading.reported);
-      const payload = counted.length > 0
-        ? `${counted.join("; ")}. `
+      const counted = renderCountedFindings(reading.reported, reading.findingTags);
+      // Same sort, same binding, same payload numbering. The contradiction
+      // arm is the one place every counted finding is printed together, so
+      // it is where an unordered list costs the most.
+      const ordered = tagOrder(
+        reading.findingTags,
+        counted.map((_, i) => i),
+      ).map(i => counted[i]);
+      const payload = ordered.length > 0
+        ? `${ordered.join("; ")}. `
         : `The payload records no findings at all. `;
       return (
         `The AI review's verdict ${JSON.stringify(reading.verdict)} contradicts its ` +
