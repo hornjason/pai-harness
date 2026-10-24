@@ -3054,7 +3054,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
  * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
  * the half FG-91 surrendered. Nothing else in the file moved.
  */
-describe("FG-143..FG-161: a numeric cap, which no argument defeats", () => {
+describe("FG-143..FG-162: a numeric cap, which no argument defeats", () => {
   const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
   const AT = "2026-10-24T12:00:00.000Z";
 
@@ -3355,6 +3355,41 @@ describe("FG-143..FG-161: a numeric cap, which no argument defeats", () => {
     });
     expect(absent.rows[0].refusal, "nothing filed is not the same as nothing readable").toBeNull();
     expect(absent.rows[0].emitted).toBe(true);
+  });
+
+  test("FG-162: a re-draft cannot record an override against a refusal no label waives", async () => {
+    // #1536 lets the label waive a PRIOR refusal when the body has been
+    // re-drafted. That arm read only `prior !== null`, so a row refused
+    // `OVER_CAP` a day ago and re-filed inside a fresh allowance came back
+    // `overridden: true` — the ledger's own account saying the label waived
+    // the cap. Nothing reaches the tracker that should not; the clause is
+    // ALLOWED on its merits by then. What breaks is the count of overrides
+    // against the cap, which is the number this change exists to expose.
+    const old = new Date(Date.parse(AT) - RUN_WINDOW_MS - 1000).toISOString();
+    const refusedBefore = (refusal: "OVER_CAP" | "DUPLICATE"): FilingLedgerRow => ({
+      ...landed(runIdFor(runA), old),
+      title: "zqxjCapTwo miscounts its own retries",
+      emitted: false,
+      disposition: "DROP",
+      refusal,
+      withheldBy: refusal,
+    });
+    const withLabel = `${second} --label ${FILING_OVERRIDE_LABEL}`;
+
+    const afterCap = await gateIn(withLabel, runA, [refusedBefore("OVER_CAP")]);
+    expect(afterCap.rows[0].refusal, "the allowance is free again, so it files").toBeNull();
+    expect(afterCap.rows[0].emitted).toBe(true);
+    expect(
+      afterCap.rows[0].overridden,
+      "but no label waived the cap, so the ledger must not say one did",
+    ).toBe(false);
+
+    // CONTROL, one axis — the prior refusal is a WAIVABLE one. The #1536
+    // behaviour must survive: a re-draft after a DUPLICATE, carrying the
+    // label, is a counted override and is recorded as one.
+    const afterDup = await gateIn(withLabel, runA, [refusedBefore("DUPLICATE")]);
+    expect(afterDup.rows[0].overridden, "a waivable prior refusal still counts").toBe(true);
+    expect(afterDup.rows[0].refiledAfter, "and the row names the refusal it answered").toBe(old);
   });
 
   test("FG-147: a REFUSED filing does not consume the allowance", async () => {

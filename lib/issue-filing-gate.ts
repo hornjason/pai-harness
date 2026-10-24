@@ -2006,8 +2006,19 @@ export async function filingGate(
     // and the row has to record whether it did AFTER. Written as two
     // expressions those are two deciders over one question, which is how the
     // bypass this closes got in.
+    //
+    // The `prior` arm reads `waivableRefusal` too, and for the same reason
+    // the current arm does. Without it a row re-drafted after an `OVER_CAP`
+    // or `UNMEASURED_CAP` refusal records `overridden: true` — the label
+    // waiving, in the ledger's own account, a refusal no label can waive.
+    // Nothing reaches the tracker that should not, because the clause is
+    // being ALLOWED on its merits by then; what breaks is the measurement,
+    // and the count of overrides against the cap is the number this whole
+    // change exists to make readable. Raised by the AI review at round 6.
     const overrideOf = (v: FilingAdjudication) =>
-      labelled && waivableRefusal(v.refusal) && (v.outcome === "REFUSE" || prior !== null);
+      labelled &&
+      waivableRefusal(v.refusal) &&
+      (v.outcome === "REFUSE" || (prior !== null && waivableRefusal(prior.refusal)));
 
     // **The cap applies to anything that would REACH THE TRACKER, not to
     // anything that happens to be clean.** Gating it on `read1` being an
