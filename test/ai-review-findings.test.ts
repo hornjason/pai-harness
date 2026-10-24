@@ -16,6 +16,7 @@ import {
   advisoryNotice,
   aiReviewExitCode,
   aiReviewRefusal,
+  aiReviewScopeLine,
   escapeAnnotation,
   main,
   readAiReviewFindings,
@@ -1240,5 +1241,162 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
     ]));
     expect(r.outcome).toBe("CLEAN");
     expect(r.reported).toHaveLength(1);
+  });
+});
+
+/**
+ * #1472 — one changed path with a space turned the WHOLE scope reading
+ * UNMEASURED, so a consumer with one awkward filename got a permanently red
+ * required `ai-review` check.
+ *
+ * `normaliseRepoPath` ends in `/^(?:[\w.@+-]+\/)*[\w.@+-]+$/`, and `\w` is
+ * `[A-Za-z0-9_]`, so a tracked path containing a space, a parenthesis, a
+ * bracket, a comma, a `#`, a `~` or a `=` is `null`. `docs/my file.md` was
+ * enough. #1356's `core.quotePath=false` does not reach it: git does not
+ * quote a space, it emits it literally and the regex rejects it literally.
+ *
+ * ## Why dropping one entry is not the fail-open it looks like
+ *
+ * `touched` losing a member can only ever demote MORE findings, never fewer —
+ * and the set of findings a dropped entry could falsely demote is EMPTY, for
+ * a mechanical reason rather than an optimistic one. **Both sides of the
+ * comparison go through the same normaliser.** A changed-file entry is
+ * dropped exactly when it normalises to `null`, and a finding naming that
+ * same path normalises to `null` too, which is the `undecidable` branch —
+ * *"it keeps blocking: undecidable is not pre-existing"*. So the findings a
+ * drop could touch are precisely the findings the drop cannot reach. B7-1472-4
+ * is that property asserted rather than argued.
+ *
+ * What the drop IS allowed to be is unreported, and it is not: `scopeDropped`
+ * names the entries and `aiReviewScopeLine` prints them on every run, beside
+ * the counts. A reading over a narrowed set that does not say it was narrowed
+ * is Silent Default Substitution (`.claude/rules/config-access.md`), and the
+ * three states — no list, a full list, a list this reader could read part of
+ * — are three different facts here rather than one green check.
+ *
+ * The all-or-nothing refusal survives where it is honest: a list with NO
+ * readable entry is `CHANGED_FILES_UNREADABLE` exactly as before, because an
+ * empty `touched` tags every finding Pre-existing, which is the fail-open the
+ * original refusal was written against (B7-1472-6).
+ */
+describe("#1472: an unnormalisable changed-file entry is DROPPED and NAMED, not fatal", () => {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const at = (file: string, severity = "critical") => ({
+    [f.severity]: severity,
+    [f.file]: file,
+    [f.line]: 12,
+    [f.summary]: `a defect in ${file}`,
+    [f.failureScenario]: `calling it with 0 returns 1 in ${file}`,
+  });
+
+  /** The issue's own path. A space, and nothing else exotic about it. */
+  const AWKWARD = "docs/my file.md";
+  const READABLE = "lib/mine.ts";
+
+  const read = (file: string, list: readonly string[]) =>
+    readAiReviewFindings(payloadOf("BLOCK", [at(file)]), scopeMeasured(list));
+
+  test("B7-1472-1: a finding on a readable path is adjudicated beside an unreadable entry", () => {
+    // The issue's "what would have to fail": a changed-file list carrying
+    // `docs/my file.md` alongside one normalisable path and a blocking
+    // finding naming the normalisable one. Before #1472 this returned
+    // CHANGED_FILES_UNREADABLE and the finding was never adjudicated at all.
+    const r = read(READABLE, [READABLE, AWKWARD]);
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.blocked).toBe(true);
+    expect(r.blockingReported).toHaveLength(1);
+    expect(r.unmeasuredReasons).toEqual([]);
+  });
+
+  test("B7-1472-2: the dropped entry is NAMED in output printed on every run", () => {
+    // Named, not counted. "one entry was dropped" is not something an
+    // operator can act on; the path is. And the scope line is the channel
+    // because it is the one `main` prints unconditionally — `detail` reaches
+    // an annotation only under BLOCKED, CONTRADICTION or UNMEASURED, so a
+    // CLEAN reading over a narrowed set would say nothing at all.
+    const r = read(READABLE, [READABLE, AWKWARD]);
+    expect(r.scopeDropped).toEqual([AWKWARD]);
+    expect(aiReviewScopeLine(r), "the scope line does not name the dropped path").toContain(
+      AWKWARD,
+    );
+  });
+
+  test("B7-1472-3: THE PAIR — one entry varies, and the two readings differ", () => {
+    // One axis moves: whether the unreadable entry is in the list. The
+    // verdict must NOT move with it — that is the whole point of the change —
+    // so the only thing left to carry the difference is the reported
+    // coverage. If that were silent the two runs would be byte-identical,
+    // which is the state this issue replaces with a louder one.
+    const full = read(READABLE, [READABLE]);
+    const partial = read(READABLE, [READABLE, AWKWARD]);
+
+    expect(full.outcome, "the control reading is not the one being compared").toBe("BLOCKED");
+    expect(partial.outcome, "the drop changed the verdict").toBe(full.outcome);
+
+    expect(full.scopeDropped, "a complete reading reports an empty drop, not a null one").toEqual(
+      [],
+    );
+    expect(partial.scopeDropped).toEqual([AWKWARD]);
+    expect(
+      aiReviewScopeLine(partial),
+      "a partial reading is indistinguishable from a complete one",
+    ).not.toBe(aiReviewScopeLine(full));
+  });
+
+  test("B7-1472-4: a finding naming the DROPPED path keeps blocking", () => {
+    // The property that makes the drop safe, asserted rather than argued.
+    // The entry left the comparison set; the finding that names it does not
+    // become Pre-existing, because it reaches `normaliseRepoPath` and gets
+    // the same `null` the entry did. A demotion here would be the fail-open
+    // the all-or-nothing refusal was protecting against, arriving by the
+    // change that removed it.
+    const r = read(AWKWARD, [READABLE, AWKWARD]);
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.blockingReported).toHaveLength(1);
+    expect(r.unlocatableReported, "the dropped path's own finding was demoted").toEqual([]);
+    expect(r.detail.join(" ")).toContain("could not be read as a repository path");
+  });
+
+  test("B7-1472-5 CONTROL: a genuinely untouched path is still demoted", () => {
+    // Without this row B7-1472-1 would be satisfied by a reader that stopped
+    // comparing altogether — every finding blocking is also "the finding was
+    // adjudicated". The comparison still runs over the entries that survived.
+    const r = read("lib/other.ts", [READABLE, AWKWARD]);
+    expect(r.outcome).toBe("CLEAN");
+    expect(r.blockingReported).toEqual([]);
+    expect(r.unlocatableReported).toHaveLength(1);
+    expect(r.scopeDropped, "the drop is reported on a CLEAN reading too").toEqual([AWKWARD]);
+  });
+
+  test("B7-1472-6: a list with NO readable entry still REFUSES", () => {
+    // The refusal is narrowed, not deleted. An empty `touched` makes every
+    // finding Pre-existing and reports a green check for a review that found
+    // something, so the one input the original refusal was right about keeps
+    // refusing — and both of these are unreadable for different reasons
+    // (git's C-quoted form, and a `..` leaving the root), so the case is not
+    // witnessing one branch of `normaliseRepoPath` twice.
+    const r = read(READABLE, ['"lib/\\303\\251.ts"', "../outside.ts"]);
+    expect(r.outcome).toBe("UNMEASURED");
+    expect(r.unmeasuredReasons).toContain("CHANGED_FILES_UNREADABLE");
+    expect(aiReviewRefusal(r) ?? "", "the refusal names neither unreadable entry").toContain(
+      "../outside.ts",
+    );
+  });
+
+  test("B7-1472-7: no list supplied is 'not checked', never 'nothing dropped'", () => {
+    // Three states, and `[]` is the middle one. A run nobody handed a list
+    // has not read a complete changed-file list — it has not read one — and
+    // `null` is what keeps that apart from a list every entry of which was
+    // readable.
+    const none = readAiReviewFindings(payloadOf("BLOCK", [at(READABLE)]));
+    expect(none.scope.status).toBe("NOT_SUPPLIED");
+    expect(none.scopeDropped).toBeNull();
+
+    const complete = read(READABLE, [READABLE]);
+    expect(complete.scopeDropped).toEqual([]);
+    expect(
+      aiReviewScopeLine(none),
+      "a run with no list reads the same as a run whose list was complete",
+    ).not.toBe(aiReviewScopeLine(complete));
   });
 });
