@@ -12,6 +12,7 @@ import { readdirSorted } from "../readdir-sorted";
 import { fileExtensions } from "../file-extensions";
 import { join, basename, dirname, resolve, sep } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
+import { mayWrite, readDerivedDeclaration, skipLine } from "../derived-spec";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
 import { HARNESS_PACKAGE, isHarnessItself } from "../harness-identity";
 import { scanSpecs } from "../scanner";
@@ -1680,8 +1681,30 @@ export function copySpecTemplateIfEmpty(specsDir: string, actions: string[]): vo
   }
 
   const template = readFileSync(templatePath, "utf-8");
-  writeFileSync(join(specsDir, "SPEC-TEMPLATE.md"), template);
-  actions.push("CREATED: specs/SPEC-TEMPLATE.md (starter template)");
+  const destPath = join(specsDir, "SPEC-TEMPLATE.md");
+
+  // #1549: the emptiness test above excludes `SPEC-TEMPLATE.md` by name, so a
+  // `specs/` holding ONLY that file reads as empty and we arrive here with the
+  // consumer's own template already on disk. #1286 guarded eleven in-place
+  // spec writers and missed this one, because its completeness check is built
+  // from files that read and write the same path — and this writes a path it
+  // never read. Ask who owns the bytes before replacing them.
+  const existed = existsSync(destPath);
+  if (existed) {
+    const reading = readDerivedDeclaration(readFileSync(destPath, "utf-8"));
+    if (!mayWrite(reading)) {
+      actions.push(skipLine("specs/SPEC-TEMPLATE.md", reading));
+      return;
+    }
+  }
+
+  writeFileSync(destPath, template);
+  // #1549: the verb is a reading, not a label. `CREATED` for a file that was
+  // already on disk tells a reader scanning the report for destructive
+  // actions the opposite of what happened.
+  actions.push(
+    `${existed ? "UPDATED" : "CREATED"}: specs/SPEC-TEMPLATE.md (starter template)`,
+  );
 }
 
 // ── tsconfig.json ──────────────────────────────────────────────
