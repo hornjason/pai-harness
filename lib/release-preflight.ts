@@ -39,6 +39,8 @@
  * to the act rather than to the record.
  */
 
+import { escapeAnnotation } from "./scaffold/ai-review-findings";
+
 /** What the registry currently holds for a package. */
 export interface RegistryState {
   /** Every published version, in no particular order. */
@@ -457,12 +459,90 @@ export function parsePublishReceipt(pkg: string, log: string): PublishReceipt {
   };
 }
 
+/**
+ * WHICH reading the postflight took, in a few words (#1563).
+ *
+ * `outcome` is not this, and conflating them is the defect. Two of the six
+ * readings below are `confirmed` and only ONE of them is a registry read —
+ * they share an exit code, a step conclusion and a step name, so before this
+ * existed the only place they differed was the log body. A label is the
+ * narrowest thing that can travel out of the log on a channel a reader
+ * already looks at.
+ *
+ * Closed union on purpose: a new branch in `postflightDecision` that forgets
+ * to name itself does not compile.
+ */
+export type PostflightLabel =
+  /** The packument carried the version. The only confirmed REGISTRY read. */
+  | "REGISTRY SERVES"
+  /** Receipt plus npm's own lag notice. Confirmed, and NOT a registry read. */
+  | "PROPAGATION PENDING"
+  /** npm printed no `+ pkg@version` line: the publish did not happen. */
+  | "NO RECEIPT"
+  /** npm published a version this tree is not cutting. */
+  | "RECEIPT VERSION MISMATCH"
+  /** A receipt with no lag notice does not waive the registry read. */
+  | "RECEIPT WITHOUT LAG NOTICE"
+  /** Absent from the packument with nothing that explains the absence. */
+  | "VERSION ABSENT";
+
 /** What the postflight concluded, and which exit code says so. */
 export interface PostflightDecision {
   /** `confirmed` exits 0, `refused` exits REFUSE_EXIT, `unmeasured` exits UNMEASURED_EXIT. */
   outcome: "confirmed" | "refused" | "unmeasured";
+  /**
+   * WHICH of the readings this is. `outcome` collapses six into three and two
+   * of the collapsed pair exit 0 — see `PostflightLabel` (#1563).
+   */
+  label: PostflightLabel;
   /** The whole message, already worded for the reader of a failed release job. */
   message: string;
+}
+
+/**
+ * The annotation title every postflight verdict is printed under.
+ *
+ * It carries NO colon and NO comma. GitHub splits a workflow command's
+ * property list on `,` and ends it at `::`, and its own escaping rules
+ * require `%3A`/`%2C` inside a property value — `escapeAnnotation` encodes
+ * neither, because it is the escaper for message DATA. Keeping the separator
+ * out of the title means there is still one escaper and nothing to get wrong.
+ */
+export const POSTFLIGHT_ANNOTATION_TITLE = "postflight —";
+
+/**
+ * The decision as a GitHub Actions annotation — the fix for #1563.
+ *
+ * The step was named *"Postflight — the registry actually serves this
+ * version"* and on `v0.8.3` it exited 0 having said, in its own message, that
+ * it had taken no such reading. The name is what appears in the check list,
+ * the run summary and the notification; the message is 5.7 MB into a log.
+ *
+ * Retitling alone does not fix it. A title is static, so no title can
+ * distinguish `REGISTRY SERVES` from `PROPAGATION PENDING` — the criterion
+ * from the issue is that **some observable other than the log body differs
+ * between the two**, and an annotation is the cheapest channel that both
+ * carries the label and renders where the title does.
+ *
+ * Severity is derived from `outcome`, never from `label`: a `notice` for the
+ * two states that exit 0, an `error` for the four that stop the job. That
+ * leaves the open question the issue declined to answer — whether a pending
+ * propagation deserves a `warning` — unanswered, rather than answered by
+ * accident. Propagation lag is the normal path and a warning on the normal
+ * path is a warning nobody reads.
+ *
+ * `escapeAnnotation` is imported rather than reimplemented. A newline inside
+ * an interpolated value starts a NEW workflow command, and `::stop-commands::`
+ * on its own line disables annotation processing for everything after it — so
+ * a second escaper is a second rule nobody updates. The messages here embed a
+ * registry reading, and the confirmed one already contains a newline.
+ */
+export function postflightAnnotation(decision: PostflightDecision): string {
+  const level = decision.outcome === "confirmed" ? "notice" : "error";
+  return (
+    `::${level} title=${POSTFLIGHT_ANNOTATION_TITLE} ${escapeAnnotation(decision.label)}` +
+    `::${escapeAnnotation(decision.message)}`
+  );
 }
 
 /**
@@ -511,6 +591,7 @@ export function postflightDecision(
     if (receipt.version === null) {
       return {
         outcome: "refused",
+        label: "NO RECEIPT",
         message:
           `the publish step produced no receipt. npm prints \`+ ${pkg}@${treeVersion}\` ` +
           `on a successful publish and the captured output (${receipt.bytes} bytes) has ` +
@@ -522,6 +603,7 @@ export function postflightDecision(
     if (receipt.version !== treeVersion) {
       return {
         outcome: "refused",
+        label: "RECEIPT VERSION MISMATCH",
         message:
           `the publish step published ${pkg}@${receipt.version}, but this tree is ` +
           `${treeVersion}. The receipt and package.json must name the same version or ` +
@@ -533,6 +615,7 @@ export function postflightDecision(
   if (reading.verdict.published) {
     return {
       outcome: "confirmed",
+      label: "REGISTRY SERVES",
       message:
         `the registry serves ${pkg}@${treeVersion} ` +
         `(read ${reading.attempts} time${reading.attempts === 1 ? "" : "s"}, ` +
@@ -561,6 +644,7 @@ export function postflightDecision(
   if (receipt !== null && receipt.version === treeVersion && receipt.propagationWarned) {
     return {
       outcome: "confirmed",
+      label: "PROPAGATION PENDING",
       message:
         `PROPAGATION PENDING — npm accepted ${pkg}@${treeVersion} and the registry is ` +
         `not serving it yet after ${reading.attempts} read` +
@@ -578,6 +662,7 @@ export function postflightDecision(
   if (receipt !== null && receipt.version === treeVersion) {
     return {
       outcome: "unmeasured",
+      label: "RECEIPT WITHOUT LAG NOTICE",
       message:
         `UNMEASURED: npm printed a receipt for ${pkg}@${treeVersion} but did NOT print its ` +
         `"being processed and may take a few minutes" notice, and the registry is still not ` +
@@ -588,5 +673,9 @@ export function postflightDecision(
     };
   }
 
-  return { outcome: "unmeasured", message: reading.verdict.unmeasured ?? "no reading was taken" };
+  return {
+    outcome: "unmeasured",
+    label: "VERSION ABSENT",
+    message: reading.verdict.unmeasured ?? "no reading was taken",
+  };
 }
