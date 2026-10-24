@@ -38,6 +38,7 @@
  * something smaller. A formatter that half-understands its input is how this
  * issue happened.
  */
+import { mayWrite, readDerivedDeclaration, skipLine } from "./derived-spec";
 
 export interface FrontmatterEntry {
   key: string;
@@ -125,11 +126,26 @@ export function serialiseFrontmatter(parsed: ParsedFrontmatter): string {
  * - A block this module cannot parse is returned UNCHANGED, with `stamped`
  *   empty and `refused` set. Leaving a file alone is always safe; rewriting
  *   one you cannot read is what #299 was.
+ * - A document declaring `generated-by:` is returned UNCHANGED the same way
+ *   (#1549). Same principle, one step further: do not rewrite one you do not
+ *   OWN either. `DocHygiene.hook.ts` fires on every doc write, so without
+ *   this it stamps `updated:` into a generated spec — discarded at the next
+ *   regeneration, after breaking whatever pins the bytes.
+ *
+ *   The check lives here rather than in the hook for two reasons. `refused`
+ *   is already the channel for "left alone, and here is why", so the caller
+ *   needs no new branch; and `specs/HOOK-ARCHITECTURE-SPEC.md` SC-371 caps a
+ *   hook at 150 lines precisely so decisions land in `lib/` instead.
  */
 export function stampFrontmatter(
   content: string,
   fields: Record<string, string>,
 ): { content: string; stamped: string[]; refused: string | null } {
+  const derived = readDerivedDeclaration(content);
+  if (!mayWrite(derived)) {
+    return { content, stamped: [], refused: skipLine("this document", derived) };
+  }
+
   const hasOpen = OPEN.test(content);
   const parsed = hasOpen ? parseFrontmatter(content) : { entries: [], body: content };
 
