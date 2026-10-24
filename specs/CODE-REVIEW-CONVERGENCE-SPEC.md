@@ -268,29 +268,53 @@ re-run and a wait. **1.58 is the review convergence** this document's
 mechanisms can move. Conflating them points the whole plan at the smaller
 half of its own problem.
 
-##### The 48 split cleanly, and the split names the two fixes
+##### The 48 do NOT split by whose diff touched the workflow
 
-| | PRs | rounds | what it is |
-|---|---|---|---|
-| diff touches `.github/workflows/` | 5 | 25 | **structural decline** — the action refuses to review a workflow against a copy differing from the default branch |
-| diff touches no workflow | 13 | 23 | **the no-payload tax** (#1478) — the reviewer runs to completion, exits `success`, writes nothing |
+| | PRs | rounds |
+|---|---|---|
+| diff touches `.github/workflows/` | 5 | 25 |
+| diff touches no workflow | 13 | 23 |
 
-All five workflow-editing pull requests are in the never-measured six, at
-100% of their rounds each. That is not a tax, it is a category of change
-this repository cannot review at all, absorbing 25 rounds to produce zero
-readings.
+The first row is a **structural decline** with high confidence: all five are
+in the never-measured six, at 100% of their rounds, and the action refuses
+to review a workflow against a copy differing from the default branch. A
+category of change this repository cannot review at all, absorbing 25 rounds
+to produce zero readings.
 
-The other 23 are #1478, and it is not a size or complexity effect: three
-observations now span a 9,000-line file, a 250-line four-file diff and a
-**single prose-only markdown file**, all exiting `subtype: success`,
-`is_error: false`, at 33, 53 and 32 turns against a cap of 80.
+**The second row is NOT the no-payload tax, and reading it as one is the
+mistake #1455 exists to stop.** That issue measured the wider case: a pull
+request that has never touched `ai-review.yml` declines *identically* the
+moment any OTHER pull request moves that file on `main`, because the
+comparison is between two file contents and does not ask who moved them —
+with #1435 and #1336 as the worked pair, flipping from a 4m22s no-payload to
+a 16s decline with no change to either branch. `ai-review.yml` is generated,
+so every change to `lib/scaffold/ai-review-step.ts` stales every open pull
+request at once.
+
+So **23 is an upper bound on the no-payload tax, not a reading of it.** The
+only discriminator is the skip line on each round's FULL job log, and those
+logs expire — this split cannot be recovered retroactively for rounds
+already taken. What the two states cost is identical; what fixes them is
+not, which is the whole reason they have separate issues.
+
+What IS measured about the tax is three hand-checked observations, each with
+the skip line counted at zero against a live control: a 9,000-line file, a
+250-line four-file diff, and a **single prose-only markdown file** — all
+exiting `subtype: success`, `is_error: false`, at 33, 53 and 32 turns
+against a cap of 80. **Not a size or complexity effect.**
+
+**Record the discriminator per round.** The ledger says UNMEASURED and not
+why, so the one fact that separates a decline from a tax is thrown away at
+the moment it is cheapest to keep. That is the instrumentation gap this
+whole section ran into.
 
 **The ordering consequence, stated plainly.** The largest single lever on
 2.65 is not any CRC-B or CRC-E criterion. It is the 41% of rounds that
-produced no review, and neither half of it is a review-quality problem.
-Phases 1 and 2 keep their internal order — the measured-round tail did not
-collapse — but nothing in them competes with fixing an instrument that is
-silent two rounds in five.
+produced no review, and no part of it is a review-quality problem — #1455
+and #1478 are both instrument defects. Phases 1 and 2 keep their internal
+order, because the measured-round tail did not collapse. But nothing in
+them competes with an instrument silent two rounds in five, and that is
+true whichever way the 48 divide.
 
 ##### How this was measured, and the near-miss that nearly published
 
