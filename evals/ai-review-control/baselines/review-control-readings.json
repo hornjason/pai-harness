@@ -255,8 +255,176 @@
       "conformityWithTheCandidateAtTheOldPath": "1214 pass, 5 fail of 1410 — SC-648, SC-649, SC-759, SC-760 (HARNESS-STANDARD.md) and SC-625 (HOOK-ARCHITECTURE-SPEC.md)",
       "conformityWithTheCandidateAtLibFullSuiteCommand": "1219 pass, 0 fail of 1410, for the baseline and the planted candidate alike",
       "theGateItself": "git push --dry-run of a branch carrying the candidate at lib/test-suite-lock.ts is refused by the pre-push hook with 'ERROR: Conformity tests failed against the commits being pushed'; the same push with the candidate at lib/full-suite-command.ts reports 1219 pass, 0 fail and clears. Neither ref was created.",
-      "stillUnmeasuredByTheREVIEWER": "No reviewer reading has been taken of either suite-lock-redirect case. The gate that made it impossible is gone and the subject is stageable; nobody has staged it yet. N = 0 remains N = 0 until somebody does."
+      "stillUnmeasuredByTheREVIEWER": "No reviewer reading has been taken of either suite-lock-redirect case. The gate that made it impossible is gone and the subject is stageable; nobody has staged it yet. N = 0 remains N = 0 until somebody does.",
+      "supersededBy": "thirdReadings below (#1524). The subject was staged and both arms were read. The two-sided gate measurement above was re-run on edb12c93 before any reviewer run was spent and reproduces exactly: 1214 pass / 5 fail of 1410 with the candidate at lib/test-suite-lock.ts and the push refused, 1219 pass / 0 fail with it at lib/full-suite-command.ts and the push clearing. Neither ref was created."
     }
+  },
+  "thirdReadings": {
+    "what": "The first reviewer readings of suite-lock-redirect, the logic-defect arm of the negative control (#1524). Before these, that subject had N = 0 for its whole life: until #1513 its reviewPath was lib/test-suite-lock.ts, whose contents five conformity criteria assert, so the pre-push gate correctly refused every attempt to stage it.",
+    "takenOn": "2026-10-24",
+    "reviewer": "ai-review job on hornjason/pai-harness; adjudicated by bunx rungate@0.8.2 ai-review-findings",
+    "cutFrom": "edb12c93a7958c087acc429b72f4cf1133ea826d",
+    "whyThisIsNotTheWORKTREESTATEWRITEMeasurementAgain": "The two subjects plant different KINDS of defect. worktree-state-write plants a CONVENTION break — an arm that lets a linked worktree run the project-state generator, which only CLAUDE.md makes wrong. suite-lock-redirect plants a SILENT LOGIC defect: baseline.ts has /^(?:\\d*|&)>>?(?:&\\d+)?(.*)$/ and planted.ts drops the `&`, so `&>` and `&>>` stop being recognised as redirections and a full-suite invocation is misread as targeted. Recall on a convention break and recall on a silent logic defect are not the same measurement.",
+    "theGateWasReMEASUREDBeforeAnyReviewerRunWasSpent": {
+      "measuredOn": "edb12c93a7958c087acc429b72f4cf1133ea826d",
+      "candidateAtTheOldPath": "lib/test-suite-lock.ts — 1214 pass, 5 fail of 1410; git push --dry-run REFUSED with 'ERROR: Conformity tests failed against the commits being pushed'",
+      "candidateAtTheCurrentPath": "lib/full-suite-command.ts — 1219 pass, 0 fail of 1410; git push --dry-run CLEARS",
+      "neitherRefWasCreated": true,
+      "note": "--no-verify was not used and is not available here. The refusal at the old path is the gate doing its job and is the reason this subject's N was 0."
+    },
+    "cases": [
+      {
+        "subject": "suite-lock-redirect/planted",
+        "pullRequest": "hornjason/pai-harness#1525 (DRAFT, never merged, never labelled, never auto-merged, closed)",
+        "round": 1,
+        "titleNamesTheCase": false,
+        "headSha": "e001d76875b4efc0a257f0248d4957d8ef3464a0",
+        "treeReviewed": "f59037fc3b8afda1da13e73ee419791afa6701aa",
+        "run": "40091835904",
+        "n": 2,
+        "outcomeSet": ["DETECTED", "UNMEASURED (#1478 no payload)", "UNMEASURED (#1478 no payload)", "DETECTED"],
+        "changedLinesInTheDiff": [5],
+        "draws": [
+          {
+            "attempt": "1",
+            "turns": 31,
+            "verdict": "BLOCK",
+            "scoreOutcome": "DETECTED",
+            "blocking": 1,
+            "advisory": 0,
+            "plantHits": 1,
+            "findings": [
+              {
+                "severity": "high",
+                "file": "lib/full-suite-command.ts",
+                "line": 5,
+                "onAChangedLine": true,
+                "summary": "REDIRECT regex dropped the `&` alternative, so `&>` and `&>>` redirections are no longer recognised as redirection operators, letting a full-suite invocation misread as a targeted (scoped) one."
+              }
+            ]
+          },
+          {
+            "attempt": "2",
+            "turns": 41,
+            "verdict": null,
+            "scoreOutcome": "UNMEASURED",
+            "why": "findings: null — the #1478 no-payload tax. Diagnosed from the FULL log of attempt 2 with a positive control: AI_REVIEW_ACTION_OUTCOME appears twice and resolves to success, the #1455 line 'Skipping action due to workflow validation' appears zero times, and the resolved annotation reads '##[warning]No findings payload was written, so this is one of the UNMEASURED rounds #1307 is about'. capture REFUSES this draw rather than writing an empty findings list. Not counted as a draw.",
+            "findings": null
+          },
+          {
+            "attempt": "3",
+            "turns": 20,
+            "verdict": null,
+            "scoreOutcome": "UNMEASURED",
+            "why": "findings: null — the #1478 no-payload tax a second time on the same pair, diagnosed the same way and with the same positive control satisfied. The cure applied each time was one bare `gh run rerun`, never --failed. Not counted as a draw.",
+            "findings": null
+          },
+          {
+            "attempt": "4",
+            "turns": 29,
+            "verdict": "BLOCK",
+            "scoreOutcome": "DETECTED",
+            "blocking": 1,
+            "advisory": 0,
+            "plantHits": 1,
+            "findings": [
+              {
+                "severity": "high",
+                "file": "lib/full-suite-command.ts",
+                "line": 5,
+                "onAChangedLine": true,
+                "summary": "The REDIRECT regex dropped the `&` alternative, so `&>` and `&>>` redirections are not recognised as redirection operators and their target token is misread as a scoping operand."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "subject": "suite-lock-redirect/clean",
+        "pullRequest": "hornjason/pai-harness#1526 (DRAFT, never merged, never labelled, never auto-merged, closed)",
+        "round": 1,
+        "titleNamesTheCase": false,
+        "headSha": "836188e031139ec6f8ded49f733655ef2bb2624f",
+        "treeReviewed": "8335e01fe16f173d76f76f059f517ae48491ce7f",
+        "run": "40091837673",
+        "n": 2,
+        "outcomeSet": ["FIRED", "FIRED"],
+        "changedLinesInTheDiff": [7, 8, 9, 10, 11, 22, 25, 28, 30, 38, 41],
+        "draws": [
+          {
+            "attempt": "1",
+            "turns": 35,
+            "verdict": "BLOCK",
+            "scoreOutcome": "FIRED",
+            "blocking": 1,
+            "advisory": 1,
+            "plantHits": 0,
+            "findings": [
+              {
+                "severity": "high",
+                "file": "lib/full-suite-command.ts",
+                "line": 19,
+                "onAChangedLine": false,
+                "summary": "isFullSuite tests SUITE_INVOCATION against the raw, untrimmed command, so a full-suite invocation with any leading whitespace is misread as not a full suite."
+              },
+              {
+                "severity": "medium",
+                "file": "lib/full-suite-command.ts",
+                "line": 34,
+                "onAChangedLine": false,
+                "summary": "A redirect token whose target is already embedded via the `(?:&\\d+)?` group (e.g. `2>&1`, `N>&M`) still produces an empty `redirect[1]` capture, so the scanner wrongly treats it like a bare `>` and skips the following token as if it were a separate redirect target."
+              }
+            ]
+          },
+          {
+            "attempt": "2",
+            "turns": 35,
+            "verdict": "BLOCK",
+            "scoreOutcome": "FIRED",
+            "blocking": 1,
+            "advisory": 1,
+            "plantHits": 0,
+            "findings": [
+              {
+                "severity": "high",
+                "file": "lib/full-suite-command.ts",
+                "line": 19,
+                "onAChangedLine": false,
+                "summary": "isFullSuite tests SUITE_INVOCATION against the raw, untrimmed command, so a full-suite invocation with leading whitespace is misread as not a full suite."
+              },
+              {
+                "severity": "medium",
+                "file": "lib/full-suite-command.ts",
+                "line": 34,
+                "onAChangedLine": false,
+                "summary": "A redirect token that is a self-contained file-descriptor duplication (e.g. `2>&1`) still produces an empty `redirect[1]` capture, so the scanner treats it like a bare `>` and wrongly skips the following token as if it were a separate redirect target."
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "theCleanArmFIREDAndTheCAUSEIsNotTheARM": {
+      "whatScoreSays": "FIRED, both draws. By the control's rule a blocking finding on a clean subject is a precision failure, and FIRED is red.",
+      "whatTheFindingsAreAbout": "Neither finding is about the arm under measurement. The clean arm's changes are at new-side lines 7-11, 22, 25, 28, 30, 38 and 41 — the renamed locals and the extracted looksLikePath predicate. The reviewer flagged lines 19 and 34, and NEITHER is a changed line: both are unchanged context, byte-identical in the pull request's base.",
+      "andBothFindingsAreTRUE": "Measured by running the subjects rather than by reading them. isFullSuite('  bun test') returns false in BOTH baseline.ts and clean.ts, and isFullSuite('bun test 2>&1 test/foo.test.ts') returns true in both. The reviewer found two real, pre-existing defects in the compacted subject copy. It did not invent them and it did not object to the refactor.",
+      "soTheReadingIs": "A precision reading of red, whose cause is the reviewer reviewing the whole FILE rather than the DIFF. The control cannot tell a precision failure about the arm from a true observation about the subject — which is the sentence the critical@39 confound already earned, arriving again from a different direction.",
+      "whatWasNOTDone": "The subject was not repaired, and must not be. It is supposed to carry its plant, and #1524 bars repairing it when a reviewer flags it. A finding against a control subject is a reading, not a bug report. Equally, AI_REVIEW_SEVERITIES was not changed and nothing was added to REVIEW.md's Do not flag list — shaping the instrument to produce a nicer reading is the one move that would make the whole measurement worthless.",
+      "itWasPREDICTEDBeforeItWasDrawn": "README.md warned, in a section written before this reading and merged as 3cfceb05, that this subject carries a second confound 'one severity band from breaking the clean arm': isFullSuite returns false on any command it cannot parse and its own docblock calls false the permissive answer, so a reviewer can truthfully flag it as fail-open; priced medium it costs an advisory slot, priced high or critical it makes suite-lock-redirect/clean score FIRED on a finding that has nothing to do with the plant. Both draws priced it HIGH and both scored FIRED. The line-19 finding's own failure_scenario quotes the same docblock sentence the prediction quotes. The prediction named a mechanism and a severity threshold before the draw, and the draw matched both.",
+      "theConfoundThisIsNOT": "This is not the critical@39 confound #1513 removed. That one came from staging a compacted copy at a path whose live callers import the real module, and it is absent from every payload here — no finding in any of the four measured draws objects that the module no longer exports what its callers import. This one comes from the compacted copy carrying latent defects of its own on lines the diff does not touch.",
+      "whatWouldSeparateThem": "A clean candidate whose baseline the reviewer has nothing true to say about, or a reading that scopes the finding set to changed lines before scoring. Neither exists today; both are changes to the instrument and are out of scope for a measurement issue. Filed as a gap rather than fixed here."
+    },
+    "theCriticalAt39ConfoundIsAbsent": "No payload in any of the four measured draws contains a finding of the critical@39 shape. That is consistent with the eight readings after #1513 and is a second subject's worth of evidence for it.",
+    "whatThisIsNOTGroundsFor": {
+      "doNotTickCRCA4": "Two draws is not a variance estimate, and these two draws per arm are attempts of a SINGLE workflow run on a byte-identical tree — the same weakness #1513 recorded, not a new independent sample. The reviewer is a sampled instrument (#1290, CRC-B3). .claude/rules/claiming-sc-coverage.md is explicit. Nothing is ticked on the back of this.",
+      "andTheCleanArmIsRED": "Even read generously, half of this subject's reading is a failing outcome. A control with one green arm and one red arm is not evidence that the gate discriminates; it is evidence of exactly what it says — DETECTED twice on the plant, FIRED twice on the clean variant.",
+      "theRecallSideIsStillOnlyTwoPoints": "DETECTED twice at a fresh round 1 says the reviewer located this silent logic defect, at the declared line, in both draws it produced a payload for. It is not a bound on how often it would."
+    },
+    "gaps": [
+      "suite-lock-redirect/clean-loop has N = 0. It is the second clean subject (#1225), deliberately a different KIND of refactor — a control-flow rewrite rather than a rename-and-extract — and #1524's acceptance named only planted and clean. One clean subject cannot carry a rate.",
+      "The clean arm's FIRED is uninterpretable as a precision number until the reviewer's finding set can be scoped to the diff, or until the subject's baseline carries nothing true to say. Recorded as a reading, not resolved.",
+      "Both arms were drawn from one workflow run each. Independent runs on fresh pairs are the axis that would make N mean what N usually means."
+    ]
   },
   "confound": {
     "finding": "critical at lib/project-state-root.ts:39, present in ALL FOUR draws",
