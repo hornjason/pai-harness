@@ -85,17 +85,18 @@ import {
   AI_REVIEW_JURY_NOTICE_TITLE,
   advisoryKey,
 } from "./scaffold/ai-review-findings";
+import { AI_REVIEW_BALLOT_KEY, AI_REVIEW_BALLOT_VOTES_KEY } from "./scaffold/ai-review-step";
 
 /**
  * The key the ballot payload hangs its per-finding votes off.
  *
- * One exported constant, named by the reader here and by the prompt that
- * asks a verifier group to write the file, so the two cannot drift. #295 is
- * the measured instance of what drift costs: a reader asked for a key no
- * writer ever produced, the list was empty on every run, and an absent key
- * read as an empty list read as clean.
+ * Declared in `./scaffold/ai-review-step`, beside the prompt that asks a
+ * verifier group to write the file, and re-exported here rather than
+ * restated. #295 is the measured instance of what a second spelling costs: a
+ * reader asked for a key no writer ever produced, the list was empty on
+ * every run, and an absent key read as an empty list read as clean.
  */
-export const AI_REVIEW_BALLOT_KEY = "ballots";
+export { AI_REVIEW_BALLOT_KEY } from "./scaffold/ai-review-step";
 
 /**
  * The annotation title the jury's own reading is printed under.
@@ -132,11 +133,16 @@ export interface BallotReading {
  * a run reporting that about a file it never parsed is the Silent Default
  * Substitution `.claude/rules/config-access.md` forbids.
  *
- * The entries are NOT validated here. `parseVotes` owns that boundary and is
+ * The VOTES are not validated here. `parseVotes` owns that boundary and is
  * the only thing in the tree that reads an untrusted vote — a second reader
  * agreeing with it would be two deciders over one question
  * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape), and a
- * malformed entry refuses ONE finding's ballot rather than the whole file.
+ * malformed vote refuses ONE finding's ballot rather than the whole file.
+ *
+ * What IS checked here is the envelope: an entry names a finding, carries a
+ * votes list, and names it only once. Those are facts about the ballot as a
+ * document rather than about any vote on it, and a document this reader
+ * cannot index is a file it did not read.
  */
 export function readBallots(raw: string | null): BallotReading {
   if (raw === null) {
@@ -166,17 +172,68 @@ export function readBallots(raw: string | null): BallotReading {
         `an empty ballot set, and an empty ballot set is not a group that agreed with everything`,
     };
   }
-  const set = obj[AI_REVIEW_BALLOT_KEY];
-  if (set === null || typeof set !== "object" || Array.isArray(set)) {
+  const list = obj[AI_REVIEW_BALLOT_KEY];
+  if (!Array.isArray(list)) {
     return {
       ballots: null,
       unreadable:
         `${BALLOT_UNREADABLE_PREFIX}: '${AI_REVIEW_BALLOT_KEY}' is ${
-          Array.isArray(set) ? "an array" : String(set)
-        }, not an object keyed by finding`,
+          list === null ? "null" : typeof list
+        }, not a list of per-finding ballots`,
     };
   }
-  return { ballots: set as BallotSet, unreadable: null };
+
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const ballots: BallotSet = {};
+  for (let at = 0; at < list.length; at++) {
+    const entry = list[at];
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return {
+        ballots: null,
+        unreadable: `${BALLOT_UNREADABLE_PREFIX}: ballot ${at} is ${
+          Array.isArray(entry) ? "an array" : String(entry)
+        }, not an object`,
+      };
+    }
+    const e = entry as Record<string, unknown>;
+    // The pair IS the identity, so a ballot that does not carry both names
+    // no finding. Refused rather than skipped: a skipped entry is a group
+    // that met and whose votes nobody counted, which reads from the outcome
+    // exactly like a group that was never convened.
+    for (const name of [f.file, f.summary] as const) {
+      if (typeof e[name] !== "string" || (e[name] as string).trim() === "") {
+        return {
+          ballots: null,
+          unreadable:
+            `${BALLOT_UNREADABLE_PREFIX}: ballot ${at} carries no '${name}', so it names no ` +
+            `finding. The declared file and summary are how a ballot is matched to the ` +
+            `finding it is about`,
+        };
+      }
+    }
+    if (!Array.isArray(e[AI_REVIEW_BALLOT_VOTES_KEY])) {
+      return {
+        ballots: null,
+        unreadable:
+          `${BALLOT_UNREADABLE_PREFIX}: ballot ${at} carries no '${AI_REVIEW_BALLOT_VOTES_KEY}' ` +
+          `list. A ballot entry with no votes on it is not an abstention, it is a malformed entry`,
+      };
+    }
+    // ONE identity function, computed here from the pair the writer copied
+    // rather than reproduced by the writer. See `AI_REVIEW_BALLOT_VOTES_KEY`.
+    const key = advisoryKey(e);
+    if (key in ballots) {
+      return {
+        ballots: null,
+        unreadable:
+          `${BALLOT_UNREADABLE_PREFIX}: ballot ${at} is a second ballot for the finding at ` +
+          `${JSON.stringify(e[f.file])}, and nothing here can choose between two readings of ` +
+          `one question`,
+      };
+    }
+    ballots[key] = e[AI_REVIEW_BALLOT_VOTES_KEY];
+  }
+  return { ballots, unreadable: null };
 }
 
 export interface JuryGateVerdict {

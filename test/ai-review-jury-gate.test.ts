@@ -104,8 +104,25 @@ function ballotFor(agree: number, size: number = VERIFIER_GROUP_SIZE): Record<st
   return Array.from({ length: size }, (_, i) => vote(`verifier-${i}`, i < agree));
 }
 
-function ballotPayload(entries: Record<string, Record<string, unknown>[]>): string {
-  return JSON.stringify({ [AI_REVIEW_BALLOT_KEY]: entries });
+/**
+ * The ballot as the verifier group writes it: a list of entries, each naming
+ * its finding by the finding's own `file` and `summary`.
+ *
+ * The map this takes is keyed by `advisoryKey` because that is what the gate
+ * works in; the payload it produces carries the pair instead, which is the
+ * contract an agent can actually honour. Both sides of that translation are
+ * exercised by every case below rather than asserted once.
+ */
+function ballotPayload(
+  entries: Array<[Record<string, unknown>, Record<string, unknown>[]]>,
+): string {
+  return JSON.stringify({
+    [AI_REVIEW_BALLOT_KEY]: entries.map(([finding, votes]) => ({
+      file: finding.file,
+      summary: finding.summary,
+      votes,
+    })),
+  });
 }
 
 let seq = 0;
@@ -259,9 +276,41 @@ describe("JG-4: an unreadable ballot source is a reading that failed", () => {
   });
 
   test("JG-4c: a declared, empty ballot set is readable and convenes nobody", () => {
-    const r = readBallots(ballotPayload({}));
+    const r = readBallots(ballotPayload([]));
     expect(r.unreadable).toBeNull();
     expect(r.ballots).toEqual({});
+  });
+
+  test("JG-4d: an entry naming no finding refuses the whole source", () => {
+    const r = readBallots(
+      JSON.stringify({ [AI_REVIEW_BALLOT_KEY]: [{ summary: "x", votes: ballotFor(0) }] }),
+    );
+    expect(r.ballots).toBeNull();
+    expect(r.unreadable).toContain("file");
+  });
+
+  test("JG-4e: an entry with no votes list is malformed, not an abstention", () => {
+    const f = blocking();
+    const r = readBallots(
+      JSON.stringify({ [AI_REVIEW_BALLOT_KEY]: [{ file: f.file, summary: f.summary }] }),
+    );
+    expect(r.ballots).toBeNull();
+    expect(r.unreadable).toContain("votes");
+  });
+
+  test("JG-4f: two ballots for one finding cannot be chosen between", () => {
+    const f = blocking();
+    const r = readBallots(ballotPayload([[f, ballotFor(0)], [f, ballotFor(VERIFIER_GROUP_SIZE)]]));
+    expect(r.ballots).toBeNull();
+    expect(r.unreadable).toContain("second ballot");
+  });
+
+  test("JG-4g: the pair the writer copies resolves to the key the gate uses", () => {
+    const f = blocking();
+    const r = readBallots(ballotPayload([[f, ballotFor(VERIFIER_GROUP_SIZE)]]));
+    // The whole point of the pair contract: no agent reproduces the hash,
+    // and the hash is still the one identity.
+    expect(Object.keys(r.ballots ?? {})).toEqual([keyOf(f)]);
   });
 });
 
@@ -270,7 +319,7 @@ describe("JG-4: an unreadable ballot source is a reading that failed", () => {
 describe("JG-5: every verifier's vote and the disagreement flag reach the ledger", () => {
   test("JG-5a: a withheld finding is on the ledger with its whole ballot", () => {
     const f = blocking();
-    const path = fixture(ballotPayload({ [keyOf(f)]: ballotFor(VERIFIER_QUORUM - 1) }));
+    const path = fixture(ballotPayload([[f, ballotFor(VERIFIER_QUORUM - 1)]]));
     const rows = withLedger(() => void aiReviewJuryGate([f], path));
 
     expect(rows).toHaveLength(1);
@@ -285,7 +334,7 @@ describe("JG-5: every verifier's vote and the disagreement flag reach the ledger
 
   test("JG-5b: a surfaced finding is recorded too — the population is both", () => {
     const f = blocking();
-    const path = fixture(ballotPayload({ [keyOf(f)]: ballotFor(VERIFIER_GROUP_SIZE) }));
+    const path = fixture(ballotPayload([[f, ballotFor(VERIFIER_GROUP_SIZE)]]));
     const rows = withLedger(() => void aiReviewJuryGate([f], path));
     expect(rows).toHaveLength(1);
     expect(rows[0].emitted).toBe(true);
@@ -295,7 +344,7 @@ describe("JG-5: every verifier's vote and the disagreement flag reach the ledger
 
   test("JG-5c: a finding nobody voted on is on the ledger with a null reading", () => {
     const f = blocking();
-    const path = fixture(ballotPayload({}));
+    const path = fixture(ballotPayload([]));
     const rows = withLedger(() => void aiReviewJuryGate([f], path));
     expect(rows).toHaveLength(1);
     expect(rows[0].jury).toBeNull();
@@ -319,7 +368,7 @@ describe("JG-6: main withholds, blocks and refuses through the gate", () => {
     // honest and being overruled by the group is not a contradiction —
     // exactly the reasoning `wouldBlock` applies to CRC-B7's demotion.
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
-    const ballots = fixture(ballotPayload({ [keyOf(f)]: ballotFor(VERIFIER_QUORUM - 1) }));
+    const ballots = fixture(ballotPayload([[f, ballotFor(VERIFIER_QUORUM - 1)]]));
     const { code, lines } = withLedgerResult(() => captureBoth(() => main([payload, "", ballots], aiReviewJuryGate)));
     expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} CLEAN`))).toBe(true);
     expect(code).toBe(0);
@@ -329,7 +378,7 @@ describe("JG-6: main withholds, blocks and refuses through the gate", () => {
   test("JG-6c: a ballot that clears the quorum still blocks", () => {
     const f = blocking();
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
-    const ballots = fixture(ballotPayload({ [keyOf(f)]: ballotFor(VERIFIER_GROUP_SIZE) }));
+    const ballots = fixture(ballotPayload([[f, ballotFor(VERIFIER_GROUP_SIZE)]]));
     const { code, lines } = withLedgerResult(() => captureBoth(() => main([payload, "", ballots], aiReviewJuryGate)));
     expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} BLOCKED`))).toBe(true);
     expect(code).not.toBe(0);
@@ -356,7 +405,7 @@ describe("JG-6: main withholds, blocks and refuses through the gate", () => {
   test("JG-6f: a withheld finding is demoted, never dropped", () => {
     const f = blocking();
     const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
-    const ballots = fixture(ballotPayload({ [keyOf(f)]: ballotFor(VERIFIER_QUORUM - 1) }));
+    const ballots = fixture(ballotPayload([[f, ballotFor(VERIFIER_QUORUM - 1)]]));
     const { lines } = withLedgerResult(() => captureBoth(() => main([payload, "", ballots], aiReviewJuryGate)));
     expect(lines.join("\n")).toContain(String(f.summary));
   });

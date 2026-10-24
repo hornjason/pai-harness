@@ -3103,6 +3103,73 @@ export const AI_REVIEW_FINDING_FIELDS = {
 } as const;
 
 /**
+ * The key the verifier group's ballot hangs its per-finding votes off
+ * (CRC-B4, #1476).
+ *
+ * Declared HERE, beside the prompt that asks a verifier group to write the
+ * file, and imported by `lib/ai-review-jury.ts`, which reads it. The
+ * direction is forced — this module has no relative imports — and it is the
+ * right one anyway: #295 is the measured instance of a reader and a writer
+ * that merely agreed, where the reader asked for a key no writer ever
+ * produced and the absent key read as an empty list read as clean.
+ */
+export const AI_REVIEW_BALLOT_KEY = "ballots";
+
+/**
+ * The member each ballot entry hangs its votes off.
+ *
+ * The entry names its finding by the finding's OWN declared `file` and
+ * `summary` rather than by an identity token, and that is deliberate.
+ * `advisoryKey` is an FNV-1a hash and the writer here is a language model: a
+ * contract that asks an agent to reproduce a hash gets a plausible hex
+ * string, and a ballot filed under a key nothing matches is silently
+ * counted as no ballot at all. Two strings it is already holding cannot be
+ * got wrong that way, and the hash stays in one place — the reader computes
+ * it from the pair, so there is still exactly one identity function.
+ */
+export const AI_REVIEW_BALLOT_VOTES_KEY = "votes";
+
+/**
+ * The members of one verifier's vote, in the one spelling both sides use.
+ *
+ * `parseVotes` in `lib/finding-jury.ts` refuses an entry missing any of
+ * them, and refuses rather than coercing: a vote that cannot be read is not
+ * a vote that was cast, and reading it as a dissent invents one. `real` in
+ * particular must be a JSON boolean — the string `"false"` is truthy, and a
+ * verifier who wrote it was once counted as agreeing with the finding they
+ * had just rejected.
+ */
+export const AI_REVIEW_BALLOT_VOTE_FIELDS = {
+  verifier: "verifier",
+  real: "real",
+  reason: "reason",
+} as const;
+
+/** Where the verifier group writes its ballot, beside the findings payload. */
+export const AI_REVIEW_BALLOT_BASENAME = "ai-review-ballot.json";
+
+/** The variable both the verifier step and the adjudicator read the path from. */
+export const AI_REVIEW_BALLOT_PATH_VAR = "AI_REVIEW_BALLOT_PATH";
+
+/** The step that convenes the verifier group. */
+export const AI_REVIEW_VERIFY_STEP_ID = "ai-review-verify";
+
+export const AI_REVIEW_VERIFY_STEP_NAME =
+  "Convene a verifier group on the findings that would block";
+
+/**
+ * The title the warning carries when no ballot was produced.
+ *
+ * A separate title from every other annotation this job emits, because it
+ * names a DIFFERENT state: the review ran, the adjudication ran, and the
+ * quorum did not. Findings keep blocking, which is the behaviour before the
+ * quorum existed — so the run is not wrong, it is unmeasured on one axis,
+ * and `.claude/rules/config-access.md` says that state is announced rather
+ * than defaulted away.
+ */
+export const AI_REVIEW_BALLOT_UNMEASURED_TITLE = "AI review verifier quorum UNMEASURED";
+
+/**
  * Every severity the contract recognises, and whether it blocks.
  *
  * A closed table, and the single one: the prompt's "use one of these words"
@@ -4148,6 +4215,136 @@ case "\${unmeasured_rounds}" in
     carry_note "\${unmeasured_rounds} recorded round(s) of this pull request have no readable findings list, so the carried set is a LOWER BOUND. A finding raised on one of those rounds is not listed and is not therefore resolved."
     ;;
 esac
+`;
+}
+
+/**
+ * The prompt the verifier group runs (CRC-B4, #1476).
+ *
+ * ## It is a SEPARATE action invocation, and that is the criterion
+ *
+ * The source design's sentence is *"a separate group of agents votes on each
+ * finding"*. A second pass by the agent that wrote the findings is not a
+ * group and is not separate — it is the same context asked to agree with
+ * itself, which has exactly one error direction. So this is its own
+ * `uses:` step with its own context, and the verifiers inside it are its own
+ * subagents, each a fresh context that never saw the reviewer's reasoning.
+ *
+ * What that buys is bounded and worth saying plainly: the verifiers are
+ * independent of the REVIEWER, and correlated with each other in ways
+ * nothing here can read — same prompt, same model, same tree.
+ * `lib/finding-jury.ts`'s header says this about the mechanism generally and
+ * it is no less true of this instantiation.
+ *
+ * ## The budget, and why it is spent only on the blocking findings
+ *
+ * `${blocking}` are the severities that redden a required check. Those are
+ * the findings a quorum protects, because a false one costs a remedy commit,
+ * a CI round, a review round and an agent's whole context. The advisory tail
+ * costs a line in an annotation, so a verifier group over it would be the
+ * expensive half of the trade bought for the cheap half of the benefit.
+ *
+ * ## What the group may not do
+ *
+ * It may not edit the tree, fix anything, or add findings. It reads the
+ * payload this job already wrote and answers one question per finding. A
+ * verifier that proposed a new defect would be a second reviewer, and the
+ * reading would stop being a vote.
+ *
+ * @param groupSize how many verifiers vote on each finding. Passed in rather
+ * than imported: `VERIFIER_GROUP_SIZE` lives in `lib/finding-jury.ts` and
+ * this module has no relative imports, because 27 suites copy it alone into
+ * a temp directory and a mutant that fails to load reads as a guard
+ * behaving differently.
+ * @param quorum how many must agree for the finding to survive. Named in the
+ * prompt so a verifier knows the weight of its vote, and enforced nowhere
+ * near here — `juryReading` counts, and this text cannot change the count.
+ */
+export function buildVerifyPrompt(groupSize: number, quorum: number): string {
+  const blocking = AI_REVIEW_BLOCKING_SEVERITIES.join(", ");
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const v = AI_REVIEW_BALLOT_VOTE_FIELDS;
+
+  return `You are convening a VERIFIER GROUP over findings another agent has
+already written. You are not reviewing this pull request and you must not
+add findings of your own.
+
+READ THE FINDINGS PAYLOAD at the absolute path in the
+\`${AI_REVIEW_FINDINGS_PATH_VAR}\` environment variable. It is a JSON object
+with a \`${AI_REVIEW_FINDINGS_KEY}\` list. If that file is absent, unreadable
+or holds no findings, write nothing and stop — a ballot about findings that
+do not exist is worse than no ballot.
+
+SELECT THE FINDINGS THAT WOULD BLOCK. A finding blocks when its
+\`${f.severity}\` is one of: ${blocking}. Every other finding is advisory and
+you must NOT vote on it. Voting on the advisory tail spends a full agent
+context per nit and buys nothing — those findings block nothing either way.
+
+FOR EACH BLOCKING FINDING, convene ${groupSize} INDEPENDENT VERIFIERS. Spawn
+each one as its own subagent with its own context. Give each the finding's
+\`${f.summary}\`, \`${f.file}\`, \`${f.line}\` and \`${f.failureScenario}\`
+and nothing else — not the other verifiers' answers, not your own opinion,
+and not the verdict the reviewer reached. A verifier shown another
+verifier's reasoning is not a second vote on the question; it is one vote
+reported twice.
+
+ASK EACH VERIFIER EXACTLY ONE QUESTION: reading the code at the cited file
+and line on this branch, is this defect real? Real means there is an input
+that reaches it and produces the stated wrong result, crash or data loss. A
+finding that describes code accurately and names no reachable wrong result
+is NOT real. A finding whose cited symbol is not at the cited place is NOT
+real. A verifier that cannot reach the file says so in its reason and
+answers \`${v.real}: false\`.
+
+${quorum} of ${groupSize} must answer yes for the finding to survive. A
+finding the group does not carry is withheld: it is still reported on the
+pull request and it stops reddening the check. So a yes is not free and a no
+is not a dismissal — say what you read, in one sentence, either way.
+
+WRITE THE BALLOT to the absolute path in the \`${AI_REVIEW_BALLOT_PATH_VAR}\`
+environment variable, as a single JSON object holding one entry per finding
+you voted on:
+
+{
+  "${AI_REVIEW_BALLOT_KEY}": [
+    {
+      "${f.file}": "<copied verbatim from the finding>",
+      "${f.summary}": "<copied verbatim from the finding>",
+      "${AI_REVIEW_BALLOT_VOTES_KEY}": [
+        {"${v.verifier}": "<a distinct id per verifier>", "${v.real}": true, "${v.reason}": "<one sentence>"}
+      ]
+    }
+  ]
+}
+
+COPY \`${f.file}\` AND \`${f.summary}\` VERBATIM from the finding. That pair
+is how the adjudicator matches your ballot to the finding it is about. Do
+not paraphrase the summary, do not reformat the path, and do not invent a
+key of your own. A pair that matches nothing is counted as no ballot at all
+and the finding keeps blocking — which is the direction this is allowed to
+be wrong in, but it wastes the group.
+
+Omit a finding you could not vote on rather than filing a partial entry for
+it. An omitted finding is UNMEASURED and keeps blocking.
+
+FIVE RULES THE ADJUDICATOR ENFORCES AND WILL REFUSE THE BALLOT OVER:
+
+  - One entry per finding. The same \`${f.file}\` and \`${f.summary}\` pair
+    twice is two readings of one question and the adjudicator cannot choose
+    between them.
+
+  - Exactly ${groupSize} votes per finding. A missing verifier is neither a
+    yes nor a no, so a short ballot is counted as no reading at all and the
+    finding keeps blocking.
+  - A distinct \`${v.verifier}\` id on every vote in a ballot. The same id
+    twice is one opinion written down twice.
+  - \`${v.real}\` is a JSON boolean, never the string "true" or "false".
+    The string "false" is truthy, and a verifier who wrote it was once
+    counted as agreeing with the finding they had just rejected.
+  - A \`${v.reason}\` on every vote, including the yeses.
+
+Write the file and stop. Do not modify any file in the checkout, do not
+comment on the pull request, and do not run the project's tests.
 `;
 }
 
