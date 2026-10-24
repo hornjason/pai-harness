@@ -36,7 +36,48 @@
  * must refuse, by name, rather than picking one.** Ambiguous and absent are
  * different states and neither one is a reading.
  *
- * Covers AC-1 … AC-9 (#1412). No SC id is claimed: no block is reserved for
+ * ## What was broken to prove it
+ *
+ * Run over this file + `test/ai-review-unmeasured-workflow.test.ts`
+ * (32 tests). Every row's failing SET — not just its count — was written
+ * down before the battery ran, and **the baseline row was read first**,
+ * because an instrument that has stopped reporting takes the baseline down
+ * with it and nobody mutates anything to produce that row.
+ *
+ * | Row | Predicted | Measured |
+ * |---|---|---|
+ * | **baseline** — unmutated | 32 pass, 0 fail | **32 pass, 0 fail** |
+ * | M1 the ambiguity test short-circuited (`if (false)`), so the selection returns the first match | 4 | **4 of 32** — AC-3 ×2, AC-9 (mutant/real), AC-10 (ambiguous refused) |
+ * | M2 the login clause alone removed | 2 | **2 of 32** — AC-5 and AC-5 CONTROL |
+ * | M3 BOTH author clauses removed — the impersonation hole | 10 | **10 of 32** — AC-2, AC-3, AC-4 ×2, AC-5 ×2, AC-9 (agreement), AC-10 ×3 |
+ * | M4 the genuinely pre-#1412 `scripts/record-ai-review-unmeasured.ts`, from `origin/main` | 2 | **2 of 32** — AC-10 (ambiguous refused), AC-10 (human quote alone) |
+ * | M5 this file's own `buildMutant` neutered (`const widened = source`) | 2 | **2 of 32** — AC-8, AC-9 (mutant/real) |
+ * | M6 the mutation anchor respelled `2 - 1` | file ABORTS | **0 of 16 ran** — *"could not build the mutant: the bound appears 0 times"* |
+ *
+ * Every row matched its predicted set exactly. Before believing any of
+ * them, the input on which mutant and original differ, named and run: the
+ * list `[bot(10), human(99), bot(20)]`. The real source returns UNREADABLE
+ * naming ids 10 and 20; M1 and M4 return the first match. AC-9 asserts that
+ * pair in-process on every run, so it is re-checked rather than recorded.
+ *
+ * M4 is the row worth more than the five reconstructions: it is the real
+ * pre-fix tree, and its count agreeing with M1's subset is the evidence the
+ * reconstructions are faithful. M6 is the loud-abort property — a mutation
+ * harness that silently no-ops when its target moves is the decorative
+ * check this whole discipline is about.
+ *
+ * None of the mutations is left in the tree; all were run and reverted, and
+ * `git status` was read clean afterwards.
+ *
+ * **The cheapest wrong fix, named: make the marker more exotic** — bump it
+ * to `:v2`, or add a nonce. The symptom disappears for exactly as long as
+ * nobody discusses the new marker, which on this tracker was under a day.
+ * Do the cases survive it? Yes, non-vacuously: every fixture here builds
+ * its bodies from `AI_REVIEW_LEDGER_COMMENT_MARKER` itself, so renaming the
+ * constant renames both the ledger and the quote and AC-3, AC-4 and AC-10
+ * stay red against a reader that still takes the first match.
+ *
+ * Covers AC-1 … AC-10 (#1412). No SC id is claimed: no block is reserved for
  * this branch in `specs/sc-reservations.json`, and a hand-written id is an
  * allocation (`.claude/rules/parallel-sessions.md`).
  */
