@@ -178,12 +178,20 @@ export interface WriteSite {
  * here when an identifier INSIDE it is not complete — `backupDir`, `outDir`
  * and `SF` are why most of these are listed.
  *
- * This deliberately does NOT cover the wider class of targets that are
- * `opaque` for some other reason — 38 sites in all, the rest being function
- * parameters that contribute no value and so make no claim to contradict.
- * That bound predates this change, is stated in `lib/spec-write-ast.ts`, and
- * declaring all 38 would be a guard that flags a quarter of the tree: louder,
- * not more accurate.
+ * This is the PROSE tier and it deliberately does not cover the wider class
+ * of targets that are `opaque` for some other reason. That class is now 96 of
+ * this tree's 130 non-chokepoint write sites, 85 of whose holes are a function
+ * parameter: a helper whose caller supplies the path. 96 hand-written
+ * justifications would be 96 lines of "the caller decides".
+ *
+ * It is no longer unguarded, which is the change #1584 made. `opaqueDrift`
+ * ratchets the whole 96 against `OPAQUE_RATCHET` in both directions, so the
+ * wider class moves only when somebody writes down that it moved. Six sites
+ * make the stronger claim and stay here, with what they write.
+ *
+ * The earlier number in this docblock was 38, measured before `unresolved`
+ * was recorded below depth 0 and before a visible literal stopped clearing an
+ * invisible directory. On this tree today the old predicate reads 37.
  */
 export const REASSIGNABLE_TARGETS: Record<string, string> = {
   "lib/test-suite-lock.ts::tmp":
@@ -314,6 +322,85 @@ export function undeterminedTargets(
   return writeSites(root, dirs).filter(
     (s) => s.reassignable && s.file !== CHOKEPOINT && !(`${s.file}::${s.target}` in declared),
   );
+}
+
+// ── The opaque ratchet ────────────────────────────────────────────
+
+/** Where the opaque population is recorded. Relative to the project root. */
+export const OPAQUE_RATCHET = ".claude/spec-write-opaque-ratchet.json";
+
+/** `file::target | reason, reason` — the fingerprint one opaque site records. */
+export function opaqueFingerprint(s: WriteSite): string {
+  const holes =
+    s.unresolved && s.unresolved.length > 0
+      ? s.unresolved.join(", ")
+      : "reassignable, no readable hole";
+  return `${s.file}::${s.target} | ${holes}`;
+}
+
+/**
+ * The declared opaque population.
+ *
+ * Throws when the file is absent or does not carry a `sites` array. A store
+ * that could not be read is UNMEASURED, not an empty population — `{}` and
+ * `{"sites": []}` are different facts and `sites` is the control string that
+ * tells them apart (the same rule `lib/sc-reservations.ts` applies).
+ */
+export function declaredOpaque(root: string): string[] {
+  const path = join(root, OPAQUE_RATCHET);
+  if (!existsSync(path)) {
+    throw new Error(`spec-write sweep: UNMEASURED — ${OPAQUE_RATCHET} is absent`);
+  }
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+  const sites = (parsed as { sites?: unknown }).sites;
+  if (!Array.isArray(sites) || sites.some((s) => typeof s !== "string")) {
+    throw new Error(`spec-write sweep: UNMEASURED — ${OPAQUE_RATCHET} has no \`sites\` string array`);
+  }
+  return sites as string[];
+}
+
+/**
+ * How the tree's opaque population differs from the declared one, in BOTH
+ * directions.
+ *
+ * `opaque` is the resolver's answer to "could I follow this target" and until
+ * #1584 nothing downstream read it — a fourth state no consumer distinguishes
+ * is the same as not having it. This is the consumer.
+ *
+ * It is a ratchet and not a justification list, and the difference is
+ * deliberate. The honest population is 96 of this tree's 130 non-chokepoint
+ * write sites, 85 of whose holes are a FUNCTION PARAMETER: a helper whose
+ * caller supplies the path. Asking for 96 hand-written justifications would
+ * produce 96 lines of "the caller decides", which is a list nobody reads
+ * guarding a property nobody can check. `REASSIGNABLE_TARGETS` keeps the
+ * prose tier for the six sites making the stronger claim.
+ *
+ * What this does buy, and what nothing bought before it: a NEW opaque site
+ * fails the suite, a site whose holes CHANGE fails, and a site that becomes
+ * readable fails until its entry is deleted in the same commit. The
+ * population can only move by somebody writing down that it moved.
+ */
+export function opaqueDrift(
+  root: string,
+  dirs: readonly string[] = SWEPT_DIRS,
+): { added: string[]; removed: string[] } {
+  const found = writeSites(root, dirs)
+    .filter((s) => s.opaque && s.file !== CHOKEPOINT)
+    .map(opaqueFingerprint)
+    .sort();
+  const declared = [...declaredOpaque(root)].sort();
+
+  // Multiset difference: two sites can share a file, a target AND their holes
+  // — `lib/scaffold/steps.ts::filePath` is three of them — so a set would let
+  // a fourth copy arrive unnoticed.
+  const remaining = [...declared];
+  const added: string[] = [];
+  for (const f of found) {
+    const at = remaining.indexOf(f);
+    if (at === -1) added.push(f);
+    else remaining.splice(at, 1);
+  }
+  return { added, removed: remaining };
 }
 
 // ── Shell ─────────────────────────────────────────────────────────
