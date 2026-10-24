@@ -493,6 +493,85 @@ export const AI_REVIEW_LEDGER_TRUNCATED_KEY = "truncated";
 /** The key holding the text at the cited line when the finding was raised. */
 export const AI_REVIEW_LEDGER_FINDING_TEXT = "text";
 
+/**
+ * The key holding how many turns the reviewer spent on this round (#1380).
+ *
+ * #1380 measured 3 of 3 observable same-tree re-runs producing a DIFFERENT
+ * verdict, the strongest being merge commit `99d50fc` at round 5 both times,
+ * BLOCKED then CLEAN, at 51 turns and 52 against a cap of 80. The turn count
+ * is the only candidate mechanism anyone has for that, and it is the one
+ * thing about a round that nothing recorded.
+ *
+ * Mining the history cannot settle it: at the pre-#1198 26% payload rate,
+ * n=20 readable same-tree pairs needs ~290 re-runs and 28 exist. So the
+ * number has to be captured going forward or not at all, and this is the
+ * position that already records `sha`, `run`, `attempt`, `round` and
+ * `identity` per entry.
+ */
+export const AI_REVIEW_LEDGER_TURNS_KEY = "turns";
+
+/**
+ * The key holding the commit the reviewer actually read (#1380).
+ *
+ * NOT the same fact as `sha`, and that is the whole reason it exists. `sha`
+ * is `github.event.pull_request.head.sha`; the review ran over whatever
+ * `actions/checkout` put in the tree, which on a `pull_request` event is the
+ * MERGE commit — head merged into the base as it stood when the run started.
+ *
+ * So two rounds sharing a `sha` are not two rounds over one tree: the base
+ * moves without the head moving, and the reviewer sees different bytes. A
+ * same-tree pair is two rounds sharing THIS field, and #1380's whole
+ * conditioning caveat — 28 same-tree pairs, 3 readable — was derived from
+ * merge commits off the Actions API because the ledger could not answer it.
+ */
+export const AI_REVIEW_LEDGER_MERGE_KEY = "merge";
+
+/** The round predates #1380. Nobody tried to read a turn count. */
+export const AI_REVIEW_TURNS_NOT_RECORDED = "AI_REVIEW_TURNS_NOT_RECORDED";
+
+/** This round tried to read a turn count and could not. */
+export const AI_REVIEW_TURNS_UNREADABLE = "AI_REVIEW_TURNS_UNREADABLE";
+
+/** The turn count was read. */
+export const AI_REVIEW_TURNS_READ = "AI_REVIEW_TURNS_READ";
+
+/**
+ * How many turns the reviewer spent, or why that is not known.
+ *
+ * The non-READ arms carry **no count field at all**, the construction
+ * `LedgerTruncation` and `PriorState` already use here: a caller cannot
+ * reach for a number without narrowing the status first, so "I could not
+ * tell" has no way to be read as zero. `0` is the answer that matters —
+ * a run whose execution file never arrived and a run that spent no turns
+ * are not the same event, and a `?? 0` makes them one.
+ *
+ * THREE STATES AND NOT TWO. Absent is NOT_RECORDED and `null` is
+ * UNREADABLE, which is the same split `findings` already carries one key
+ * over: every round written before #1380 has no key, and a round written
+ * after it always has one. Collapsing them would make a ledger that
+ * measured nothing indistinguishable from a ledger written last week.
+ */
+export type TurnReading =
+  | { status: typeof AI_REVIEW_TURNS_NOT_RECORDED }
+  | { status: typeof AI_REVIEW_TURNS_UNREADABLE }
+  | { status: typeof AI_REVIEW_TURNS_READ; turns: number };
+
+/**
+ * Read the turn count off a ledger round.
+ *
+ * `undefined` — no key at all — is NOT_RECORDED. Anything that is not a
+ * non-negative integer is UNREADABLE rather than the nearest number: a
+ * `"51"` the writer never produces, a float, a negative, `null` itself.
+ * There is no branch that returns a count it had to repair.
+ */
+export function readRoundTurns(raw: unknown): TurnReading {
+  if (raw === undefined) return { status: AI_REVIEW_TURNS_NOT_RECORDED };
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+    return { status: AI_REVIEW_TURNS_UNREADABLE };
+  }
+  return { status: AI_REVIEW_TURNS_READ, turns: raw };
+}
+
 /** No ledger comment on this pull request. A MEASURED reading of nothing. */
 export const AI_REVIEW_LEDGER_ABSENT = "AI_REVIEW_LEDGER_ABSENT";
 
@@ -525,8 +604,15 @@ export type FindingIdentity =
 export interface LedgerRound {
   /** The round number the entry recorded, or null if it recorded none. */
   round: number | null;
-  /** The commit the round reviewed. */
+  /** The pull request's HEAD commit at the round. NOT the tree reviewed. */
   sha: string;
+  /**
+   * The commit the reviewer actually read — see `AI_REVIEW_LEDGER_MERGE_KEY`.
+   * `""` when the entry recorded none, which is every round before #1380.
+   */
+  mergeSha: string;
+  /** How many turns the reviewer spent, or why that is unknown (#1380). */
+  turns: TurnReading;
   /** False when the entry recorded `findings: null`, or was not an object. */
   measured: boolean;
   /** True when the entry stamped the identity rule this reader knows. */
@@ -758,7 +844,18 @@ function toLedgerRound(raw: unknown): LedgerRound {
   // read. It is counted, not skipped: a round that vanishes from the count
   // makes a three-round pull request look like a two-round one.
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { round: null, sha: "", measured: false, keyable: false, findings: [] };
+    // An unreadable entry has not stated a turn count, and it has not failed
+    // to read one either — nobody got as far as asking. NOT_RECORDED, which
+    // is also what every pre-#1380 round reads as.
+    return {
+      round: null,
+      sha: "",
+      mergeSha: "",
+      turns: { status: AI_REVIEW_TURNS_NOT_RECORDED },
+      measured: false,
+      keyable: false,
+      findings: [],
+    };
   }
   const e = raw as Record<string, unknown>;
   const list = e[AI_REVIEW_LEDGER_FINDINGS_KEY];
@@ -766,6 +863,11 @@ function toLedgerRound(raw: unknown): LedgerRound {
   return {
     round: readRoundNumber(e.round),
     sha: typeof e.sha === "string" ? e.sha : "",
+    mergeSha:
+      typeof e[AI_REVIEW_LEDGER_MERGE_KEY] === "string"
+        ? (e[AI_REVIEW_LEDGER_MERGE_KEY] as string)
+        : "",
+    turns: readRoundTurns(e[AI_REVIEW_LEDGER_TURNS_KEY]),
     measured,
     keyable: e.identity === AI_REVIEW_LEDGER_IDENTITY,
     findings: measured

@@ -3099,6 +3099,49 @@ export const AI_REVIEW_LEDGER_TEXT_FIELD = "text";
 export const AI_REVIEW_LEDGER_ROUNDS_FIELD = "rounds";
 export const AI_REVIEW_LEDGER_TRUNCATED_FIELD = "truncated";
 
+/**
+ * Per-round forward capture, so the next person asking whether a re-run on
+ * an unchanged tree flips the verdict reads a table instead of deriving one
+ * (#1380).
+ *
+ * #1380 is filed as a record and it has exactly one actionable line. Its
+ * strongest single reading is merge commit `99d50fc` reviewed twice at round
+ * 5 — BLOCKED then CLEAN, 51 turns against 52, cap 80 — and its conclusion
+ * is that history cannot settle the question: at the pre-#1198 26% payload
+ * rate, n=20 readable same-tree pairs needs ~290 re-runs, and 28 pairs
+ * exist. Window B's 68% verdict rate is what makes forward capture newly
+ * affordable — the same 28 pairs yield ~13 readable instead of ~1.9.
+ *
+ * So two fields, and `AI_REVIEW_LEDGER_MERGE_FIELD` is the one that is easy
+ * to think redundant. `AI_REVIEW_LEDGER_SHA_VAR` is the pull request's HEAD
+ * commit; `GITHUB_SHA` on a `pull_request` event is the MERGE commit, which
+ * is what `actions/checkout` puts in the tree and therefore what the
+ * reviewer read. The base moves without the head moving, so two rounds
+ * sharing a `sha` are not two rounds over one tree and the same-tree pair
+ * this is all for cannot be formed from `sha` at all.
+ *
+ * **No verdict field, deliberately, and this is not an omission.** The
+ * persist step runs BEFORE the adjudicator — see `buildPersistScript`, where
+ * that position is argued at length — so there is no verdict in scope to
+ * record, and computing one here would be a second decider answering
+ * `AI_REVIEW_SEVERITIES`' question about the same input. The verdict is
+ * already a function of the `findings` array this step records and that one
+ * severity table, so a reader derives it rather than reading two copies of
+ * it that can disagree.
+ */
+export const AI_REVIEW_LEDGER_TURNS_FIELD = "turns";
+export const AI_REVIEW_LEDGER_MERGE_FIELD = "merge";
+
+/**
+ * The execution file's key holding the number of turns the action spent.
+ *
+ * The same key `buildReviewRunScript`'s turn-cap check reads — quoted from
+ * `base-action`'s execution file, where a completed run ends
+ * `"subtype": "success", "num_turns": 47`. Spelled once here so the recorder
+ * and the cap cannot drift onto two spellings of one field.
+ */
+export const AI_REVIEW_EXECUTION_TURNS_KEY = "num_turns";
+
 /** Environment variables the persist step reads. Spelled once, used twice. */
 export const AI_REVIEW_LEDGER_PR_VAR = "AI_REVIEW_LEDGER_PR";
 export const AI_REVIEW_LEDGER_TOKEN_VAR = "AI_REVIEW_LEDGER_TOKEN";
@@ -8773,15 +8816,47 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
   fi
 fi
 
+# The turn count, out of the action's own execution file (#1380).
+#
+# ALWAYS WRITTEN, as a number or as \`null\`, and never left off. That is
+# what makes the key a three-state reading rather than two: no key is a
+# round written before #1380, when nobody tried; \`null\` is this step
+# trying and failing; a number is the count. \`0\` is never substituted —
+# a run whose execution file never arrived and a run that spent no turns
+# are different events, and the whole point of recording this is to tell
+# a 51-turn round from an 83-turn one.
+#
+# The shape is checked INSIDE jq and anything else is an \`error\`, the
+# same construction the findings read above uses, so there is one branch
+# that means unreadable. A float, a string, a negative and an absent key
+# all leave by it.
+turns="null"
+if [ -n "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ] && [ -s "\${${AI_REVIEW_EXECUTION_FILE_VAR}}" ]; then
+  if parsed_turns=\$(jq -c 'if (.${AI_REVIEW_EXECUTION_TURNS_KEY} | type) == "number"
+         and (.${AI_REVIEW_EXECUTION_TURNS_KEY} | floor) == .${AI_REVIEW_EXECUTION_TURNS_KEY}
+         and .${AI_REVIEW_EXECUTION_TURNS_KEY} >= 0
+       then .${AI_REVIEW_EXECUTION_TURNS_KEY}
+       else error("${AI_REVIEW_EXECUTION_TURNS_KEY} is not a non-negative integer") end' \\
+      "\${${AI_REVIEW_EXECUTION_FILE_VAR}}" 2>/dev/null); then
+    turns="\${parsed_turns}"
+  else
+    ledger_note "the action's execution file exists and states no readable '${AI_REVIEW_EXECUTION_TURNS_KEY}', so this round's turn count is recorded as UNMEASURED rather than as a number. A review's turn count is the one candidate mechanism for a re-run flipping a verdict on an unchanged tree (#1380), and a guessed zero would be worse than no reading."
+  fi
+else
+  ledger_note "the action's execution file is absent or empty, so this round's turn count is recorded as UNMEASURED. The round itself is still recorded (#1380)."
+fi
+
 if ! entry=\$(jq -nc \\
   --arg at "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" \\
   --arg sha "\${${AI_REVIEW_LEDGER_SHA_VAR}:-}" \\
+  --arg merge "\${GITHUB_SHA:-}" \\
   --arg run "\${GITHUB_RUN_ID:-}" \\
   --arg attempt "\${GITHUB_RUN_ATTEMPT:-}" \\
   --arg identity '${AI_REVIEW_LEDGER_IDENTITY_V1}' \\
   --argjson round "\${round}" \\
+  --argjson turns "\${turns}" \\
   --argjson findings "\${findings}" \\
-  '{at:\$at, sha:\$sha, run:\$run, attempt:\$attempt, identity:\$identity, round:\$round, ${AI_REVIEW_FINDINGS_KEY}:\$findings}'); then
+  '{at:\$at, sha:\$sha, ${AI_REVIEW_LEDGER_MERGE_FIELD}:\$merge, run:\$run, attempt:\$attempt, identity:\$identity, round:\$round, ${AI_REVIEW_LEDGER_TURNS_FIELD}:\$turns, ${AI_REVIEW_FINDINGS_KEY}:\$findings}'); then
   ledger_note "this round's entry could not be assembled, so nothing was recorded."
   exit 0
 fi
@@ -9562,6 +9637,13 @@ export function buildReviewRunStep(
     // second `github.event_name` test, so there is one decider.
     `    ${AI_REVIEW_LEDGER_PR_VAR}: \${{ github.event.pull_request.number }}`,
     `    ${AI_REVIEW_LEDGER_SHA_VAR}: \${{ github.event.pull_request.head.sha }}`,
+    // #1380. The action's execution file, so the recorder can read
+    // `num_turns`. #826 is why this is restated and not inherited: a step's
+    // `env:` does not carry to a later step, and the findings path was
+    // missing from the report step for every run that ever executed because
+    // of exactly that. The commit the reviewer READ needs no binding — it is
+    // `GITHUB_SHA`, which the runner sets on every step.
+    `    ${AI_REVIEW_EXECUTION_FILE_VAR}: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outputs.execution_file }}`,
     `    ${AI_REVIEW_LEDGER_REPO_VAR}: \${{ github.repository }}`,
     `    ${AI_REVIEW_LEDGER_API_VAR}: \${{ github.api_url }}`,
     `    ${AI_REVIEW_LEDGER_TOKEN_VAR}: \${{ secrets.GITHUB_TOKEN }}`,
