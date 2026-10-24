@@ -48,22 +48,12 @@ the id in a comment. #149 chose that position deliberately and was right about
 it — a comment is where a project declares intent. What the position cannot do
 is tell a claim from a citation, and they are the same shape.
 
-Measured on the tree at the time of #360: of 220 comment-position credits, a
-systematic hand-audit found the population separates almost perfectly **by
-structural position**. Every citation found sat mid-sentence in running prose;
-every claim sat on its own line, in a label, or in a parenthetical.
-
-So this is not a new marker to adopt. It is the convention the repo already
-followed, made checkable. Applying it moved 266 credits to 256 — eleven
-citations dropped, one criterion (SC-359) *gained* coverage that a
-`SC-358/359` shorthand had hidden for its whole life, and the number of
-covered criteria did not change.
-
-Two of the eleven were a file about coverage attribution certifying the very
-criterion it was discussing. That is the trap this rule exists for, and it has
-now caught itself three times: once in #330, once in #352, and once in #360's
-own first draft, where `("see SC-621")` was credited from inside a comment
-whose next clause reads "Counting citations would make…".
+Measured at #360: of 220 comment-position credits the population separates
+almost perfectly **by structural position** — every citation found sat
+mid-sentence in running prose. So this is not a new marker to adopt; it is
+the convention the repo already followed, made checkable. The audit, and
+the three times this rule caught itself, are in
+`reference/check-failure-worked-instances.md`.
 
 ## The direction this is allowed to be wrong in
 

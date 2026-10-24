@@ -2263,3 +2263,110 @@ write down *which axis you varied* before you stop. That sentence is the whole
 cost, and it is the thing that would have shown the path axis was untouched.
 A falsified hypothesis feels like a completed check and is not one: it is a
 single row of a table nobody drew.
+
+## Moved out of the always-loaded rule by #1520
+
+The instruction surface reached 37 bytes of headroom against its 64,000-byte
+budget, so the next agent to add an ordinary rule table row would have gone
+red on `.claude/agents/aditi.md`. These blocks left
+`.claude/rules/checks-must-be-able-to-fail.md` verbatim; the rule routes to
+them. Nothing was rewritten and nothing was deleted — same reasoning as #1009.
+
+### On the fourth shape — how to recognise it while you work (#1520)
+
+It is the only one of the four you cannot find by reading. Both deciders are
+real code, both are called, both are correct, and the test that exercises them
+passes for a true reason — just not for the reason it claims. **A mutation
+battery is the only thing that surfaces it**, and only if you predict each
+count before running: the signature is a row that comes back lower than you
+expected, not a row that comes back zero.
+
+Measured six times across #415, #420, #436 and #445, with the pair and the
+count for each: `reference/check-failure-worked-instances.md`, *On the fourth
+shape*.
+
+### On the sixth shape — how to recognise it while you work (#1520)
+
+Reading the test cannot find it — the failure is byte-identical to the success
+on the channel being observed. The worked instance (#1236/#1259), where
+`bash -e` aborted a step before its own refusal and produced the refusal's
+exact exit status with empty stderr, is in
+`reference/check-failure-worked-instances.md`, *On the sixth shape*.
+
+### On the seventh shape — how to recognise it while you work (#1520)
+
+**Predict the membership, not just the total.** A matching count is necessary
+and not sufficient. A row that reddens because **the mutation did not apply**
+— a mutant that failed to load, or one that deleted the string another case
+rewrites — reads identically to the guard behaving differently. And **a
+mutation is a thing you spell**: two defensible spellings are two
+experiments, and one row of #1246 gave 6 then 5, the 5 matching the predicted
+count while differing from the predicted set.
+
+Same family as *a battery whose fixtures all meet a precondition* next door —
+there the fixed axis is a precondition, here the input. Both, with the
+numbers: `reference/check-failure-worked-instances.md`, *The same blindness
+with the axes swapped*.
+
+### A duration is not a mechanism — the rule's own summary (#1268, moved by #1520)
+
+**Read the `kind`.** `perTestTimeoutDeclarations` reports `"per-test"`
+separately from `"file-default"`, so a `file-default` filter answering
+"declares nothing" does **not** mean no budget governs the case.
+
+#1268 was filed because one agent inferred a mechanism from a duration and
+the next relayed it without re-deriving it. It is already falsified — bun
+1.3.14 **does** kill a blocking `execFileSync` at the budget — so do not
+re-file it. Both readings, and the six variations behind the second:
+`reference/check-failure-worked-instances.md`, *a duration is not a
+mechanism*.
+
+### The 2026-10-06 count, as the rule stated it (moved by #1520)
+
+This is the single most common defect in this codebase's own tooling. Not a
+hypothetical — a count. On 2026-10-06, five of eight issues shipped in one day
+were the same bug wearing different clothes: **a check that passed because of
+what it never looked at.** All five are in
+`reference/check-failure-worked-instances.md`, *Why*. Every one was green, and
+every one was green for a reason that had nothing to do with the code being
+correct.
+
+### Why the seven shapes are ordered as they are (moved by #1520)
+
+Seven shapes to watch for. The first three are taken from the list above. The
+fourth is the one that list could not contain, because it is invisible to
+exactly the kind of after-the-fact reading that produced the list. The fifth
+is invisible to the question this whole file asks — *can this check fail?* —
+because the honest answer is yes, today. The sixth is invisible to the test's
+own output. The seventh is invisible to the mutation battery the fourth one
+requires, because the battery is the instrument and no instrument reports its
+own range.
+
+### When the reason nobody checked is a comment saying it was checked (#1322, moved by #1520)
+
+**And write it as an assertion, not as a comment.** A docblock saying a
+property is tested is the reason nobody tests it — it answers, in the right
+file, the question that would have prompted a check. `lib/cli-commands.ts`
+carried *"`test/cli-contract.test.ts` runs every command for real"* while
+that test ran one command of ten, and three CLI commands exited 0 having
+executed nothing. Worked instance: *When the reason nobody checked is a
+comment saying it was checked* (#1322).
+
+### The #360 claim-versus-citation census, and a rule catching itself (moved by #1520)
+
+Measured on the tree at the time of #360: of 220 comment-position credits, a
+systematic hand-audit found the population separates almost perfectly **by
+structural position**. Every citation found sat mid-sentence in running prose;
+every claim sat on its own line, in a label, or in a parenthetical.
+
+So this is not a new marker to adopt. It is the convention the repo already
+followed, made checkable. Applying it moved 266 credits to 256 — eleven
+citations dropped, one criterion (SC-359) *gained* coverage that a
+`SC-358/359` shorthand had hidden for its whole life, and the number of
+covered criteria did not change.
+
+Two of the eleven were a file about coverage attribution certifying the very
+criterion it was discussing. That is the trap this rule exists for, and it has
+now caught itself three times: once in #330, once in #352, and once in #360's
+own first draft, where `("see SC-621")` was credited from inside a comment
+whose next clause reads "Counting citations would make…".

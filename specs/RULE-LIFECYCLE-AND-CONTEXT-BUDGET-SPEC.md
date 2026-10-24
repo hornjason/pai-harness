@@ -231,6 +231,19 @@ the single declaring position. A second constant for concurrent load would be
 two deciders for one question, and a mutation of either would leave the other
 holding the case up.
 
+**The budget reserves one ordinary rule table row (#1520).** The comparison is
+`peak <= budget - ORDINARY_ROW_BYTES`, not `peak <= budget`, and that is one
+threshold rather than a floor added beneath a ceiling — a floor beside a
+ceiling over one measurement is two deciders, the stronger masking every
+mutation of the weaker. #1069 had already added a warning at 95% for exactly
+this, and the measurement is that the warning did not work: it fired on every
+run while the tree walked to **37 bytes** of headroom, and what finally
+reported the problem was a red shard on `.claude/agents/aditi.md` raised
+against an agent who had never opened that file. Reserving a row puts the red
+on the change that consumes the last row instead. Repaired the same way as
+#1009 and #544 — records moved to `reference/`, nothing deleted: launch
+57,578 → 52,619, peak 63,963 → 59,004, headroom 37 → 4,996.
+
 **`paths:` was a budget escape hatch, and it had been used.** #1009 excluded
 every path-scoped rule at `bytes: 0`, correctly for the question it asked and
 with the consequence that no number governed a scoped rule at all. Measured on
