@@ -389,6 +389,95 @@ describe("SC-1566-SCOPE: each cannot-tell state fails if the resolver starts cla
   });
 });
 
+// ── Shape 10, found by the AI review on #1569 round 4 ────────────────
+
+describe("SC-1566-SCOPE: an assignment never completes a value set it did not start", () => {
+  /**
+   * The round-3 fix asked the wrong question. `reassignable` keyed on the
+   * binding KIND being `let`/`var`, which is a statement about how the name
+   * was introduced, not about whether the sweep can see every value it can
+   * hold. A `param`, a `catch` binding and a destructured one are all
+   * assignable too — and worse, an assignment to one *removed* its
+   * `unresolved` reason, because the reason was only recorded when the value
+   * list came out empty. One conditional assignment and a binding whose
+   * incoming value is wholly unknowable read as fully determined.
+   *
+   * The property: a value set is complete only when the DECLARATION
+   * establishes it and nothing can change it afterwards — `const` with an
+   * initialiser. Everything else is a lower bound, and an assignment adds to
+   * a lower bound rather than closing it.
+   */
+  const SHAPES: [string, string][] = [
+    [
+      "a parameter",
+      `function f(p, c) {
+         if (c) p = join(d, "report.json");
+         writeFileSync(p, "x");
+       }`,
+    ],
+    [
+      "a destructured binding",
+      `let { p } = cfg;
+       p = join(d, "report.json");
+       writeFileSync(p, "x");`,
+    ],
+    [
+      "a catch binding",
+      `try { g(); } catch (p) {
+         p = join(d, "report.json");
+         writeFileSync(p, "x");
+       }`,
+    ],
+  ];
+
+  test("an assignment does not erase the reason the declaration gave no value", () => {
+    const claimed: string[] = [];
+    for (const [name, src] of SHAPES) {
+      const site = onlySite(src);
+      if (site.unresolved.length === 0) claimed.push(name);
+    }
+    expect(
+      claimed,
+      "these bindings carry an unknowable incoming value and the sweep reported " +
+        "them as fully resolved, because one assignment supplied a value",
+    ).toEqual([]);
+  });
+
+  test("each of them is UNDETERMINED even though a literal is visible", () => {
+    const determined: string[] = [];
+    for (const [name, src] of SHAPES) {
+      const site = onlySite(src);
+      if (!site.reassignable) determined.push(name);
+      expect(site.opaque, `${name}: the path at the write is not establishable`).toBe(true);
+    }
+    expect(determined, "the value set is a lower bound, not a complete reading").toEqual([]);
+  });
+
+  test("NEGATIVE CONTROL: a const with an initialiser is still determined", () => {
+    // The whole population must not become undetermined — that is louder, not
+    // more accurate, and it would make every row above pass vacuously.
+    const site = onlySite('const p = join(d, "report.json");\nwriteFileSync(p, "x");');
+    expect(site.reassignable).toBe(false);
+    expect(site.opaque).toBe(false);
+    expect(site.unresolved).toEqual([]);
+    expect(specTargetingOf(site)).toBe(false);
+  });
+
+  test("NEGATIVE CONTROL: the assignment is still READ, over-reporting not dropped", () => {
+    // Marking the site undetermined must not stop the sweep seeing the spec
+    // path the assignment names. Both readings, or the fix trades one silent
+    // miss for another.
+    const site = onlySite(
+      `function f(p, c) {
+         if (c) p = join(d, "A-SPEC.md");
+         writeFileSync(p, "x");
+       }`,
+    );
+    expect(specTargetingOf(site)).toBe(true);
+    expect(site.reassignable).toBe(true);
+  });
+});
+
 // ── Write-site DETECTION, which is the same question one level up ────
 
 describe("SC-1566-DETECT: a write site is a call, not a spelling", () => {

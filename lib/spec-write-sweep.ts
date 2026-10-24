@@ -123,18 +123,18 @@ export interface WriteSite {
   unresolved?: string[];
   /** True when the sweep cannot determine this target's path. */
   opaque?: boolean;
-  /** True when the target depends on a `let`/`var` binding. */
+  /** True when `view` is a lower bound rather than a reading. */
   reassignable?: boolean;
 }
 
 /**
- * Write sites whose target depends on a REASSIGNABLE binding, each with what
- * it actually writes. Keyed `file::targetExpression`.
+ * Write sites whose resolved `view` is a LOWER BOUND rather than a reading,
+ * each with what it actually writes. Keyed `file::targetExpression`.
  *
- * This is the population that makes the strict reading honest. A target built
- * from a `let` or `var` is one whose value at the write the sweep cannot
- * establish — so rather than let it read as "not a spec", every one is listed
- * here and `undeterminedTargets` fails on one that is not.
+ * This is the population that makes the strict reading honest. The sweep can
+ * see some of what these writes can aim at and cannot see all of it — so
+ * rather than let one read as "not a spec", every one is listed here and
+ * `undeterminedTargets` fails on one that is not.
  *
  * That is what stops the detector being defeated by an assignment spelling
  * nobody enumerated. MEASURED: widening the tracker to destructuring patterns
@@ -142,16 +142,19 @@ export interface WriteSite {
  * `for (p of …)`); under this reading all three come out undetermined instead
  * of clean, and a fourth spelling nobody has thought of does too.
  *
- * Six entries on this tree, out of 131 write sites. The flag propagates
- * through the expansion, so a locally-`const` target lands here when an
- * identifier INSIDE it is a `let` — `backupDir`, `outDir` and `SF` are why
- * most of these are listed.
+ * Six entries on this tree, out of 131 write sites — unchanged when the
+ * reading widened from `let`/`var` to every incomplete value set (#1569 round
+ * 4), because no parameter, catch or destructured binding here is reassigned.
+ * The flag propagates through the expansion, so a locally-`const` target lands
+ * here when an identifier INSIDE it is not complete — `backupDir`, `outDir`
+ * and `SF` are why most of these are listed.
  *
- * This deliberately does NOT cover the wider class of targets with no visible
- * literal at all — 32 sites, nearly all function parameters. That bound
- * predates this change, is stated in `lib/spec-write-ast.ts`, and declaring
- * all 32 would be a guard that flags a quarter of the tree: louder, not more
- * accurate.
+ * This deliberately does NOT cover the wider class of targets that are
+ * `opaque` for some other reason — 38 sites in all, the rest being function
+ * parameters that contribute no value and so make no claim to contradict.
+ * That bound predates this change, is stated in `lib/spec-write-ast.ts`, and
+ * declaring all 38 would be a guard that flags a quarter of the tree: louder,
+ * not more accurate.
  */
 export const REASSIGNABLE_TARGETS: Record<string, string> = {
   "lib/test-suite-lock.ts::tmp":

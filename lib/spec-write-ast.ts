@@ -385,7 +385,10 @@ export interface AstWriteSite {
    */
   opaque: boolean;
   /**
-   * True when some identifier in the target resolves to a `let` or `var`.
+   * True when `view` is a LOWER BOUND: some identifier in the target
+   * contributed a value while its complete set of values is not knowable here.
+   * The sweep can see some of what this write can aim at and cannot see all of
+   * it, so a reading of "not a spec" is not available.
    *
    * This is the property that replaced enumerating assignment spellings. The
    * first fix for the #1569 review finding widened the tracker from `x = …` to
@@ -393,20 +396,30 @@ export interface AstWriteSite {
    * missed — a default inside a pattern, `for ([p] of …)` and `for (p of …)`.
    * Widening again just moves the boundary.
    *
-   * `const` cannot be reassigned, and that is a guarantee from the language
-   * rather than a list this file has to keep current. So eligibility is
-   * decided by the binding's kind, and a new assignment spelling nobody
-   * enumerated changes no answer: the binding was already untrusted.
+   * A value set is complete only when the declaration established it and
+   * nothing can change it afterwards: a `const` with an initialiser. That is
+   * the language's own guarantee rather than a list this file has to keep
+   * current, so a new assignment spelling nobody enumerated changes no answer.
    *
-   * MEASURED on this tree: 6 of 131 write sites. The flag propagates through
-   * the expansion, so a locally-`const` target counts when an identifier
-   * inside it is a `let`. Those 6 are declared in `REASSIGNABLE_TARGETS`
-   * rather than silently cleared.
+   * It has been wrong in both directions and both are recorded here, because
+   * the shape of the error is the point:
    *
-   * An earlier draft of this comment said the cost was 3 sites. That number
-   * came from a probe that only inspected module-level declarations and so
-   * could not see a parameter or a function-local — the instrument's scope
-   * was narrower than the question it was quoted as answering.
+   *  - It first asked `kind === "let" || kind === "var"`, which is a statement
+   *    about how the name was INTRODUCED and not about what can be seen. A
+   *    `param`, a `catch` binding and a destructured one are assignable too,
+   *    and one conditional assignment to any of them read as a complete
+   *    resolution (#1569 round 4).
+   *  - An earlier draft of this comment put the cost at 3 sites. That came
+   *    from a probe which only inspected module-level declarations, so it
+   *    could not see a parameter or a function-local — the instrument's scope
+   *    was narrower than the question it was quoted as answering.
+   *
+   * MEASURED on this tree: 6 of 131 write sites, unchanged across both
+   * corrections — no parameter or destructured binding here is reassigned, so
+   * the widened reading costs nothing and closes a reachable hole. The flag
+   * propagates through the expansion, so a locally-`const` target counts when
+   * an identifier inside it is not complete. Those 6 are declared in
+   * `REASSIGNABLE_TARGETS` rather than silently cleared.
    */
   reassignable: boolean;
   /** Offset of the call in the TRANSPILED text. Never an original-file offset. */
@@ -544,16 +557,24 @@ export function writeSitesIn(
           }
           if (seen.has(binding)) continue;
           seen.add(binding);
-          // `let`/`var` can be reassigned by a spelling this file does not
-          // enumerate, so its initialiser does not establish the value at the
-          // write. `const` cannot — that is the language's guarantee, and it
-          // is why this question needs no list of assignment forms.
-          if (binding.kind === "let" || binding.kind === "var") reassignable = true;
 
-          const values = [binding.init, ...binding.assigned].filter(
-            (v): v is string => typeof v === "string" && v.length > 0,
-          );
-          if (values.length === 0) {
+          // A value set is COMPLETE only when the declaration established it
+          // and nothing can change it afterwards: a `const` with an
+          // initialiser. That is the language's own guarantee, so it needs no
+          // list of binding kinds and no list of assignment spellings.
+          //
+          // An earlier draft asked `kind === "let" || kind === "var"`, which
+          // is a statement about how the name was INTRODUCED rather than about
+          // what the sweep can see. A `param`, a `catch` binding and a
+          // destructured one are assignable too (#1569 round 4).
+          const complete = binding.kind === "const" && binding.init !== null;
+
+          // The declaration gave no value: say so, and say so whether or not
+          // an assignment later supplied one. Recording the reason only on an
+          // empty value list meant ONE conditional assignment erased it, and a
+          // parameter whose incoming value is unknowable read as fully
+          // resolved from the one branch that happened to be visible.
+          if (binding.init === null && depth === 0 && !noted.has(name)) {
             const reason: UnresolvedReason =
               binding.kind === "param" || binding.kind === "catch"
                 ? "parameter"
@@ -562,12 +583,24 @@ export function writeSitesIn(
                   : binding.kind === "destructured"
                     ? "destructured"
                     : "no-initialiser";
-            if (depth === 0 && !noted.has(name)) {
-              noted.add(name);
-              unresolved.push(`${name}: ${reason}`);
-            }
-            continue;
+            noted.add(name);
+            unresolved.push(`${name}: ${reason}`);
           }
+
+          const values = [binding.init, ...binding.assigned].filter(
+            (v): v is string => typeof v === "string" && v.length > 0,
+          );
+          // Nothing readable at all. The reason is already recorded above; the
+          // site makes no claim about this identifier, so there is no lower
+          // bound to flag.
+          if (values.length === 0) continue;
+
+          // Values exist and the set is not closed, so `view` is a LOWER
+          // BOUND — the sweep can see some of what this write can aim at and
+          // cannot see all of it. That is the state the chokepoint's green
+          // reading must not absorb.
+          if (!complete) reassignable = true;
+
           for (const v of values) {
             view += ` ${v}`;
             if (/["'`]/.test(v)) sawLiteral = true;
