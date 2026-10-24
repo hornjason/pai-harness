@@ -229,6 +229,84 @@ second. Re-take again when the post-fix cohort has reached the age of the
 pre-fix one — that is a question about elapsed time, not about what else
 ships.
 
+#### 41% of our rounds are rounds in which no review happened
+
+The ledger distinguishes a round that was **read and found nothing**
+(`findings: []`) from one that was **NOT MEASURED** (`findings: null` — the
+payload was absent or unparseable), and its own comment says they are
+different facts. `readLedger` normalises the pair into a `measured` boolean.
+Nothing had ever aggregated it. Over the same 45 pull requests, 117 rounds:
+
+| | rounds | share |
+|---|---|---|
+| a review happened | 69 | 59.0% |
+| **UNMEASURED** | **48** | **41.0%** |
+
+18 of 45 pull requests are hit at least once, and **six were never measured
+in their entire lives** — at 6, 6, 5, 5, 3 and 1 rounds each.
+
+That matters because **CRC-M11 counts rounds and the 1.32 target counts
+reviews**, and those have been the same quantity only by assumption. Scoring
+the same 43 passed pull requests both ways:
+
+| | all rounds | measured only | target | their *before* |
+|---|---|---|---|---|
+| mean to pass | **2.65** | **1.58** | 1.32 | 2.08 |
+| passed after one | 44.2% | 62.8% | 78% | 65% |
+| five or more | 20.0% | 4.4% | 1.5% | 8.9% |
+
+**So "we are worse than the state they were improving from, on all three" is
+an artefact of the unit.** On review rounds we are better than their before
+on two of the three — 1.58 against 2.08, 4.4% against 8.9% — and a shade
+under it on the third. The sentence above this one stays unedited because it
+is true of the number it describes; what is corrected is which number
+answers the question.
+
+Both figures are real and they measure different things. **2.65 is the cost
+to a developer** — every unmeasured round is still a red required check, a
+re-run and a wait. **1.58 is the review convergence** this document's
+mechanisms can move. Conflating them points the whole plan at the smaller
+half of its own problem.
+
+##### The 48 split cleanly, and the split names the two fixes
+
+| | PRs | rounds | what it is |
+|---|---|---|---|
+| diff touches `.github/workflows/` | 5 | 25 | **structural decline** — the action refuses to review a workflow against a copy differing from the default branch |
+| diff touches no workflow | 13 | 23 | **the no-payload tax** (#1478) — the reviewer runs to completion, exits `success`, writes nothing |
+
+All five workflow-editing pull requests are in the never-measured six, at
+100% of their rounds each. That is not a tax, it is a category of change
+this repository cannot review at all, absorbing 25 rounds to produce zero
+readings.
+
+The other 23 are #1478, and it is not a size or complexity effect: three
+observations now span a 9,000-line file, a 250-line four-file diff and a
+**single prose-only markdown file**, all exiting `subtype: success`,
+`is_error: false`, at 33, 53 and 32 turns against a cap of 80.
+
+**The ordering consequence, stated plainly.** The largest single lever on
+2.65 is not any CRC-B or CRC-E criterion. It is the 41% of rounds that
+produced no review, and neither half of it is a review-quality problem.
+Phases 1 and 2 keep their internal order — the measured-round tail did not
+collapse — but nothing in them competes with fixing an instrument that is
+silent two rounds in five.
+
+##### How this was measured, and the near-miss that nearly published
+
+`readLedger` and its `measured` flag, not a hand parse. The first attempt
+used a hand-rolled `indexOf("```json")` and **silently returned zero rounds
+for 17 of 43 pull requests**, under-counting the population by 44 rounds
+while reporting a confident 53.4%. It was caught only because its mean
+(1.67) disagreed with `summariseRoundsToPass` (2.65) on the same input.
+
+That is this repository's fourth shape — a second decider for a question
+that already had one — and it failed open to an empty list that reads as
+data. **The ALL-rounds column above reconciles exactly with
+`bun evals/ai-review-control/run.ts rounds` on the same file: 2.65, 44.2%,
+20.0%.** That agreement is the only reason the measured-only column is
+reportable, and a reading of this kind should not be published without it.
+
 ### What stays human
 
 - [ ] CRC-H1: Direction, taste and scope — whether to build it at all.
