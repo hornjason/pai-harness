@@ -311,6 +311,98 @@ describe("#323 SC-6: no suite plants its fixtures at a path another run shares",
     expect(fixedScratchRoots(readOnly)).toEqual([]);
   });
 
+  /**
+   * #1473 — the root does not have to be given a name to be the shared
+   * checkout.
+   *
+   * `repoRootIdents` finds identifiers BOUND to `import.meta.dir` or
+   * `process.cwd()`. It cannot find a use that never bound one, and `DECL`
+   * required `join`'s first argument to be an identifier, so this escaped
+   * entirely:
+   *
+   *     const tmpDir = join(import.meta.dir, ".tmp-scan-test");
+   *
+   * `test/scan-stale-issues.test.ts` sat in the tree writing exactly that,
+   * and `fixedScratchRoots` returned `[]` for it. The live case above went
+   * green over it for as long as it existed — a rule whose check cannot see
+   * an instance in its own tree, which is what
+   * `.claude/rules/checks-must-be-able-to-fail.md` is about.
+   *
+   * MEASURED over 531 files before widening the parse: three declarations in
+   * the inline form, two of them `join(process.cwd(), ".claude")` reads in
+   * `config-access-conformity.test.ts`, which the `mutates` filter already
+   * excluded and still does, and one the mutating instance above. So the
+   * widening flags exactly one file and it is the defect.
+   *
+   * These are unit fixtures because the TREE no longer exercises the
+   * widening — the one instance is fixed in the same change. The live case
+   * above is the right place for the population and the wrong place for the
+   * boundary.
+   */
+  test("#1473: an inline import.meta.dir root is caught", () => {
+    const src = 'const t = join(import.meta.dir, ".x");\nmkdirSync(t);';
+    expect(fixedScratchRoots(src)).toEqual(["t = .x"]);
+  });
+
+  test("#1473: an inline process.cwd() root is caught", () => {
+    const src = 'const t = join(process.cwd(), ".x");\nrmSync(t, { recursive: true });';
+    expect(fixedScratchRoots(src)).toEqual(["t = .x"]);
+  });
+
+  test("#1473 CONTROL: the named-root form still reads exactly as before", () => {
+    // The regression direction. A widening that broke the form the guard was
+    // built for would be caught by the live case, but only while the tree
+    // still contains one — which is not a property this file controls.
+    const src = 'const ROOT = join(import.meta.dir, "..");\nconst t = join(ROOT, ".x");\nmkdirSync(t);';
+    expect(fixedScratchRoots(src)).toEqual(["t = .x"]);
+  });
+
+  test("#1473 CONTROL: an inline root that is only READ is not scratch", () => {
+    // Live instance: config-access-conformity.test.ts does this twice with
+    // `.claude`. Renaming configuration per run would break the read, so a
+    // guard that flagged it would be wrong rather than strict — and this is
+    // the only thing standing between the widening and two false positives
+    // in the tree today.
+    const src = 'const p = join(process.cwd(), ".claude");\nreadFileSync(join(p, "settings.json"));';
+    expect(fixedScratchRoots(src)).toEqual([]);
+  });
+
+  test("#1473 CONTROL: an inline root wrapped in mkdtempSync is not a fixed root", () => {
+    const src = 'const t = mkdtempSync(join(import.meta.dir, ".x-"));\nmkdirSync(t);';
+    expect(fixedScratchRoots(src)).toEqual([]);
+  });
+
+  test("#1473 CONTROL: navigation through an inline root is not a scratch name", () => {
+    const src = 'const t = join(import.meta.dir, "..");\nmkdirSync(t);';
+    expect(fixedScratchRoots(src)).toEqual([]);
+  });
+
+  /**
+   * The direction that needed justifying: the same parse feeds
+   * `lib/scratch-cleanup.ts`'s DELETION allowlist, so widening it widens what
+   * the sweeper may remove.
+   *
+   * It widens by exactly one shape — a genuine
+   * `mkdtempSync(join(import.meta.dir, "<prefix>"))`, which is a directory
+   * this tree really does plant and really should sweep. The prefix is still
+   * returned exactly as written, so nothing is widened by a character.
+   *
+   * That the real tree's allowlist did not change is held next door, by
+   * `test/scratch-cleanup.test.ts`'s element-by-element comparison against
+   * the frozen pre-#793 reference: zero inline `mkdtempSync` declarations
+   * exist in `test/`, so live and reference still agree on every file. That
+   * reference is frozen on purpose and was NOT updated for this change.
+   */
+  test("#1473: the sweeper sees an inline mkdtemp prefix, exactly as written", () => {
+    expect(
+      uniqueScratchPrefixes('const t = mkdtempSync(join(import.meta.dir, ".inline-"));'),
+    ).toEqual([".inline-"]);
+    expect(
+      uniqueScratchPrefixes('const t = join(import.meta.dir, ".inline-");'),
+      "a FIXED inline root reached the deletion allowlist",
+    ).toEqual([]);
+  });
+
   test("the scan reads real files, so the live check is not vacuous", () => {
     // The four suites still declare scratch roots; if they ever stop, the
     // live test passes by having nothing to look at.

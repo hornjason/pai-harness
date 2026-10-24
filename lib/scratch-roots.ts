@@ -63,7 +63,52 @@ export function repoRootIdents(src: string): Set<string> {
  * which hold the equivalence element by element against a frozen copy of the
  * old parse.
  */
-const DECL = /([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(mkdtempSync\s*\(\s*)?join\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*"(\.[^"]*)"/g;
+/**
+ * The root spellings that ARE the shared checkout, with no name in between
+ * (#1473).
+ *
+ * `repoRootIdents` finds names BOUND to one of these. It cannot find a use
+ * that never bound a name:
+ *
+ *     const tmpDir = join(import.meta.dir, ".tmp-scan-test");   // invisible
+ *     const ROOT = join(import.meta.dir, "..");                 // seen
+ *     const tmpDir = join(ROOT, ".tmp-scan-test");              // via ROOT
+ *
+ * The two are the same directory and the same collision. The first escaped
+ * for as long as the parse required `join`'s first argument to be an
+ * identifier — `test/scan-stale-issues.test.ts` sat in the tree writing a
+ * fixed `.tmp-scan-test` under `test/`, and `fixedScratchRoots` returned
+ * `[]` for it. Measured over 531 files, the inline form appears three times
+ * and that was the only mutating one.
+ *
+ * Kept as a named constant rather than inlined into `DECL` because
+ * `isInlineRoot` has to recognise exactly the same set: an alternation that
+ * matched a spelling the predicate then failed to classify would drop the
+ * declaration on the floor, which is the quiet direction.
+ */
+const INLINE_ROOTS = ["import\\.meta\\.dir", "process\\.cwd\\(\\)"] as const;
+
+/**
+ * Is this capture an inline root spelling rather than an identifier?
+ *
+ * A root spelled inline needs no `repoRootIdents` lookup — it does not name
+ * the checkout, it IS the checkout. Deriving the test from `INLINE_ROOTS`
+ * means the matcher and the classifier cannot disagree about the set.
+ */
+function isInlineRoot(captured: string): boolean {
+  return INLINE_ROOTS.some(r => new RegExp(`^${r}$`).test(captured));
+}
+
+const DECL = new RegExp(
+  String.raw`([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(mkdtempSync\s*\(\s*)?join\(\s*` +
+    // The inline spellings first. `import` would otherwise be consumed by the
+    // identifier branch, which then fails on the `.` and backtracks — correct
+    // but only by accident, and it costs an attempt at every `import` in the
+    // file.
+    `(${INLINE_ROOTS.join("|")}|[A-Za-z_][A-Za-z0-9_]*)` +
+    String.raw`\s*,\s*"(\.[^"]*)"`,
+  "g",
+);
 
 /**
  * The same pattern, un-anchored and non-global, used only to decide whether
@@ -105,7 +150,9 @@ export function fixedScratchRoots(source: string): string[] {
   for (const m of src.matchAll(new RegExp(DECL.source, "g"))) {
     const [, name, wrapped, rootIdent, literal] = m;
     if (wrapped) continue; // mkdtempSync — unique per run, which is the fix
-    if (!roots.has(rootIdent!)) continue; // already under a unique root
+    // An inline root IS the checkout and binds no name, so there is nothing
+    // for `repoRootIdents` to have found (#1473).
+    if (!isInlineRoot(rootIdent!) && !roots.has(rootIdent!)) continue; // already under a unique root
     if (isNavigation(literal!)) continue;
     // Only a directory this suite CREATES or DELETES is scratch. One it merely
     // reads is configuration, and renaming it per run would break the read.
@@ -131,7 +178,14 @@ export function uniqueScratchPrefixes(source: string): string[] {
   for (const m of src.matchAll(new RegExp(DECL.source, "g"))) {
     const [, , wrapped, rootIdent, literal] = m;
     if (!wrapped) continue; // a fixed path is the other function's subject
-    if (!roots.has(rootIdent!)) continue;
+    // #1473, and this is the direction that needs justifying: widening a
+    // parse that feeds a DELETION allowlist. It adds a prefix only for a
+    // genuine `mkdtempSync(join(import.meta.dir, "<prefix>"))`, which is a
+    // directory this tree really does plant and really should sweep. Measured
+    // over test/ at the time of the change: zero such declarations, so the
+    // allowlist is byte-identical. `test/scratch-cleanup.test.ts` holds that
+    // against the frozen pre-#793 reference, element by element.
+    if (!isInlineRoot(rootIdent!) && !roots.has(rootIdent!)) continue;
     if (isNavigation(literal!)) continue;
     if (!out.includes(literal!)) out.push(literal!);
   }
