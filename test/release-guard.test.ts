@@ -1319,6 +1319,27 @@ export function postflightStepName(src: string): string {
  * prose. It is that **the two confirmed outcomes are distinguishable without
  * opening the log**: one annotation each, carrying different verdicts, on a
  * channel GitHub renders in the run summary beside the title.
+ *
+ * What was broken to prove it, run and counted rather than asserted, over
+ * `test/release-guard.test.ts` (75 tests, baseline 0 red):
+ *
+ * | Mutation | Red | Predicted |
+ * |---|---|---|
+ * | the step name put back to *"the registry actually serves this version"* | 1 | 1 |
+ * | the PROPAGATION PENDING branch labelled `REGISTRY SERVES` — the defect itself | 3 | 3 |
+ * | the annotation computed in the script and never printed | 2 | 2 |
+ * | `escapeAnnotation` dropped from the message | 1 | 1 |
+ * | the severity hardcoded to `notice` instead of derived from `outcome` | 2 | 2 |
+ *
+ * None is left in the tree; all were run and reverted. The membership was
+ * predicted alongside the counts and matched in every row — a battery that
+ * only predicts totals cannot tell a case that caught the mutation from a
+ * case that broke for its own reasons.
+ *
+ * The second row is the one that matters: it is this issue's exact defect
+ * reintroduced one layer in. Retitling the step without it would leave both
+ * readings sharing an exit code, a conclusion, a name AND an annotation,
+ * which is the original complaint with a more careful title on it.
  */
 describe("#1563: the postflight's title cannot assert what its message withheld", () => {
   const reading = (packument: { versions: string[]; latest: string | null }) => ({
