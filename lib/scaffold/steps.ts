@@ -65,6 +65,7 @@ import {
 import { healthPathIn } from "../liveness-contradiction";
 import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
+import { rowDriftClause, ruleRowDrift } from "../rule-row-drift";
 import { actionRef } from "../workflow-actions";
 import { ciSetupStep } from "../ci-setup-step";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
@@ -591,9 +592,18 @@ export function generateAgentsMdContent(
     if (decision.action === "preserve") {
       // Reported, never resolved. A divergence the run silently fixed is the
       // defect; a divergence named in the report is a decision for a human.
+      //
+      // Preservation is per-FILE and staleness is per-ROW (#1287), so the
+      // skip says which generated rows the file no longer reproduces. Without
+      // it one hand-edited row freezes every other row in the file and a
+      // consumer who upgraded to receive a correction never learns it did not
+      // arrive. See lib/rule-row-drift.ts for why the row is the unit, why
+      // #1148's per-file `generated-sha` discriminator cannot express this,
+      // and why this reports rather than rewrites.
+      const rows = rowDriftClause(ruleRowDrift(existing!, rule.content));
       actions.push(
         `PRESERVED: .claude/rules/${rule.filename} (${decision.reason}) — ` +
-          `generator output withheld; delete the file and re-run to accept it`,
+          `generator output withheld; ${rows}; delete the file and re-run to accept it`,
       );
       continue;
     }
