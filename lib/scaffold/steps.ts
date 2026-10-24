@@ -43,6 +43,10 @@ import {
   buildReviewRunStep,
   vertexCiConfig,
 } from "./ai-review-step";
+import {
+  AI_REVIEW_WORKFLOW_NAME,
+  buildAiReviewUnmeasuredWorkflow,
+} from "./ai-review-unmeasured-workflow";
 import { CI_SUITE_FETCH_DEPTH, baseRefFetchDepth } from "../ci-history-depth";
 import { CLAUDE_CODE_ACTION } from "../claude-code-action";
 import { GOOGLE_AUTH_ACTION } from "../google-auth-action";
@@ -3956,7 +3960,7 @@ ${buildOutcomesHeader(vertex)}#
 # credential exists anywhere on the runner (#677 AC-15). What this job holds
 # as read from this consumer's config:
 #   ${vertex.reason}
-name: AI Review
+name: ${AI_REVIEW_WORKFLOW_NAME}
 
 on:
   # See the block comment in lib/scaffold/steps.ts: no branches: filter, and
@@ -3996,6 +4000,21 @@ ${buildAuthDetectStep(vertex)}${buildReviewRunStep(
     harnessVersion(),
   )}`;
 
+  // #1488. The second AI-review workflow: `workflow_run: completed`, which is
+  // the first moment the finished job's log is served. It is generated here
+  // rather than in `lib/scaffold/ai-review-step.ts` because that module
+  // builds the STEPS of the review job and this is a different file with a
+  // different trigger — and because the one thing the two must agree on, the
+  // producing workflow's `name:`, is a constant the subscriber owns.
+  const aiReviewUnmeasuredYml = buildAiReviewUnmeasuredWorkflow({
+    runsOn,
+    setupBun: actionRef("oven-sh/setup-bun"),
+    // The same `bunStep` the three jobs above render, at the same indent and
+    // from the same single declaration (#622).
+    setupBunWith: bunStep,
+    version: harnessVersion(),
+  });
+
   // Not `writeFileSync`. The harness owns the `test` and `gates` jobs; it does
   // not own the file, and a consumer's own jobs have to survive the update
   // that re-scaffolding IS. A refusal is recorded rather than thrown so that
@@ -4011,7 +4030,7 @@ ${buildAuthDetectStep(vertex)}${buildReviewRunStep(
   // lib/conformity.ts reads back, and the two are held together by
   // test/ai-review-workflow.test.ts AC-1, which looks for the constant's
   // filename in what this loop actually wrote.
-  for (const [name, content] of [["ci.yml", ciYml], ["gates.yml", gatesYml], ["ai-review.yml", aiReviewYml]] as const) {
+  for (const [name, content] of [["ci.yml", ciYml], ["gates.yml", gatesYml], ["ai-review.yml", aiReviewYml], ["ai-review-unmeasured.yml", aiReviewUnmeasuredYml]] as const) {
     const label = `.github/workflows/${name}`;
     try {
       // Keyed by FILE, and the lookup is here because this loop is the only

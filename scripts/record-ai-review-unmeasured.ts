@@ -5,6 +5,7 @@
  * ```
  * bun scripts/record-ai-review-unmeasured.ts --repo owner/name --limit 45
  * bun scripts/record-ai-review-unmeasured.ts --repo owner/name --pr 1486 --write
+ * bun scripts/record-ai-review-unmeasured.ts --repo owner/name --head-sha <sha> --write
  * ```
  *
  * Reads each pull request's AI-review ledger comment, and for every round it
@@ -12,7 +13,7 @@
  * asks `classifyUnmeasuredRound` which state it was in. Prints the split.
  * With `--write`, splices the readings back into the ledger comment.
  *
- * ## Why this is a script and not a step in the workflow
+ * ## Why this is a script and not a step in the ai-review job
  *
  * The obvious place is the persist step, which writes the round. It cannot
  * reach the evidence: a later step cannot read an earlier step's stdout
@@ -21,9 +22,20 @@
  * AC-6 forbids the action's skip prose anywhere in the generated script. So
  * the reading is only available from outside the run, after it ends.
  *
- * **And the logs expire.** That is the whole urgency of #1486: each day a
+ * **And the logs expire.** That was the whole urgency of #1486: each day a
  * round goes unclassified, another population becomes permanently
- * unmeasurable. Run this on the recent window regularly, not once.
+ * unmeasurable.
+ *
+ * ## What runs it now, and what `--head-sha` is for
+ *
+ * #1488. `lib/scaffold/ai-review-unmeasured-workflow.ts` generates a second
+ * workflow, triggered on `workflow_run: completed` for the AI review
+ * workflow. That event fires after the job ends, which is the first moment
+ * the log is served, and it hands this script the finished run's head sha.
+ *
+ * Running it by hand over a window still works and is still worth doing for
+ * rounds written before the workflow existed — their logs are the ones with
+ * a deadline.
  *
  * ## It is a recorder, and it refuses rather than guesses
  *
@@ -72,15 +84,35 @@ interface Args {
   prs: number[];
   limit: number;
   write: boolean;
+  /**
+   * Resolve the pull requests from a COMMIT rather than naming them (#1488).
+   *
+   * What the `workflow_run: completed` job knows about the run that just
+   * finished is its head sha. It also has `workflow_run.pull_requests`, and
+   * that field is the wrong reading: GitHub leaves it EMPTY for a pull
+   * request opened from a fork, so a workflow built on it would classify the
+   * rounds it could see and skip the ones it could not, silently — the same
+   * shape as the conflation this whole feature exists to undo.
+   */
+  headSha: string;
 }
 
 function parseArgs(argv: readonly string[]): Args | { error: string } {
-  const out: Args = { repo: "", prs: [], limit: 45, write: false };
+  const out: Args = { repo: "", prs: [], limit: 45, write: false, headSha: "" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--write") out.write = true;
     else if (a === "--repo") out.repo = argv[++i] ?? "";
-    else if (a === "--pr") {
+    else if (a === "--head-sha") {
+      const sha = argv[++i] ?? "";
+      // Validated, because it reaches an API path. A sha that is not one is
+      // refused by name rather than sent and allowed to 404 — a 404 and an
+      // empty pull-request list are the two readings this must keep apart.
+      if (!/^[0-9a-f]{7,40}$/.test(sha)) {
+        return { error: `--head-sha needs a commit sha, got ${JSON.stringify(sha)}` };
+      }
+      out.headSha = sha;
+    } else if (a === "--pr") {
       const n = Number.parseInt(argv[++i] ?? "", 10);
       if (!Number.isSafeInteger(n) || n < 1) return { error: `--pr needs a number, got ${argv[i]}` };
       out.prs.push(n);
@@ -98,9 +130,34 @@ function gh(args: string[], maxBuffer = 256 * 1024 * 1024) {
   return spawnSync("gh", args, { encoding: "utf8", maxBuffer });
 }
 
-/** The pull requests to walk: the ones named, else the most recent `limit`. */
+/**
+ * The pull requests to walk: the ones named, the ones carrying a commit, else
+ * the most recent `limit`.
+ *
+ * The `--head-sha` branch is what the `workflow_run: completed` workflow uses
+ * (#1488), and its two zero-length answers are different facts kept apart:
+ *
+ *  - `gh` exited non-zero — the reading could not be taken. An ERROR, so the
+ *    job goes red rather than reporting a clean pass over nothing.
+ *  - `gh` exited zero and listed nothing — the commit is genuinely on no open
+ *    pull request, which is every `merge_group` run and every push to the
+ *    default branch. An empty list, and the caller's `TOTAL` says so.
+ */
 function resolvePullRequests(args: Args): number[] | { error: string } {
   if (args.prs.length > 0) return args.prs;
+  if (args.headSha) {
+    const r = gh([
+      "api", `repos/${args.repo}/commits/${args.headSha}/pulls`, "-q", ".[].number",
+    ]);
+    if (r.status !== 0) {
+      return {
+        error:
+          `gh api repos/${args.repo}/commits/${args.headSha}/pulls exited ${r.status}: ` +
+          `${(r.stderr ?? "").trim().slice(0, 300)} — UNMEASURED, not "no pull request"`,
+      };
+    }
+    return (r.stdout ?? "").split("\n").map(s => s.trim()).filter(Boolean).map(Number);
+  }
   const r = gh([
     "pr", "list", "--repo", args.repo, "--state", "all",
     "--limit", String(args.limit), "--json", "number", "-q", ".[].number",
@@ -185,6 +242,14 @@ export function main(argv: readonly string[]): number {
 
   const totals: Record<string, number> = {};
   let skipped = 0;
+
+  // Named, because `TOTAL: nothing unmeasured` over zero pull requests and
+  // the same line over forty is the one sentence this script must never let
+  // a reader confuse. A `--head-sha` on no pull request is the ordinary
+  // merge-group and push case, not a fault.
+  if (parsed.headSha && prs.length === 0) {
+    console.log(`${parsed.headSha}: on no pull request — nothing to classify`);
+  }
 
   for (const pr of prs) {
     const comment = ledgerComment(parsed.repo, pr);

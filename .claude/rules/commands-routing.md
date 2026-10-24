@@ -1,6 +1,6 @@
 ---
 description: Every command the rungate CLI exposes in this project, generated from its command registry
-generated-sha: d37b9194afcb8de7
+generated-sha: 177350a8e30a099c
 ---
 
 ## Command Routing
@@ -21,3 +21,4 @@ Run one as `bun bin/rungate.ts <command>`.
 | `generate-code-map` | Regenerate CODE-MAP.md from the source tree |
 | `extract-constraints` | Extract constraints from a project's docs into agent rules |
 | `ai-review-findings` | Adjudicate an AI review's findings payload — exits non-zero on a blocking finding |
+| `record-ai-review-unmeasured` | Record WHICH kind of unmeasured each unmeasured AI-review round was |

@@ -157,6 +157,20 @@ export const OWNED_FILES: OwnedFile[] = [
     avoid: "Don't edit the generated `ai-review` job",
   },
   {
+    // #1488. The `workflow_run: completed` half of the AI review: it runs
+    // the unmeasured classifier after the review job ends, which is the
+    // first moment that job's log is served. Declared the moment the
+    // generator learned to write it — the whole of #631's lesson one file
+    // over is that ownership has to travel with the bytes, and a workflow
+    // the generator writes and this list does not name is a consumer's hand
+    // edit overwritten in silence.
+    path: ".github/workflows/ai-review-unmeasured.yml",
+    strategy: "job-preserving",
+    servedBy: "writeManagedFile (lib/scaffold/steps.ts) via mergeManagedWorkflow — the harness owns named jobs, not the file",
+    customize: "Set `ci.runner` in `.claude/rungate/config.json`; add your own jobs alongside the generated `record-unmeasured` job",
+    avoid: "Don't edit the generated `record-unmeasured` job, and don't give it a `merge_group` trigger — it reports no status to the pull request and cannot be a required check",
+  },
+  {
     // `regenerate` until #655, and the declaration was never consulted:
     // `generateAgentBriefsStep` called `writeFileSync` directly, so the row
     // described behaviour that a bare overwrite happened to coincide with.

@@ -1,0 +1,77 @@
+# generated-sha: dc6f9489cc860bf8
+# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
+#
+# WHICH KIND of unmeasured each unmeasured AI review round was (#1488).
+#
+# 48 of 117 rounds across the 45 most recent pull requests recorded
+# `findings: null` — a round nobody read — and nothing said whether that was
+# the action declining on its own workflow-validation guard (#1455), a run
+# that reviewed and wrote no payload (#1478), or a payload that did not
+# parse. Three facts that cost the same and are fixed differently, and a row
+# that cannot tell them apart is a row nobody can act on.
+#
+# The evidence is the finished run's FULL job log, and it is only readable
+# from OUTSIDE the run: the persist step that writes the round runs mid-job,
+# and the Actions log endpoint refuses a job that is still running. Hence a
+# second workflow on `workflow_run: completed` rather than a step.
+#
+# THIS WORKFLOW REPORTS NO STATUS TO THE PULL REQUEST. A `workflow_run`
+# workflow cannot be a required check and cannot hang a merge queue, which is
+# why — alone among the generated workflows — it declares no `merge_group`
+# trigger. Do not add one: it would fire with no `workflow_run` context.
+#
+# IT WRITES, SO READ WHAT IT CAN REACH. The only write is a PATCH of the
+# AI-review ledger comment on the pull request carrying the finished run's
+# head commit. It checks out no code, which is what keeps a fork's pull
+# request from reaching a write token through it.
+name: AI Review Unmeasured
+
+on:
+  workflow_run:
+    # The NAME of the producing workflow, which is the only thing
+    # `workflow_run` matches on. Generated from one constant shared with the
+    # file it names, because a subscription to a renamed workflow fires never
+    # and firing never looks exactly like finding nothing to classify.
+    workflows: ["AI Review"]
+    types: [completed]
+
+permissions:
+  contents: read
+  # Read the finished run's full job log. The whole reading.
+  actions: read
+  # PATCH the findings ledger comment with the discriminator (#1486).
+  pull-requests: write
+
+jobs:
+  record-unmeasured:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          # Pinned by .bun-version — the project's single declaration (#622).
+          # setup-bun reads that file, so there is no version spelled here to drift from it.
+          bun-version-file: ".bun-version"
+      - name: Record which kind of unmeasured each round was
+        env:
+          AI_REVIEW_UNMEASURED_REPO: ${{ github.repository }}
+          AI_REVIEW_UNMEASURED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          # The recorder shells out to `gh`. No secret is involved: the
+          # run's own token carries exactly the three permissions above.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          if [ -z "${AI_REVIEW_UNMEASURED_HEAD_SHA}" ]; then
+            echo "::warning title=AI review unmeasured UNMEASURED::The workflow_run payload carried no head_sha, so no pull request could be resolved and no round was classified. This is UNMEASURED — not a run with nothing to classify. The two are the same green check from outside, which is the conflation this workflow exists to undo."
+            exit 0
+          fi
+          # The FULL log of each round's own run, never --log-failed: the skip line is
+          # emitted by a step that SUCCEEDS, so --log-failed returns 0 bytes on a
+          # declined run. Never the clock either. Both readings are measured in
+          # lib/ai-review-unmeasured.ts and both are wrong.
+          #
+          # --write, because a reading taken and not stored is a log fetched one day
+          # before it expired and thrown away.
+          bunx rungate@0.8.2 record-ai-review-unmeasured \
+            --repo "${AI_REVIEW_UNMEASURED_REPO}" \
+            --head-sha "${AI_REVIEW_UNMEASURED_HEAD_SHA}" \
+            --write
