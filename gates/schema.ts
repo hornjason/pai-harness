@@ -1048,6 +1048,25 @@ export const WorkflowStateSchema = z.object({
     description: z.string().optional(),
   }).optional(),
 
+  /**
+   * Which of the three readings the prove gate took of `beforeState` (#1540).
+   *
+   * `beforeState` has no producer in this tree and never had one, so the
+   * absent case is the only one the corpus contains. It is recorded rather
+   * than inferred because `beforeState.type` admits `"none"` — /goal is told
+   * to write that when it looked and found nothing — and a reader cannot
+   * otherwise tell "nobody looked" from "looked, nothing there".
+   */
+  beforeStateStatus: z.enum(["CAPTURED", "DECLARED_NONE", "UNMEASURED"]).optional(),
+
+  /**
+   * Why no before-state was read (#1540). Present exactly when
+   * `beforeStateStatus` is `UNMEASURED`, and deleted when it is not —
+   * `recordBeforeState` keeps the two exclusive, for the same reason
+   * `testBaselineUnmeasured` is exclusive with `testBaseline`.
+   */
+  beforeStateUnmeasured: z.string().optional(),
+
   issueType: z.enum(["feature", "bug-fix", "bug", "refactor", "chore"]).optional(),
   rca: z.object({
     rootCause: z.string().optional(),
@@ -1184,17 +1203,61 @@ export const ShipEvidenceSchema = z.object({
   sizing: z.object({ predicted: z.string().optional(), actual: z.string().optional() }).optional(),
 });
 
-export const ProveEvidenceSchema = z.object({
-  issueNumber: z.number(),
-  verdict: z.enum(["PROVEN", "UNPROVEN", "INCONCLUSIVE"]),
-  commitSHA: z.string(),
-  capturedAt: z.string(),
-  beforeEvidence: z.object({
+/**
+ * `prove-evidence.json`'s `beforeEvidence` block (#1540).
+ *
+ * Four arms, and the fourth is the reason this is a union rather than a
+ * widening. The first three are what `beforeEvidenceFor` emits; the last is
+ * every artefact written before #1540, which carries no `status` at all and
+ * still sits on disk under `~/.rungate`. `gates/chain.test.ts` validates
+ * whatever artefact it finds, so a schema that admitted only the new shape
+ * would redden on a run nobody touched.
+ *
+ * UNMEASURED declares no `type`, which is the whole point: the old fallback
+ * put `"none"` there, and `"none"` is a value /goal legitimately writes. The
+ * other arms keep `type` and `capturedAt` REQUIRED, so admitting the absent
+ * case costs nothing on the cases that were already honest.
+ */
+const BeforeEvidenceSchema = z.union([
+  // `.strict()` carries the claim. Zod strips unknown keys by default, so a
+  // block spelling `{ status: "UNMEASURED", type: "none" }` would otherwise
+  // be ACCEPTED with the type quietly discarded — the declaration would read
+  // as enforced while admitting exactly the shape it exists to forbid.
+  z.object({
+    status: z.literal("UNMEASURED"),
+    reason: z.string(),
+  }).strict(),
+  z.object({
+    status: z.literal("DECLARED_NONE"),
+    type: z.literal("none"),
+    path: z.null(),
+    capturedAt: z.string(),
+    description: z.string(),
+  }),
+  z.object({
+    status: z.literal("CAPTURED"),
+    type: z.enum(["text", "screenshot", "api", "data"]),
+    path: z.string().nullable(),
+    capturedAt: z.string(),
+    description: z.string().optional(),
+  }),
+  // Pre-#1540 artefacts. No `status`, and `"none"` here is ambiguous by
+  // construction — that ambiguity is what the issue was about, and it cannot
+  // be resolved retroactively for a file already written.
+  z.object({
     type: z.enum(["text", "screenshot", "api", "data", "none"]),
     path: z.string().nullable(),
     capturedAt: z.string(),
     description: z.string(),
   }),
+]);
+
+export const ProveEvidenceSchema = z.object({
+  issueNumber: z.number(),
+  verdict: z.enum(["PROVEN", "UNPROVEN", "INCONCLUSIVE"]),
+  commitSHA: z.string(),
+  capturedAt: z.string(),
+  beforeEvidence: BeforeEvidenceSchema,
   afterEvidence: z.object({
     type: z.enum(["text", "screenshot", "api", "data", "none"]),
     path: z.string().nullable(),

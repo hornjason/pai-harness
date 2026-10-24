@@ -11,13 +11,31 @@
     "commitSHA": { "type": "string" },
     "capturedAt": { "type": "string", "format": "date-time" },
     "beforeEvidence": {
+      "$comment": "#1540: UNMEASURED declares no type. The old shape filled an absent before-state with type \"none\", which is a value /goal legitimately writes for a run it did measure, so the two were indistinguishable. Artefacts written before #1540 carry no status and remain valid.",
       "type": "object",
       "properties": {
-        "type": { "type": "string", "enum": ["text", "screenshot", "api", "none"] },
+        "status": { "type": "string", "enum": ["CAPTURED", "DECLARED_NONE", "UNMEASURED"] },
+        "type": { "type": "string", "enum": ["text", "screenshot", "api", "data", "none"] },
         "path": { "type": ["string", "null"] },
         "capturedAt": { "type": ["string", "null"] },
-        "description": { "type": "string" }
-      }
+        "description": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "$comment": "An unmeasured reading says why, and never claims a type.",
+          "if": { "properties": { "status": { "const": "UNMEASURED" } }, "required": ["status"] },
+          "then": { "required": ["reason"], "not": { "required": ["type"] } }
+        },
+        {
+          "$comment": "Any reading that is not UNMEASURED was taken, so it carries when.",
+          "if": {
+            "properties": { "status": { "enum": ["CAPTURED", "DECLARED_NONE"] } },
+            "required": ["status"]
+          },
+          "then": { "required": ["type", "capturedAt"] }
+        }
+      ]
     },
     "afterEvidence": {
       "type": "object",

@@ -39,6 +39,7 @@ import {
   readBeforeState,
   recordBeforeState,
 } from "../gates/gate-executor";
+import { ProveEvidenceSchema, WorkflowStateSchema } from "../gates/schema";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 
@@ -173,6 +174,92 @@ describe("#1540: what the reading does once it is taken", () => {
     recordBeforeState(state, readBeforeState({ beforeState: CAPTURED }));
     expect(state.beforeStateStatus).toBe("CAPTURED");
     expect(state.beforeStateUnmeasured, "the stale reason survived a real capture").toBeUndefined();
+  });
+});
+
+/**
+ * The declaration half. A reading the schema refuses is not shipped, however
+ * honest it is — and this is the half CI found rather than this file: the
+ * `#317`/`#626` censuses reconcile the producer set against the zod shape and
+ * reddened on the two workflow-state keys, which pointed at the one these
+ * cases cover and the census could not see. `ProveEvidenceSchema` required
+ * `beforeEvidence.type`, so the UNMEASURED arm — whose whole point is to
+ * carry no type — would have been rejected by `gates/chain.test.ts` on the
+ * first real run.
+ */
+describe("#1540: every arm is declared, and the artefacts still validate", () => {
+  /** A prove-evidence artefact that is valid apart from its before-block. */
+  const EVIDENCE = (beforeEvidence: unknown) => ({
+    issueNumber: 1540,
+    verdict: "PROVEN",
+    commitSHA: "abc1234",
+    capturedAt: "2026-10-24T00:00:00.000Z",
+    beforeEvidence,
+    afterEvidence: {
+      type: "text", path: null,
+      capturedAt: "2026-10-24T00:00:00.000Z",
+      environment: "prod", description: "AC-1: PASS",
+    },
+    comparisonSummary: "x",
+    reproduced: true,
+  });
+
+  test("all three readings produce a beforeEvidence ProveEvidenceSchema accepts", () => {
+    // Driven through `beforeEvidenceFor` rather than against hand-written
+    // literals, so the schema is reconciled with the producer rather than
+    // with what this test imagines the producer emits.
+    const readings = [
+      readBeforeState({}),
+      readBeforeState({ beforeState: DECLARED_NONE }),
+      readBeforeState({ beforeState: CAPTURED }),
+    ];
+
+    for (const reading of readings) {
+      const evidence = EVIDENCE(beforeEvidenceFor(reading));
+      const result = ProveEvidenceSchema.safeParse(evidence);
+      expect(
+        result.success ? [] : result.error.issues.map(i => `${i.path.join(".")}: ${i.message}`),
+        `the ${reading.status} arm was refused by ProveEvidenceSchema`,
+      ).toEqual([]);
+    }
+  });
+
+  test("an artefact written before #1540 still validates - it is on disk and nobody will rewrite it", () => {
+    // `gates/chain.test.ts` parses whatever `prove-evidence.json` it finds in
+    // the work directory, including runs that predate this change. A schema
+    // admitting only the new shape would redden on a run nobody touched.
+    const legacy = EVIDENCE({
+      type: "none", path: null,
+      capturedAt: "2026-10-01T00:00:00.000Z",
+      description: "no before-state captured",
+    });
+    const result = ProveEvidenceSchema.safeParse(legacy);
+    expect(
+      result.success ? [] : result.error.issues.map(i => `${i.path.join(".")}: ${i.message}`),
+    ).toEqual([]);
+  });
+
+  test("the schema refuses an UNMEASURED block that claims a type", () => {
+    // The arm that must stay refusable. Every case above asserts something is
+    // ACCEPTED, and a `beforeEvidence` loosened to `z.any()` would satisfy all
+    // of them — this is the only case that can tell a declaration from a hole.
+    const result = ProveEvidenceSchema.safeParse(
+      EVIDENCE({ status: "UNMEASURED", reason: "nothing wrote one", type: "none", path: null }),
+    );
+    expect(result.success, "a type was admitted beside an UNMEASURED status").toBe(false);
+  });
+
+  test("the workflow-state keys this change writes are declared", () => {
+    // The two the #317 and #626 censuses caught. Asserted here as well so the
+    // declaration has a binding in the file that owns the feature, rather
+    // than only in a repo-wide census that reports a name and a producer.
+    const state: Record<string, any> = {};
+    recordBeforeState(state, readBeforeState({}));
+
+    const parsed = WorkflowStateSchema.partial().safeParse(state);
+    expect(
+      parsed.success ? [] : parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`),
+    ).toEqual([]);
   });
 });
 
