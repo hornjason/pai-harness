@@ -42,11 +42,13 @@
  * needs a notion of "what this session ran" that does not exist here.
  */
 import { execFileSync } from "child_process";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 
 import { LINE_CITATION } from "../lib/line-citation";
 import { TRACKED_ID_PREFIX_SOURCE } from "../lib/sc-ids";
+import { repoRootIdents } from "../lib/scratch-roots";
+import { stripJsComments } from "../lib/strip-js-comments";
 
 /**
  * One changed file, with enough of the diff to tell an edit from an event.
@@ -218,9 +220,64 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
       (c.path.startsWith(".claude/rules/") || c.path === "CLAUDE.md" || c.path === "AGENTS.md"),
   },
   {
+    // #1547. The first three members were the whole row until an agent on
+    // #1286 (PR #1537) ran everything this router printed and shipped a red
+    // `test-shard (3)` anyway, reddened by `scratch-cleanup` — a census over
+    // the test population that no row named.
+    //
+    // The three additions below are not a longer hand list: the population is
+    // DERIVED by `testPopulationCensusSuites` and held against this row by
+    // `test/census-routing.test.ts`, so the next suite that reads the `test/`
+    // population from the tree is red until somebody decides about it. What
+    // the derivation cannot decide is whether an ADDITION can redden a given
+    // member, so each of these three carries the measurement that put it
+    // here — a planted probe file, run against a 0-fail baseline of the whole
+    // derived population:
+    //
+    //   scratch-cleanup                 a file binding an inline-rooted
+    //                                   `mkdtempSync`. Red in *"every file in
+    //                                   test/ parses to the same idents … as
+    //                                   the frozen reference"*. #1286's own
+    //                                   event.
+    //   consumer-no-rebuild-delegation  a file named `test/consumer-*.test.ts`.
+    //                                   Red in *"no consumer-* file on disk
+    //                                   escapes the list"* — its `SCANNED_FILES`
+    //                                   is a Tier 2 hand list over that name.
+    //   ai-review-runner-shell-parity   a file named `test/ai-review-*.test.ts`
+    //                                   that hands a script to bash. Red in
+    //                                   *"no suite drives a generated step as
+    //                                   plain bash"*. Already routed by
+    //                                   `generated-workflow`, which a diff
+    //                                   adding only a test file does not fire.
+    //   unit/ambiguous-anchor           a file passing a COMPUTED anchor to
+    //                                   `structuralCut` over a doc bound to a
+    //                                   read of `workflows/ship.js`. Red in
+    //                                   *"no UNREADABLE anchor is pointed at
+    //                                   ship.js"*, which is the Tier 2 row
+    //                                   that says there is no exemption list
+    //                                   by design. Found by the AI review on
+    //                                   PR #1556: it lives under `test/unit/`
+    //                                   and the first cut of
+    //                                   `testPopulationCensusSuites` read
+    //                                   only the top level, so the
+    //                                   completeness case could not see it.
+    //
+    // Three of the eight derived members are NOT here, and the reason is in
+    // `MONOTONE_OVER_TEST_POPULATION` in the test file: their assertion over
+    // the population is a lower bound, so an addition moves it the safe way
+    // and only a deletion can refuse. A trivial probe reddens none of the
+    // eight, which is why the measurement needs a realistic member and not an
+    // empty file.
     id: "new-test-file",
     event: "added a test file",
-    tests: ["test/sc-id-namespace.test.ts", "test/scratch-paths-unique.test.ts"],
+    tests: [
+      "test/sc-id-namespace.test.ts",
+      "test/scratch-paths-unique.test.ts",
+      "test/scratch-cleanup.test.ts",
+      "test/consumer-no-rebuild-delegation.test.ts",
+      "test/ai-review-runner-shell-parity.test.ts",
+      "test/unit/ambiguous-anchor.test.ts",
+    ],
     fires: c => c.isNew && /^test\/.*\.test\.tsx?$/.test(c.path),
   },
   {
@@ -391,6 +448,52 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     fires: c => inDir(c.path, ".github/workflows") || inDir(c.path, "lib/scaffold"),
   },
   {
+    // #1547, the second direction: not a census test nobody routes TO, but a
+    // path class nobody routes FROM. Before this row the string `config/`
+    // appeared ZERO times in this file.
+    //
+    // `config/` holds declarations that other files are reconciled against,
+    // so an edit to one moves an agreement in a file the diff does not touch
+    // — the exact shape this table exists for. A newly ADDED config file
+    // already picked up `scaffold-conformity` and `package-closure` through
+    // `new-file`, neither of which is about registry agreement; an EDIT to an
+    // existing one fired nothing at all. Reported on #1540 (PR #1546), where
+    // the same logical change had to land in both `ProveEvidenceSchema` and
+    // `config/prove-evidence.schema.json` and the agent found the second
+    // consumer by grepping.
+    //
+    // ROUTED EXPLICITLY rather than derived, and that is a choice with
+    // numbers behind it rather than an omission. Deriving this direction —
+    // every path class a census suite reads is named by some row — was
+    // measured and rejected: over the 610 suites under `test/`,
+    // `censusDirsRead` yields 43 (suite, directory) pairs across 14
+    // directories, and requiring a change in D to route every suite
+    // enumerating D leaves 42 of the 43 unrouted — so satisfying it means
+    // firing census suites on substantially every diff to `lib/`,
+    // `scripts/`, `test/` and `workflows/`. The argument is in
+    // `test/census-routing.test.ts` and the sweep in
+    // `reference/self-referential-tests-worked-instances.md`.
+    //
+    // Both members MEASURED, on this tree, each against a 0-fail baseline of
+    // the eleven suites that name `config/`:
+    //
+    //   config/check-registry.json, one check entry removed
+    //     -> test/check-registry.test.ts, 3 cases of "#339: every named check
+    //        resolves, in both directions"
+    //   config/matcher-registry.json, last element spliced off
+    //     -> test/matcher-registry-parity.test.ts, 1 case, and nothing else
+    //
+    // `test/matcher-registry.test.ts` is NOT here: it is green on that edit.
+    // An earlier mutation that `delete`d an array index reported four files
+    // and was discarded — it leaves a `null` hole, so it measured a corrupt
+    // registry rather than a moved agreement, and a fixture that cannot prove
+    // its own premise is not evidence for a row.
+    id: "config-registry",
+    event: "touched config/",
+    tests: ["test/check-registry.test.ts", "test/matcher-registry-parity.test.ts"],
+    fires: c => inDir(c.path, "config"),
+  },
+  {
     // #1515. The three files with the NARROWEST set of people who may edit
     // them — DA-owned (#296), and an agent in a worktree is forbidden to
     // write them — matched no row at all. `new-file` needs `isNew`; `doc`
@@ -467,6 +570,202 @@ export interface CensusRouting {
  */
 export function allCensusTests(): string[] {
   return [...new Set(CENSUS_TRIGGERS.flatMap(t => t.tests))];
+}
+
+/**
+ * #1547 — what makes a suite a CENSUS, derived from its source.
+ *
+ * Every row above was added after a CI round paid for its absence, and the
+ * table's own agreement test cannot say whether the set of rows is complete:
+ * it compares `CENSUS_TRIGGERS` to the rendered prose in
+ * `.claude/rules/self-referential-tests.md` in both directions, and a census
+ * suite absent from BOTH leaves them in perfect agreement. Two deciders
+ * answering the same question, and the question neither is asked is "is this
+ * list complete?" — `.claude/rules/checks-must-be-able-to-fail.md`, fourth
+ * shape.
+ *
+ * So the population has to come from the tree. The observable property is the
+ * one the issue names: **a suite whose input is the repository tree rather
+ * than a fixture**. Concretely, it ENUMERATES a directory resolved from its
+ * own repo-root binding — `readdirSync(join(REPO, "test"))` — because that is
+ * what makes the set of files an input, and a set of files is the one input
+ * no import edge expresses and no diff contains.
+ *
+ * Reading a single NAMED file from the root is deliberately not enough. Most
+ * suites in `test/` do that, the population would be the whole directory, and
+ * a router that names everything is a router nobody runs — which is the state
+ * #990 is about, arriving from the other side.
+ *
+ * Returns repo-relative directories, `""` for the repo root itself.
+ */
+export function censusDirsRead(source: string): string[] {
+  // Two views of the same offsets. `code` is where a match COUNTS: literal
+  // contents are blanked, so this file's own fixtures — quoted source — are
+  // whitespace and cannot match. `src` is where a match is READ: the literals
+  // are intact, so `join(REPO, "test")` still names a directory.
+  //
+  // `stripJsComments` promises the offsets are identical between the two,
+  // which is the whole reason one view's index can index the other.
+  const src = stripJsComments(source);
+  const code = stripJsComments(source, { blankLiterals: true });
+  // The code view, not `src`: `import.meta.dir` is a code TOKEN and survives
+  // inside a quoted fixture, so reading roots from the literal-bearing view
+  // lets a string manufacture one. Measured at `[""]` before this changed.
+  const roots = repoRootIdents(code);
+
+  const bound = new Map<string, string>();
+  for (const m of code.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(join\([^;\n]*)/g)) {
+    const at = m.index! + m[0].length - m[2]!.length;
+    const expr = src.slice(at, at + m[2]!.length);
+    const dir = joinedDir(expr.replace(/\)\s*[;,].*$/, ")").trim(), roots);
+    if (dir !== null) bound.set(m[1]!, dir);
+  }
+
+  const dirs = new Set<string>();
+  for (const m of code.matchAll(/\b(?:readdirSync|readdir|opendirSync|globSync)\s*\(/g)) {
+    const arg = firstArgument(code, src, m.index! + m[0].length - 1);
+    const inline = joinedDir(arg, roots);
+    if (inline !== null) dirs.add(inline);
+    else if (bound.has(arg)) dirs.add(bound.get(arg)!);
+    else if (roots.has(arg)) dirs.add("");
+  }
+  return [...dirs];
+}
+
+/*
+ * Why the masking above is `stripJsComments`'s and not this file's.
+ *
+ * The self-reference trap arrives here in the one spelling a comment stripper
+ * alone cannot reach: `test/census-routing.test.ts` carries this detector's
+ * own fixtures as single-quoted STRINGS, and read as code they put the test
+ * file into the population it derives. Measured — it appeared in its own
+ * unrouted list on the first run.
+ *
+ * The first cut answered that with a local mask, and the local mask was
+ * wrong twice, each time in the quiet direction:
+ *
+ *   - It read `/["']/` as a string opener, so the `"` inside the PATTERN
+ *     opened a string that never closed and every enumeration below it in
+ *     the file became quoted text. That dropped `scaffold-generators` and
+ *     `ai-review-surface-census`; the stale-exclusion guard reported it.
+ *   - Repaired with a single-previous-CHARACTER regex heuristic, it then
+ *     read `return /["']/` as division — prev is `n` — and reintroduced the
+ *     same swallow behind a keyword. Found by the AI review on PR #1556.
+ *     The docblock defending that heuristic claimed erring toward division
+ *     "can only ADD files to the population". It cannot: a pattern with
+ *     unbalanced quotes REMOVES them, and `["']` is exactly that.
+ *
+ * `lib/strip-js-comments.ts` already holds this decision, keyword-aware,
+ * with `REGEX_ALLOWED_AFTER_WORD` put there by #905 for this exact defect.
+ * A second heuristic here that agrees with it today is two deciders, so no
+ * behavioural case can tell them apart and a mutation of either leaves the
+ * other holding the case up. `blankLiterals` is the one binding; there is
+ * deliberately nothing local left to widen.
+ */
+
+/**
+ * The first argument expression of the call whose `(` sits at `open`.
+ *
+ * Read by balancing brackets rather than by a `[^,)]+` capture, because the
+ * argument that matters here is itself a call: `readdirSync(join(REPO,
+ * "test"))` truncated at the first comma is `join(REPO`, which resolves to
+ * nothing. Measured — that truncation hid BOTH suites this issue is about,
+ * and left `test/sc-id-namespace.test.ts` out of its own population.
+ *
+ * Counted over `scan` — the view with literal contents blanked — and sliced
+ * out of `read`. A bracket inside a STRING is text, and counting it as
+ * structure desyncs the depth so it never returns to zero at the statement's
+ * real end: the scan runs on into later source and the slice is garbage
+ * `joinedDir` cannot match, so a genuine enumeration resolves to nothing.
+ * Measured — `join(REPO, "weird(dir")` returned `[]`, and `"weird)dir"`
+ * happened to return the right answer, which is the asymmetry that says the
+ * count was unreliable rather than strict. The third site in this file to
+ * read the literal-bearing view when it wanted the masked one.
+ */
+function firstArgument(scan: string, read: string, open: number): string {
+  let depth = 0;
+  for (let i = open; i < scan.length; i++) {
+    const ch = scan[i]!;
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      if (--depth === 0) return read.slice(open + 1, i).trim();
+    } else if (ch === "," && depth === 1) return read.slice(open + 1, i).trim();
+  }
+  return "";
+}
+
+/**
+ * `join(<a repo root>, "a", "b")` -> `"a/b"`; anything else -> `null`.
+ *
+ * Navigation segments are dropped, so `join(import.meta.dir, "..")` is the
+ * repo root (`""`) and not a directory named `..`. The same refusal
+ * `lib/scratch-roots.ts` makes, for the same reason: a navigation literal is
+ * not a name.
+ */
+function joinedDir(expr: string, roots: Set<string>): string | null {
+  const m = /^join\(\s*([A-Za-z_][A-Za-z0-9_.]*(?:\(\))?)\s*((?:,\s*"[^"]+"\s*)*)\)?$/.exec(expr);
+  if (!m) return null;
+  const head = m[1]!;
+  if (!roots.has(head) && head !== "import.meta.dir" && head !== "process.cwd()") return null;
+  return [...(m[2] ?? "").matchAll(/"([^"]+)"/g)]
+    .map(x => x[1]!)
+    .filter(l => l !== "." && l !== ".." && !l.startsWith("../"))
+    .join("/");
+}
+
+/**
+ * The suites that take a census over the `test/` population, read from the
+ * tree. Repo-relative paths, sorted.
+ *
+ * Scoped to `test/` because that is the directory with a row declaring itself
+ * the router for *adding a file here* — `new-test-file`. Completeness is only
+ * well defined against such a row: it names an event, so "every suite whose
+ * input is that directory's population" is the set the row must carry. The
+ * same question asked of `lib/` has no row to be complete against, and the
+ * measurement behind that scoping is in
+ * `reference/self-referential-tests-worked-instances.md`.
+ *
+ * RECURSIVE, and the first cut of this function was not — which is the
+ * defect's own shape turned on the check written to catch it. A top-level
+ * `readdirSync` leaves every suite under `test/unit/` out of the population,
+ * so the completeness case goes GREEN HAVING WITNESSED NOTHING for all of
+ * them, exactly as the `[^,)]+` argument capture does one function up.
+ * Measured on this tree: 540 `.test.ts` at the top level, 70 below it, and
+ * one of those 70 — `test/unit/ambiguous-anchor.test.ts`, which scans `test/`
+ * recursively for `structuralCut` call sites — satisfies the predicate and
+ * was unseen. Found by the AI review on PR #1556.
+ *
+ * `new-test-file`'s `fires` was never blind here: `/^test\/.*\.test\.tsx?$/`
+ * matches across a slash, so the ROUTER would have run such a suite all
+ * along. Only the derivation could not see it, which is why nothing reported
+ * the gap.
+ *
+ * Nothing is skipped. `test/fixtures/` holds whole fixture projects carrying
+ * their own `*.test.ts`, and the predicate rather than a path list is what
+ * keeps them out — it finds no repo-rooted enumeration of `test/` in any of
+ * them. A hand-written skip would make that silent; `test/census-routing.test.ts`
+ * asserts the membership instead, so a fixture that ever did satisfy the
+ * predicate is a red case somebody has to decide about.
+ */
+export function testPopulationCensusSuites(root: string): string[] {
+  const dir = join(root, "test");
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  const walk = (abs: string, rel: string): void => {
+    for (const e of readdirSync(abs, { withFileTypes: true })) {
+      const childAbs = join(abs, e.name);
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(childAbs, childRel);
+      else if (
+        /\.test\.tsx?$/.test(e.name) &&
+        censusDirsRead(readFileSync(childAbs, "utf-8")).includes("test")
+      ) {
+        out.push(`test/${childRel}`);
+      }
+    }
+  };
+  walk(dir, "");
+  return out.sort();
 }
 
 /** Resolve a repo-relative path against a project root. */
