@@ -4008,7 +4008,10 @@ ${buildAuthDetectStep(vertex)}${buildReviewRunStep(
   // producing workflow's `name:`, is a constant the subscriber owns.
   const aiReviewUnmeasuredYml = buildAiReviewUnmeasuredWorkflow({
     runsOn,
-    setupBun: setupBunWith(declaredBunVersion(root), "      "),
+    setupBun: actionRef("oven-sh/setup-bun"),
+    // The same `bunStep` the three jobs above render, at the same indent and
+    // from the same single declaration (#622).
+    setupBunWith: bunStep,
     version: harnessVersion(),
   });
 

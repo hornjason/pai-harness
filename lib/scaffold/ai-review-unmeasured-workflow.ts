@@ -133,8 +133,18 @@ bunx rungate@${version} ${AI_REVIEW_UNMEASURED_COMMAND} \\
 export interface UnmeasuredWorkflowOptions {
   /** The `runs-on:` value, already JSON-quoted by the caller. */
   runsOn: string;
-  /** A `- uses: oven-sh/setup-bun@...` block at the step indent. */
+  /** The pinned `oven-sh/setup-bun` action reference. */
   setupBun: string;
+  /**
+   * The `with:` body of that step, at ten spaces.
+   *
+   * `setupBunWith` renders the project's single bun declaration and nothing
+   * else; the `- uses:` line around it is the caller's, exactly as it is for
+   * the other three generated workflows. Taking the composed block instead
+   * would put a second renderer of that declaration in the tree, which is
+   * the defect #622 removed.
+   */
+  setupBunWith: string;
   /** The published harness version the step runs through `bunx`. */
   version: string;
 }
@@ -201,7 +211,9 @@ jobs:
   ${AI_REVIEW_UNMEASURED_JOB}:
     runs-on: ${opts.runsOn}
     steps:
-${opts.setupBun}
+      - uses: ${opts.setupBun}
+        with:
+${opts.setupBunWith}
       - name: Record which kind of unmeasured each round was
         env:
           ${AI_REVIEW_UNMEASURED_REPO_VAR}: \${{ github.repository }}
