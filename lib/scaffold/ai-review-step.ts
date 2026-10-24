@@ -9461,6 +9461,50 @@ export function buildReviewRunStep(
     ...buildPersistScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
+  // CRC-B4 (#1476). The verifier group, and it is a SEPARATE invocation of
+  // the review action rather than a second pass by the reviewer — the
+  // criterion's word is "separate", and an agent asked to re-grade its own
+  // findings has one error direction.
+  //
+  // AFTER the reviewer and BEFORE the adjudication, which is the only
+  // position that works: the payload it votes on does not exist until the
+  // first has run, and the verdict it changes is taken by the second.
+  //
+  // `continue-on-error: true` and no `if:`, like every other step here. A
+  // group that does not convene writes no ballot, the adjudicator is handed
+  // no ballot path, and every finding keeps blocking — which is the
+  // behaviour before this step existed. The report step says so out loud
+  // under `AI_REVIEW_BALLOT_UNMEASURED_TITLE` rather than letting the
+  // absence read as a group that agreed with everything.
+  //
+  // It cannot redden a clean pull request, and that is a property of the
+  // reader rather than a hope about this step: the quorum is consulted only
+  // when the adjudication already has at least one blocking finding, so
+  // every state this step can be in leaves a CLEAN run clean.
+  const verify = [
+    `- name: ${AI_REVIEW_VERIFY_STEP_NAME}`,
+    `  id: ${AI_REVIEW_VERIFY_STEP_ID}`,
+    `  continue-on-error: true`,
+    `  uses: ${refs.review}`,
+    `  env:`,
+    ...vertexEnv,
+    // The payload it reads and the ballot it writes, both through `env:`
+    // like every other value in this job. An expression inside `prompt:` is
+    // substituted before the action sees it.
+    `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
+    `    ${AI_REVIEW_BALLOT_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_BALLOT_BASENAME}`,
+    `  with:`,
+    `    use_vertex: \${{ ${modeIs("vertex")} }}`,
+    `    claude_code_oauth_token: ${credential("oauth", "CLAUDE_CODE_OAUTH_TOKEN")}`,
+    `    anthropic_api_key: ${credential("api-key", "ANTHROPIC_API_KEY")}`,
+    `    claude_args: ${aiReviewClaudeArgs(vertex)}`,
+    `    prompt: |`,
+    ...buildVerifyPrompt(jury.groupSize, jury.quorum)
+      .trimEnd()
+      .split("\n")
+      .map(l => (l ? `      ${l}` : "")),
+  ];
+
   // #1242. The consequence of a waiver, and LAST for that reason — see
   // `AI_REVIEW_DISARM_STEP_ID`. It carries no `if:`, like every other step in
   // this job: the waived marker is resolved inside `run:` so the step reports
@@ -9504,6 +9548,8 @@ export function buildReviewRunStep(
     indented(baseline, indent) +
     indented(review, indent) +
     indented(persist, indent) +
+    // CRC-B4. Between the reviewer and the adjudicator; see `verify`.
+    indented(verify, indent) +
     // #1307. Both BEFORE the report step — see `stageExecution` for why the
     // obvious ordering is not available.
     indented(stageExecution, indent) +

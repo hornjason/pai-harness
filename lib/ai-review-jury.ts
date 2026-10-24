@@ -253,12 +253,30 @@ export interface JuryGateVerdict {
 
 export interface JuryGateResult {
   /**
-   * The findings the group voted down, by key, each with the sentence saying
-   * so. A map rather than a list because the reading that consumes it prints
-   * the reason beside the finding, and a parallel array is a join nobody
-   * maintains.
+   * One entry per blocking finding, **in input order** — the sentence saying
+   * it was voted down, or `null` for a finding that keeps blocking.
+   *
+   * **Positional, not keyed, and this was a defect before it was a design.**
+   * The first cut returned a map from `advisoryKey` to a reason, and the
+   * consumer re-derived that hash in its own second pass to look the verdict
+   * back up. Two findings that collide under it — the same `file` and
+   * `summary`, or a genuine FNV-1a collision between different pairs — then
+   * had one vote decide both: whichever the group actually voted on, the
+   * other was withheld or upheld on a verdict that was never about it.
+   *
+   * `lib/finding-arbiter.ts` had already answered this, in the module this
+   * one is built on, and answered it the other way: `SHARED_BALLOT` says
+   * *"a vote is about a finding. Spreading one across a heterogeneous batch
+   * does not give the other findings a quorum, it gives them somebody
+   * else's"*, and its remedy is *"one group per finding, in input order"*.
+   * A second module deciding the same question differently is the fourth
+   * shape in `.claude/rules/checks-must-be-able-to-fail.md`.
+   *
+   * So the identity is derived exactly once, HERE, where a collision inside
+   * the blocking set can be seen and refused — and the decision is carried
+   * out by position, where nothing can collide at all.
    */
-  withheld: Record<string, string>;
+  withheld: (string | null)[];
   verdicts: JuryGateVerdict[];
   /** One sentence per finding voted on, for the annotation. */
   detail: string[];
@@ -295,25 +313,67 @@ export function juryGate(
   blocking: readonly unknown[],
   ballots: BallotSet | null,
 ): JuryGateResult {
-  const withheld: Record<string, string> = {};
+  const withheld: (string | null)[] = [];
   const verdicts: JuryGateVerdict[] = [];
   const detail: string[] = [];
 
+  const asObject = (item: unknown): Record<string, unknown> =>
+    item !== null && typeof item === "object" && !Array.isArray(item)
+      ? (item as Record<string, unknown>)
+      : {};
+
+  // The identity is derived ONCE, over the whole blocking set, so a key two
+  // findings share can be SEEN. A ballot filed under an ambiguous key names
+  // no single finding, and crediting it to whichever happened to come first
+  // is the shared-ballot defect `lib/finding-arbiter.ts` refuses by name.
+  // Both findings keep blocking, which is the direction this is allowed to
+  // be wrong in.
+  const seen = new Map<string, number>();
   for (const item of blocking) {
-    const finding =
-      item !== null && typeof item === "object" && !Array.isArray(item)
-        ? (item as Record<string, unknown>)
-        : {};
+    const key = advisoryKey(asObject(item));
+    seen.set(key, (seen.get(key) ?? 0) + 1);
+  }
+
+  const record = (v: JuryGateVerdict): void => {
+    verdicts.push(v);
+    detail.push(v.reason);
+    withheld.push(v.surfaced ? null : v.reason);
+  };
+
+  for (const item of blocking) {
+    const finding = asObject(item);
     const key = advisoryKey(finding);
     const title = String(finding[AI_REVIEW_FINDING_FIELDS.summary] ?? "");
+
+    if ((seen.get(key) ?? 0) > 1) {
+      record({
+        key,
+        title,
+        reading: null,
+        surfaced: true,
+        reason:
+          `${seen.get(key)} of the blocking findings share the identity [key ${key}], so a ` +
+          `ballot filed under it names no one of them. All of them keep blocking: a vote is ` +
+          `about a finding, and spreading one across several gives the others somebody ` +
+          `else's quorum rather than their own`,
+        refusal: "UNMEASURED",
+      });
+      continue;
+    }
+
     const cast = ballots === null ? undefined : ballots[key];
 
     if (cast === undefined) {
-      const reason =
-        `${NO_GROUP_CONVENED} [key ${key}]. It keeps blocking: a group that did not meet ` +
-        `is UNMEASURED, which is neither a quorum of zero nor a pass`;
-      verdicts.push({ key, title, reading: null, surfaced: true, reason, refusal: "UNMEASURED" });
-      detail.push(reason);
+      record({
+        key,
+        title,
+        reading: null,
+        surfaced: true,
+        reason:
+          `${NO_GROUP_CONVENED} [key ${key}]. It keeps blocking: a group that did not meet ` +
+          `is UNMEASURED, which is neither a quorum of zero nor a pass`,
+        refusal: "UNMEASURED",
+      });
       continue;
     }
 
@@ -321,38 +381,58 @@ export function juryGate(
     try {
       votes = parseVotes(cast);
     } catch (e) {
-      const reason =
-        `the verifier ballot [key ${key}] could not be read, so no vote was counted on it: ` +
-        `${(e as Error).message}. It keeps blocking`;
-      verdicts.push({ key, title, reading: null, surfaced: true, reason, refusal: "UNMEASURED" });
-      detail.push(reason);
+      record({
+        key,
+        title,
+        reading: null,
+        surfaced: true,
+        reason:
+          `the verifier ballot [key ${key}] could not be read, so no vote was counted on it: ` +
+          `${(e as Error).message}. It keeps blocking`,
+        refusal: "UNMEASURED",
+      });
       continue;
     }
 
     const reading = juryReading(votes);
     if (reading.reading === "UNMEASURED") {
-      const reason =
-        `the verifier group [key ${key}] did not produce a countable ballot: ` +
-        `${reading.unmeasuredReasons.join("; ")}. It keeps blocking`;
-      verdicts.push({ key, title, reading, surfaced: true, reason, refusal: "UNMEASURED" });
-      detail.push(reason);
+      record({
+        key,
+        title,
+        reading,
+        surfaced: true,
+        reason:
+          `the verifier group [key ${key}] did not produce a countable ballot: ` +
+          `${reading.unmeasuredReasons.join("; ")}. It keeps blocking`,
+        refusal: "UNMEASURED",
+      });
       continue;
     }
     if (!reading.passed) {
-      const reason =
-        `${reading.agree} of ${reading.votes} verifiers called it real and the quorum is ` +
-        `${reading.quorum}, so it is withheld [key ${key}]. It is still reported below and ` +
-        `blocks nothing`;
-      withheld[key] = reason;
-      verdicts.push({ key, title, reading, surfaced: false, reason, refusal: "NO_QUORUM" });
-      detail.push(reason);
+      record({
+        key,
+        title,
+        reading,
+        surfaced: false,
+        reason:
+          `${reading.agree} of ${reading.votes} verifiers called it real and the quorum is ` +
+          `${reading.quorum}, so it is withheld [key ${key}]. It is still reported below and ` +
+          `blocks nothing`,
+        refusal: "NO_QUORUM",
+      });
       continue;
     }
-    const reason =
-      `${reading.agree} of ${reading.votes} verifiers called it real, quorum ${reading.quorum}` +
-      `${reading.disagreed ? " (the group disagreed)" : ""}, so it blocks [key ${key}]`;
-    verdicts.push({ key, title, reading, surfaced: true, reason, refusal: null });
-    detail.push(reason);
+    record({
+      key,
+      title,
+      reading,
+      surfaced: true,
+      reason:
+        `${reading.agree} of ${reading.votes} verifiers called it real, quorum ` +
+        `${reading.quorum}${reading.disagreed ? " (the group disagreed)" : ""}, so it blocks ` +
+        `[key ${key}]`,
+      refusal: null,
+    });
   }
 
   return { withheld, verdicts, detail };
@@ -416,7 +496,8 @@ export function juryLedgerRow(
 
 /** What the adjudicator's `main` consumes. Plain data, so it can be injected. */
 export interface JuryGateOutcome {
-  withheld: Record<string, string>;
+  /** One entry per blocking finding, in input order. See `JuryGateResult`. */
+  withheld: (string | null)[];
   unreadable: string | null;
   detail: string[];
 }
@@ -447,7 +528,7 @@ export function aiReviewJuryGate(blocking: readonly unknown[], ballotPath: strin
     raw = readFileSync(ballotPath, "utf-8");
   } catch (e) {
     return {
-      withheld: {},
+      withheld: [],
       unreadable:
         `${BALLOT_UNREADABLE_PREFIX} at ${ballotPath}: ${(e as Error).message}. A ballot this ` +
         `run was told to read and could not is a reading that failed, not a group that upheld ` +
@@ -458,7 +539,7 @@ export function aiReviewJuryGate(blocking: readonly unknown[], ballotPath: strin
 
   const source = readBallots(raw);
   if (source.ballots === null) {
-    return { withheld: {}, unreadable: source.unreadable, detail: [] };
+    return { withheld: [], unreadable: source.unreadable, detail: [] };
   }
 
   const result = juryGate(blocking, source.ballots);

@@ -198,7 +198,8 @@ describe("JG-2: the quorum decides whether a blocking finding survives", () => {
   test("JG-2a: a finding the group votes down is withheld", () => {
     const f = blocking();
     const result = juryGate([f], { [keyOf(f)]: ballotFor(VERIFIER_QUORUM - 1) });
-    expect(result.withheld[keyOf(f)]).toBeDefined();
+    expect(result.withheld).toHaveLength(1);
+    expect(result.withheld[0]).not.toBeNull();
     expect(result.verdicts[0].surfaced).toBe(false);
     expect(result.verdicts[0].reading?.reading).toBe("MEASURED");
     expect(result.verdicts[0].reading?.passed).toBe(false);
@@ -207,7 +208,7 @@ describe("JG-2: the quorum decides whether a blocking finding survives", () => {
   test("JG-2b: a finding the group agrees on keeps blocking", () => {
     const f = blocking();
     const result = juryGate([f], { [keyOf(f)]: ballotFor(VERIFIER_GROUP_SIZE) });
-    expect(result.withheld).toEqual({});
+    expect(result.withheld).toEqual([null]);
     expect(result.verdicts[0].surfaced).toBe(true);
     expect(result.verdicts[0].reading?.passed).toBe(true);
     expect(result.verdicts[0].reading?.disagreed).toBe(false);
@@ -230,7 +231,7 @@ describe("JG-3: an unconvened group is UNMEASURED, never a pass", () => {
     expect(result.verdicts[0].surfaced).toBe(true);
     expect(result.verdicts[0].reading).toBeNull();
     expect(result.verdicts[0].reason).toContain(NO_GROUP_CONVENED);
-    expect(result.withheld).toEqual({});
+    expect(result.withheld).toEqual([null]);
   });
 
   test("JG-3b: a short ballot is UNMEASURED and keeps blocking", () => {
@@ -238,7 +239,7 @@ describe("JG-3: an unconvened group is UNMEASURED, never a pass", () => {
     const result = juryGate([f], { [keyOf(f)]: ballotFor(0, VERIFIER_GROUP_SIZE - 1) });
     expect(result.verdicts[0].reading?.reading).toBe("UNMEASURED");
     expect(result.verdicts[0].surfaced).toBe(true);
-    expect(result.withheld).toEqual({});
+    expect(result.withheld).toEqual([null]);
   });
 
   test("JG-3c: an unreadable vote refuses the ballot rather than reading a dissent", () => {
@@ -247,7 +248,7 @@ describe("JG-3: an unconvened group is UNMEASURED, never a pass", () => {
       [keyOf(f)]: [{ verifier: "a", real: "false", reason: "x" }, vote("b", false), vote("c", false)],
     });
     expect(result.verdicts[0].surfaced).toBe(true);
-    expect(result.withheld).toEqual({});
+    expect(result.withheld).toEqual([null]);
     expect(result.verdicts[0].reason).toMatch(/real|read/i);
   });
 
@@ -311,6 +312,94 @@ describe("JG-4: an unreadable ballot source is a reading that failed", () => {
     // The whole point of the pair contract: no agent reproduces the hash,
     // and the hash is still the one identity.
     expect(Object.keys(r.ballots ?? {})).toEqual([keyOf(f)]);
+  });
+});
+
+// ── JG-9: one vote may not decide two findings ───────────────────────────
+
+/**
+ * The defect a security review found in this file's first cut, and the row
+ * rather than the sentence.
+ *
+ * The verdict used to be carried back to the reader as a map from
+ * `advisoryKey` to a reason, re-derived in the reader's own second pass. Two
+ * blocking findings that share that identity then shared a vote: the group
+ * votes the one it saw real, and the other is upheld or withheld on a
+ * verdict that was never about it. `lib/finding-arbiter.ts` had already
+ * refused exactly this — `SHARED_BALLOT`, *"a vote is about a finding"* —
+ * and named the remedy: one group per finding, in input order.
+ *
+ * **The mutation a positional carry survives and a hash lookup does not** is
+ * `JG-9c`: the reader's `withheld[blockingIndex]` rewritten to
+ * `withheld[advisoryKey(finding)]`, which is the code this replaced. Under
+ * it the second of two colliding findings takes the first's verdict. Under
+ * the positional carry each finding takes its own, and the gate refuses the
+ * collision before either is voted on at all.
+ */
+describe("JG-9: a shared identity does not become a shared quorum", () => {
+  /** Two findings, one identity: `advisoryKey` reads file and summary only. */
+  function collidingPair(): [Record<string, unknown>, Record<string, unknown>] {
+    const a = blocking({ line: 42, failure_scenario: "the first caller acts on it" });
+    const b = blocking({ line: 907, failure_scenario: "a different caller, a different path" });
+    return [a, b];
+  }
+
+  test("JG-9a: the pair really does collide, or the rest of this proves nothing", () => {
+    const [a, b] = collidingPair();
+    expect(keyOf(a)).toBe(keyOf(b));
+    expect(a).not.toEqual(b);
+  });
+
+  test("JG-9b: a ballot under the shared identity decides neither", () => {
+    const [a, b] = collidingPair();
+    // The group votes the finding down. Under the keyed carry this withheld
+    // BOTH of them on one ballot.
+    const result = juryGate([a, b], { [keyOf(a)]: ballotFor(VERIFIER_QUORUM - 1) });
+    expect(result.withheld).toEqual([null, null]);
+    expect(result.verdicts.map(v => v.surfaced)).toEqual([true, true]);
+    for (const v of result.verdicts) {
+      expect(v.reading).toBeNull();
+      expect(v.refusal).toBe("UNMEASURED");
+      expect(v.reason).toContain("share the identity");
+    }
+  });
+
+  test("JG-9c: the carry is positional — the reader never re-derives the key", () => {
+    const source = readFileSync(
+      join(LIB, "scaffold", "ai-review-findings.ts"),
+      "utf-8",
+    );
+    // The one site, and it reads an index. A lookup by `advisoryKey` here
+    // would be the second derivation of one identity, which is what let two
+    // findings share a vote.
+    expect(source).toContain("const voted = withheld[blockingIndex];");
+    expect(source).not.toContain("withheld[advisoryKey(");
+  });
+
+  test("JG-9d: two distinct findings each take their own verdict, in order", () => {
+    const first = blocking({ summary: "the first defect" });
+    const second = blocking({ summary: "the second defect" });
+    const result = juryGate([first, second], {
+      [keyOf(first)]: ballotFor(VERIFIER_QUORUM - 1),
+      [keyOf(second)]: ballotFor(VERIFIER_GROUP_SIZE),
+    });
+    expect(result.withheld[0]).not.toBeNull();
+    expect(result.withheld[1]).toBeNull();
+  });
+
+  test("JG-9e: a verdict list of the wrong length is refused, not padded", () => {
+    const first = blocking({ summary: "the first defect" });
+    const second = blocking({ summary: "the second defect" });
+    const payload = fixture(
+      JSON.stringify({ findings: [first, second], verdict: AI_REVIEW_BLOCK_VERDICT }),
+    );
+    // A gate that returns one verdict for two blocking findings. Reachable
+    // because the gate is injected, which is why this refusal can fire.
+    const short = () => ({ withheld: ["withheld by the group"], unreadable: null, detail: [] });
+    const { code, lines } = captureBoth(() => main([payload, "", "ballot-path"], short));
+    expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} UNMEASURED`))).toBe(true);
+    expect(lines.join("\n")).toContain("JURY_VERDICT_COUNT_MISMATCH");
+    expect(code).not.toBe(0);
   });
 });
 
@@ -501,8 +590,8 @@ describe("JG-7: a quorum wired to a constant is told apart from a vote", () => {
     // Same input, opposite outcome.
     expect(real.verdicts[0].surfaced).toBe(false);
     expect(forged.verdicts[0].surfaced).toBe(true);
-    expect(Object.keys(real.withheld)).toHaveLength(1);
-    expect(Object.keys(forged.withheld)).toHaveLength(0);
+    expect(real.withheld.filter(Boolean)).toHaveLength(1);
+    expect(forged.withheld.filter(Boolean)).toHaveLength(0);
     // The ledger row is the discriminator, not the exit code.
     expect(real.verdicts[0].reading?.agree).toBe(VERIFIER_QUORUM - 1);
     expect(forged.verdicts[0].reading?.agree).toBe(VERIFIER_GROUP_SIZE);
@@ -526,7 +615,7 @@ describe("JG-8: the suite is not green with a group of one", () => {
     // the case JG-2a asserts cannot hold: nothing is withheld, and the reason
     // is the cardinality rather than the vote.
     expect(forged.verdicts[0].reading?.reading).toBe("UNMEASURED");
-    expect(Object.keys(forged.withheld)).toHaveLength(0);
+    expect(forged.withheld.filter(Boolean)).toHaveLength(0);
     expect(juryGate([f], votes).verdicts[0].surfaced).toBe(false);
   });
 });

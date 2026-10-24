@@ -229,10 +229,29 @@ export const AI_REVIEW_ADVISORY_TITLE = "AI review advisory findings";
  * FNV-1a, written out, rather than `node:crypto`. Not a preference: this
  * module is copied into a temp directory by the mutation battery in
  * `test/ai-review-advisory-findings.test.ts`, and every import it carries has
- * to be carried with it. The property wanted here is determinism and a short
- * printable token, not collision resistance against an adversary — a finding
- * that forged another finding's key would buy the forger an answer on the
- * wrong row, which is a worse annotation and not a bypass of anything.
+ * to be carried with it. The property wanted is determinism and a short
+ * printable token, not collision resistance against an adversary.
+ *
+ * ## WHAT A COLLISION COSTS, and it is no longer only an annotation
+ *
+ * This docblock used to end *"a finding that forged another finding's key
+ * would buy the forger an answer on the wrong row, which is a worse
+ * annotation and not a bypass of anything."* That stopped being true the
+ * moment CRC-B4 made the verifier quorum read a ballot filed under this
+ * key: a collision between two BLOCKING findings would let one group's vote
+ * decide both. The sentence is corrected rather than deleted because a
+ * comment asserting a property the code no longer has is the reason nobody
+ * checks it — `lib/cli-commands.ts` carried *"runs every command for real"*
+ * over a test that ran one command of ten.
+ *
+ * What holds instead, and it is a property of the CALLER rather than of
+ * this hash: `juryGate` derives the identity once over the whole blocking
+ * set, refuses a key two of them share, and carries its decision back to
+ * the reader **by position**. So a collision is seen and both findings keep
+ * blocking; it cannot silently credit one finding's vote to another. The
+ * hash is still not adversary-resistant and is not asked to be — nothing
+ * downstream of it decides anything a collision could not already be
+ * refused for.
  */
 export function advisoryKey(finding: Record<string, unknown>): string {
   const f = AI_REVIEW_FINDING_FIELDS;
@@ -388,7 +407,18 @@ export type AiReviewUnmeasuredReason =
    * would otherwise adjudicate the ballot away in silence. "Told to take a
    * vote and could not" is UNMEASURED, and the finding keeps blocking.
    */
-  | "BALLOT_UNWIRED";
+  | "BALLOT_UNWIRED"
+  /**
+   * The quorum returned a verdict list that does not describe the blocking
+   * set it was handed (CRC-B4).
+   *
+   * The same refusal `BALLOT_COUNT_MISMATCH` makes one level down in
+   * `lib/finding-arbiter.ts`: padding the short end would uphold findings
+   * nobody voted on and truncating the long end would discard votes
+   * somebody cast. Which group voted on which finding is not recoverable
+   * from a list of the wrong length, so nothing is recovered from it.
+   */
+  | "JURY_VERDICT_COUNT_MISMATCH";
 
 /**
  * The fields a BLOCKING finding must carry, derived from the one contract map
@@ -512,7 +542,7 @@ function unmeasured(
 export function readAiReviewFindings(
   raw: string | null,
   changedFiles?: readonly string[],
-  withheld?: Readonly<Record<string, string>>,
+  withheld?: readonly (string | null)[],
 ): AiReviewFindingsReading {
   if (raw === null) {
     return unmeasured(["FINDINGS_FILE_ABSENT"], ["no findings payload was produced"]);
@@ -595,6 +625,14 @@ export function readAiReviewFindings(
    * count BEFORE either of them ran.
    */
   let demoted = 0;
+  /**
+   * How many findings have reached the verifier quorum's branch so far.
+   *
+   * The index into `withheld`, and the whole of the positional carry. It
+   * counts findings that would otherwise block — not findings in the
+   * payload — so it advances in step with the list the gate was handed.
+   */
+  let blockingIndex = 0;
 
   list.forEach((item, i) => {
     if (item === null || typeof item !== "object" || Array.isArray(item)) {
@@ -695,13 +733,30 @@ export function readAiReviewFindings(
       // `reported`, so `advisoryReported` carries it into the notice and a
       // maintainer still sees what the group voted down.
       //
-      // Absent from the map means "not withheld", which is the only reading
-      // available here: a finding the group could not be convened for is
-      // never in this map at all, because the gate keeps it blocking. The
-      // two states are separated where the ballot is counted, not here.
+      // BY POSITION, and never by re-deriving the finding's identity.
+      //
+      // The list has one entry per finding that reaches this point, in the
+      // order they reach it — which is exactly the list the gate was handed
+      // as `blockingReported`, because pass one and pass two are this same
+      // function over the same payload and the only thing that differs is
+      // applied AFTER the decision each entry describes.
+      //
+      // An earlier cut keyed the verdict by `advisoryKey` and looked it up
+      // here, which made two findings sharing an identity share a vote:
+      // whichever the group voted on, the other was withheld or upheld on a
+      // verdict that was never about it. `lib/finding-arbiter.ts`'s
+      // `SHARED_BALLOT` had already refused precisely that — *"a vote is
+      // about a finding"* — and its remedy is one group per finding, in
+      // input order. A hash looked up twice is two derivations of one
+      // identity; a position is none.
+      //
+      // `null` means this finding keeps blocking. The gate separates "the
+      // group voted it down" from "no group could be convened" where the
+      // ballot is counted; by here there are only two outcomes.
       if (withheld !== undefined) {
-        const voted = withheld[advisoryKey(finding)];
-        if (voted !== undefined) {
+        const voted = withheld[blockingIndex];
+        blockingIndex += 1;
+        if (voted !== undefined && voted !== null) {
           demoted += 1;
           detail.push(`finding ${i} is withheld by the verifier group: ${voted}`);
           return;
@@ -711,6 +766,23 @@ export function readAiReviewFindings(
       detail.push(renderFinding(i, finding));
     }
   });
+
+  // The positional carry's own precondition, asserted rather than assumed.
+  //
+  // It is reachable: `withheld` comes from an INJECTED gate, so a caller
+  // that returns a list of the wrong length is a real input and not a
+  // hypothetical. Padding the short end would uphold findings nobody voted
+  // on and truncating the long end would discard votes somebody cast —
+  // `BALLOT_COUNT_MISMATCH`'s argument in `lib/finding-arbiter.ts`, one
+  // level up. Neither is taken: the reading refuses.
+  if (withheld !== undefined && withheld.length !== blockingIndex) {
+    reasons.push("JURY_VERDICT_COUNT_MISMATCH");
+    detail.push(
+      `the verifier quorum returned ${withheld.length} verdict(s) for ${blockingIndex} finding(s) ` +
+        `that would otherwise block. Which group voted on which finding is not recoverable from ` +
+        `a list of the wrong length, so none of it is used`,
+    );
+  }
 
   let verdict: string | null = null;
   if (!(AI_REVIEW_VERDICT_KEY in obj)) {
@@ -856,7 +928,7 @@ export function readChangedFiles(path: string): string[] | null {
 export function readAiReviewFindingsFile(
   path: string,
   changedFiles?: readonly string[],
-  withheld?: Readonly<Record<string, string>>,
+  withheld?: readonly (string | null)[],
 ): AiReviewFindingsReading {
   let raw: string;
   try {
