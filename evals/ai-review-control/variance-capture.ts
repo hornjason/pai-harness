@@ -87,6 +87,7 @@ import { createHash } from "crypto";
 
 import {
   adjudicateFiling,
+  EXEMPTION_PREFIX,
   measuredCorpus,
   openFindings,
   type FilingAttempt,
@@ -275,6 +276,24 @@ function attemptOf(title: string, body: string): FilingAttempt {
 const PLANT_CLAIM_LINE = "Claim 1.";
 
 /**
+ * What a plant says to satisfy the `COMMENT_INSTEAD` gate (#1595), and why it
+ * is here for exactly the reason `PLANT_CLAIM_LINE` is.
+ *
+ * `adjudicateFiling` withholds a novel filing that declares no reason it
+ * cannot be a comment. Without this line `plant-allowed` — the known positive
+ * that proves the adjudicator is LIVE rather than refusing everything — lands
+ * on `COMMENT_INSTEAD` instead of `ALLOW`, the batch's `allowed` set empties,
+ * every plant "agrees", and the capture reports a variance of zero. That is
+ * this file's one failure mode and it is stated in its own docblock: *a zero
+ * that came from an instrument that stopped reporting.*
+ *
+ * Built from the library's own prefix and one of its own tokens rather than
+ * spelled here, so a plant can never declare something the closed list does
+ * not contain.
+ */
+const PLANT_EXEMPTION_LINE = `${EXEMPTION_PREFIX} out-of-pr-diff`;
+
+/**
  * The twin the duplicate plant collides with.
  *
  * Synthetic and carried in the plant's own `extraExisting`, so the plant is a
@@ -295,7 +314,7 @@ export const DUPLICATE_PLANT_TWIN: Finding = {
   body:
     "`zqxjPlantTwin()` in `lib/zqxj-plant-twin.ts` reports 60571 rows where the fixture holds 60572, " +
     "across 60573 entries. Measured 60571 against 60572 on 60573. " +
-    PLANT_CLAIM_LINE,
+    `${PLANT_CLAIM_LINE} ${PLANT_EXEMPTION_LINE}`,
 };
 
 /**
@@ -331,7 +350,7 @@ export function plantsFor(_existing: readonly Finding[], batch: string): BatchRo
         "`zqxjVarianceProbe` returns the wrong count and the off-by-one is silent",
         "`zqxjVarianceProbe()` in `lib/zqxj-variance-probe.ts` reports 81731 rows where the fixture holds " +
           "81732. Measured 81731 against 81732 on a corpus of 40771 entries. " +
-          PLANT_CLAIM_LINE,
+          `${PLANT_CLAIM_LINE} ${PLANT_EXEMPTION_LINE}`,
       ),
       holdOut: null,
     },

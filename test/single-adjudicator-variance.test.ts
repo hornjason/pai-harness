@@ -32,7 +32,7 @@ import {
   type VarianceCapture,
 } from "../evals/ai-review-control/variance-capture";
 import { quantityKeys, type Finding } from "../lib/finding-arbiter";
-import { adjudicateFiling, measuredCorpus } from "../lib/issue-filing-gate";
+import { adjudicateFiling, EXEMPTION_PREFIX, measuredCorpus } from "../lib/issue-filing-gate";
 
 /**
  * Both bodies name a `SUCCESS.md` claim, and the reason is the hold-out
@@ -51,6 +51,15 @@ import { adjudicateFiling, measuredCorpus } from "../lib/issue-filing-gate";
  * changed comparison set can no longer detect one. It would have gone green
  * again the moment anyone widened the hash to include the refusal reason,
  * which is the wrong fix, so the fixture is what moves.
+ *
+ * **Both bodies now also declare why they cannot be a comment, and it is the
+ * same failure one stage later (#1595).** `adjudicateFiling` withholds a
+ * novel filing that declares no such reason, so without these words the base
+ * run withholds the replay of `900` as `COMMENT_INSTEAD` and the twinned run
+ * withholds it as a duplicate — both withheld, the two sets identical, and
+ * the control detects nothing. Measured: this one case went red and no other
+ * in the file did, which is exactly the population that depends on a replay
+ * being ALLOWed in the base run.
  */
 const EXISTING: Finding[] = [
   {
@@ -58,14 +67,14 @@ const EXISTING: Finding[] = [
     title: "`loadThing` returns the wrong count and the off-by-one is silent",
     body:
       "`loadThing()` in `lib/thing.ts` reports 41 rows where the fixture holds 42. " +
-      "Measured 41 against 42. Claim 1.",
+      `Measured 41 against 42. Claim 1. ${EXEMPTION_PREFIX} out-of-pr-diff`,
   },
   {
     id: "901",
     title: "the scaffold crashes when `roles.json` is absent",
     body:
       "`scaffoldProject()` in `lib/scaffold-project.ts` throws on a tree with no roles file. " +
-      "3 of 7 consumers. Claim 1.",
+      `3 of 7 consumers. Claim 1. ${EXEMPTION_PREFIX} out-of-pr-diff`,
   },
 ];
 

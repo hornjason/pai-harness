@@ -103,10 +103,12 @@ import { githubSlugFromRemoteUrl, resolveRepoSlug } from "./branch-cleanup";
 import {
   createGitHubClient,
   listOpenIssues,
+  listPRs,
   parseOwnerRepo,
   TRUSTED_ASSOCIATIONS,
   type OpenIssuePage,
 } from "./github";
+import { branchOf } from "./launch-base";
 import {
   duplicateCollisions,
   symptomHash,
@@ -174,6 +176,149 @@ export function namedClaim(text: string): number | null {
     if (n >= 1 && n <= SUCCESS_CLAIM_COUNT) return n;
   }
   return null;
+}
+
+/**
+ * The closed list of reasons a finding cannot be a comment (#1595).
+ *
+ * **A declaration, not a judgement.** `lib/finding-arbiter.ts`'s header has
+ * said since it was written that `Disposition` defaults to `COMMENT` and that
+ * `ISSUE` requires an explicit declared reason from the caller
+ * (`Finding.outOfScope`). That decision never reached this file: the header
+ * above lists three stages that genuinely cannot run at a PreToolUse hook —
+ * no verifier group, no PR diff, no branch to scope against — and the
+ * out-of-scope declaration travelled with them without being one of them. It
+ * needs nothing but the command line this hook already holds.
+ *
+ * **Closed, and not free text.** A free-text `--reason` is the same bar as
+ * `NO_CLAIM`, which three of four filings on 2026-10-23 cleared in one
+ * sentence each. The research behind #1595 is that per-finding judgement
+ * drifts and categorical lists do not: Cloudflare's 1.2-findings-per-review
+ * comes from a *"What NOT to Flag"* exclusion list, and Google Tricorder's
+ * only published threshold acts on the analyzer rather than on the finding.
+ *
+ * **This is NOT a severity gate and NOT a worthiness score.** Both are
+ * excluded deliberately above and #1261 asked for duplicates-and-already-known
+ * in those words. Nothing here reads how bad the finding is. It reads whether
+ * somebody said which of three things is true of it.
+ *
+ * The values are the three #1595 names, verbatim. Adding a fourth is an edit
+ * to this object and a row in `test/issue-filing-gate.test.ts`; widening it to
+ * anything a caller can spell is the failure the whole mechanism exists to
+ * prevent.
+ */
+export const COMMENT_EXEMPTIONS = {
+  "out-of-pr-diff": "the subject is outside any open PR's diff",
+  "evidence-expires": "the evidence expires — logs, or a measurement population",
+  "green-check-lies": "it makes a green check lie",
+} as const;
+
+/** One of the three declarations above. There is no fourth and no `other`. */
+export type CommentExemption = keyof typeof COMMENT_EXEMPTIONS;
+
+/**
+ * The words a caller writes to declare one.
+ *
+ * In the title or body rather than in a flag, for two reasons. It is where
+ * `namedClaim` already looks, so a filing carries its declarations in one
+ * place and the chokepoint needs one reading; and the declaration ends up in
+ * the issue a human later opens, which is the only position from which the
+ * per-class not-useful rate this records can ever be interpreted.
+ *
+ * Deliberately not a `--label`: a label `gh` does not already know about
+ * fails the create outright, with a message about labels, which would hide
+ * this gate behind an unrelated error.
+ */
+export const EXEMPTION_PREFIX = "Cannot be a comment:";
+
+/**
+ * Which declaration a filing makes, or `null` for none.
+ *
+ * **The token must be one of the three.** A prefix with an unknown word after
+ * it reads as no declaration at all rather than as a declaration of something
+ * else, because the hole in every format-only check is a value nobody can
+ * look up — the same hole `namedClaim` closes by BOUNDING the claim number
+ * instead of merely requiring a digit.
+ *
+ * All matches are scanned and the first recognised one wins, so a body that
+ * discusses the mechanism before declaring against it still reads.
+ *
+ * ## The refusal text must not satisfy this
+ *
+ * `exemptionRefusal` lists the three tokens, and an agent that pastes a
+ * refusal into the body it re-files with would otherwise clear the gate using
+ * the gate's own words — an allowlist that names what it exempts becomes
+ * evidence those things were named. The list is rendered so that no line of
+ * it parses here, and `test/issue-filing-gate.test.ts` asserts that by feeding
+ * the refusal back through this function rather than by trusting the layout.
+ */
+export function declaredExemption(text: string): CommentExemption | null {
+  for (const m of text.matchAll(/cannot\s+be\s+a\s+comment\s*:\s*`?([a-z][a-z-]*)/gi)) {
+    const token = m[1].toLowerCase();
+    if (token in COMMENT_EXEMPTIONS) return token as CommentExemption;
+  }
+  return null;
+}
+
+/**
+ * Where the comment should go instead, when this gate refuses a filing.
+ *
+ * **A refusal that does not name the alternative becomes a refusal everybody
+ * routes around**, which is the argument `refusalMessage` already makes and
+ * the three VERIFY-lock bypasses in `lib/issue-create-override.ts` are what
+ * it looks like when it is ignored. #1595 asks for the target by name — *post
+ * this as a comment on PR #N or issue #M* — and for the message to say which.
+ *
+ * One discriminator, and `NO_PR` is a reading rather than a gap: a branch
+ * with no open PR is a real state an agent can act on (open the PR, or post
+ * on the issue the work is claimed under), and it is a different fact from a
+ * lookup that could not be performed. Collapsing them would be the Silent
+ * Default Substitution `.claude/rules/config-access.md` forbids, in the one
+ * sentence the agent actually reads.
+ */
+export type CommentTarget =
+  | { reading: "PR"; number: number; branch: string }
+  | { reading: "NO_PR"; branch: string }
+  | { reading: "UNMEASURED"; why: string };
+
+/**
+ * No target was looked up, said as a reading.
+ *
+ * The DEFAULT for `adjudicateFiling`, so the adjudicator stays a pure
+ * function of what it was handed and a caller that wants the network says so.
+ * `filingGate` supplies the live one; `evals/` and the unit rows do not, and
+ * an eval that silently opened a GitHub connection would be measuring the
+ * network as well as the adjudicator.
+ */
+export const UNRESOLVED_COMMENT_TARGET: CommentTarget = {
+  reading: "UNMEASURED",
+  why: "no comment-target reader was supplied, so no open PR was looked up",
+};
+
+/**
+ * The alternative, in one sentence that names it and says which kind it is.
+ *
+ * Composed HERE and not at the refusal site, because the reading is the only
+ * thing that knows which of the three states it is in — the same reason
+ * `CorpusReading` carries its own `why` rather than letting a caller write a
+ * sentence that can be false for the input it is emitted on.
+ */
+export function commentTargetSentence(target: CommentTarget): string {
+  switch (target.reading) {
+    case "PR":
+      return `Post it as a comment on PR #${target.number}, the open PR for branch \`${target.branch}\`.`;
+    case "NO_PR":
+      return (
+        `Branch \`${target.branch}\` has no open PR, so there is no diff to comment on yet: ` +
+        "post it on the issue this work is claimed under, or open the PR and comment there."
+      );
+    case "UNMEASURED":
+      return (
+        `UNMEASURED comment target — ${target.why}. The refusal stands: whether you declared a ` +
+        "reason is a fact about this command, not about the tracker. Post it on the PR or issue " +
+        "you are working, and say which."
+      );
+  }
 }
 
 /** How many open issues the dedupe compares against. */
@@ -293,6 +438,16 @@ export interface FilingAdjudication {
   duplicateOf: string[];
   collidingKeys: string[];
   symptomHash: string;
+  /**
+   * Which reason the caller declared, or `null` for none (#1595).
+   *
+   * Carried on EVERY adjudication and not only on the refusal, because the
+   * population is the point: the per-class not-useful rate #1595 asks to make
+   * computable is `(closed wontfix/duplicate/no-change) / (all closed in that
+   * class)`, and a column present only on the rows that were refused can
+   * never supply its denominator.
+   */
+  exemption: CommentExemption | null;
 }
 
 /**
@@ -385,6 +540,32 @@ export interface FilingLedgerRow {
    * states and only one of them is a reading.
    */
   refiledAfter: string | null;
+  /**
+   * Which of the three reasons the caller declared, or `null` (#1595).
+   *
+   * **Recorded on every row, kept and dropped alike, and that is the whole of
+   * #1595's third scope item.** The rate it makes computable is per CLASS —
+   * `(closed wontfix/duplicate/no-change) / (all closed in that class)` — and
+   * the class key is `symptomHash`, already on this row since #1261. So the
+   * join needs one new column and not a new store: group the rows by
+   * `symptomHash`, read the declared reason off each, and the denominator is
+   * every row in the group rather than only the ones somebody refused.
+   *
+   * The rate is deliberately NOT computed here or anywhere in #1595. Google
+   * Tricorder's 10%/25% thresholds act on an ANALYZER over a population of a
+   * reviewer's clicks; a closed-as-wontfix tracker issue costs an agent a
+   * whole context, so the ratio is borrowed and the denominator is different.
+   * Writing the column is what makes the question answerable later; writing a
+   * threshold now would be the same unmeasured judgement this gate refuses.
+   *
+   * `null` is honest on three different rows and they are not told apart
+   * here: a refused filing that declared nothing, an overridden one, and the
+   * rows `scripts/arbitrate-finding.ts` and `lib/ai-review-jury.ts` write,
+   * where no command line exists to carry a declaration. `refusal` and
+   * `emitted` already separate those three, so a second encoding of the same
+   * split would be a decider with a spare.
+   */
+  exemption: CommentExemption | null;
 }
 
 /**
@@ -527,6 +708,29 @@ export function readBodyFile(path: string, limit: number = MAX_BODY_FILE_BYTES):
 }
 
 /**
+ * A resolved clause, as a `Finding` — the ONE binding (#1595).
+ *
+ * `adjudicateFiling` resolved this inline and `filingGate` now needs the same
+ * object to compare a clause against its own siblings. Two spellings of "what
+ * finding is this command filing" would be two deciders for one question, and
+ * the second one always agrees with the first until the day it does not
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+ *
+ * `body` is `null` for a `--body-file` that could not be read, which is the
+ * UNMEASURED arm downstream; `finding.body` falls back to the inline value so
+ * the keys are taken over whatever text there actually is. Those are
+ * deliberately different fields and not one: an empty body that WAS read and
+ * a body nobody could read are different facts.
+ */
+export function filingFinding(
+  attempt: FilingAttempt,
+  readBody: (path: string) => string | null = readBodyFile,
+): { body: string | null; finding: Finding } {
+  const body = attempt.bodyFile === null ? attempt.body : readBody(attempt.bodyFile);
+  return { body, finding: { id: UNFILED_ID, title: attempt.title, body: body ?? attempt.body } };
+}
+
+/**
  * The single place that decides whether a filing may proceed.
  *
  * `readExisting` is a thunk and not a value so the `gh issue list` is never
@@ -540,6 +744,7 @@ export async function adjudicateFiling(
   attempt: FilingAttempt,
   readExisting: () => Promise<CorpusReading>,
   readBody: (path: string) => string | null = readBodyFile,
+  readTarget: () => Promise<CommentTarget> = async () => UNRESOLVED_COMMENT_TARGET,
 ): Promise<FilingAdjudication> {
   // ── where is the body? ──
   //
@@ -553,14 +758,15 @@ export async function adjudicateFiling(
   // not comparable: this is one bounded local `readFileSync`, the thing that
   // doctrine protects is a network round trip to the GitHub API. Paying it
   // first buys the category stage the body it classifies on.
-  const body = attempt.bodyFile === null ? attempt.body : readBody(attempt.bodyFile);
-  const finding: Finding = { id: UNFILED_ID, title: attempt.title, body: body ?? attempt.body };
+  const { body, finding } = filingFinding(attempt, readBody);
   const category = classifyCategory(finding);
+  const declared = declaredExemption(`${attempt.title}\n${body ?? attempt.body}`);
   const base = {
     category,
     symptomHash: symptomHash(finding),
     duplicateOf: [] as string[],
     collidingKeys: [] as string[],
+    exemption: declared,
   };
 
   // ── is it the kind we post at all? ──
@@ -707,14 +913,82 @@ export async function adjudicateFiling(
     };
   }
 
+  // ── it says what it moves. does anybody say why it cannot be a COMMENT? ──
+  //
+  // **The stage #1595 is about, and the one the header above was missing.**
+  // Everything before this asks whether the finding is worth posting. This
+  // one asks the question the arbiter's own docblock says comes first — *the
+  // default is a comment, not an issue* — and nothing on the live filing path
+  // asked it. Measured when #1595 was filed: 772 issues ever, 48 open, 3
+  // older than three days, and 70–85% of everything closed each day since
+  // 2026-10-20 had been filed less than six hours before it closed. Filing
+  // tracked closing almost exactly. A tracker that is an output of the review
+  // loop cannot be drained by closing faster.
+  //
+  // **LAST, and after `NO_CLAIM` specifically.** The cost doctrine would put
+  // a regex over a string already in hand first, and first is wrong for the
+  // reason the stage above gives: a duplicate must be refused as DUPLICATE
+  // and an UNMEASURED tracker must stay UNMEASURED, because a policy refusal
+  // that outranks a reading failure is a reading failure nobody ever sees.
+  // Only an ALLOW reaches here, so this can mask nothing.
+  //
+  // After `NO_CLAIM` rather than before it, which is the one ordering choice
+  // here worth defending. Putting it first makes `NO_CLAIM` unreachable for
+  // the common filing — a shipped gate deleted as a side effect of adding
+  // one — and the round trip it would save does not exist: `refusalMessage`
+  // already tells every refused filing to resolve it in the PR or answer it
+  // in a comment, so a `NO_CLAIM` refusal has already routed the agent here.
+  //
+  // **A declaration, never an inference.** There is no heuristic that reads
+  // "this looks out of scope", because an inferred exception is exactly how a
+  // filing default comes back — `Finding.outOfScope` says so in those words.
+  if (declared === null) {
+    return {
+      ...base,
+      outcome: "REFUSE",
+      refusal: "COMMENT_INSTEAD",
+      reason: exemptionReason(await readTarget()),
+    };
+  }
+
   return {
     ...base,
     outcome: "ALLOW",
     refusal: null,
     reason:
       `no open issue shares this symptom, ${category} is not a dropped category, ` +
-      `and it names SUCCESS.md claim ${namedClaim(`${attempt.title}\n${body}`)}`,
+      `it names SUCCESS.md claim ${namedClaim(`${attempt.title}\n${body}`)}, and it declares ` +
+      `\`${declared}\` — ${COMMENT_EXEMPTIONS[declared]}`,
   };
+}
+
+/**
+ * Why this filing was refused, and where the comment goes instead.
+ *
+ * ## The three tokens are rendered so that this sentence cannot satisfy the gate
+ *
+ * An agent that re-files after reading a refusal pastes the refusal. If the
+ * list below spelled `Cannot be a comment: out-of-pr-diff` the gate's own
+ * words would clear the gate — an allowlist that names what it exempts
+ * becomes evidence those things were named. So the prefix never appears
+ * adjacent to a token: the instruction line carries a `<placeholder>`, which
+ * `declaredExemption` does not match, and the tokens are listed on their own
+ * lines with no prefix. `test/issue-filing-gate.test.ts` feeds this string
+ * back through `declaredExemption` rather than trusting the layout.
+ */
+export function exemptionReason(target: CommentTarget): string {
+  return [
+    "nobody declared a reason this finding cannot be a comment, and a comment is the default.",
+    "",
+    `  ${commentTargetSentence(target)}`,
+    "",
+    "  If filing genuinely IS the exception, say which of these three is true of it, on its",
+    `  own line in the title or body, as \`${EXEMPTION_PREFIX} <one-token-from-below>\`:`,
+    "",
+    ...Object.entries(COMMENT_EXEMPTIONS).map(([token, meaning]) => `      ${token} — ${meaning}`),
+    "",
+    "  The list is closed. A reason that is not one of those three is a reason to comment.",
+  ].join("\n");
 }
 
 /**
@@ -869,6 +1143,64 @@ export async function openFindings(
     return unmeasuredCorpus(
       "the open-issue set could not be read, so whether this symptom is already filed was never asked",
     );
+  }
+}
+
+/**
+ * The open PR for this working directory's branch — the comment target.
+ *
+ * **Only ever called on the refusal arm**, so the allow path pays nothing for
+ * it. The reading is composed from two probes and neither may be guessed:
+ *
+ * - the branch, through `branchOf` in `lib/launch-base.ts` — ONE binding for
+ *   "what branch is this directory on", rather than a second `rev-parse`
+ *   here that would agree with it until the day it did not;
+ * - the open PRs whose head is that branch, through the same Octokit client
+ *   and the same `withTimeout` ceiling the corpus read uses.
+ *
+ * `HEAD` is filtered: a detached checkout has no branch to query a PR by, and
+ * `head=owner:HEAD` would return an empty list that reads exactly like a
+ * branch with no PR open. Two states, one observable — so the one that was
+ * never asked says UNMEASURED.
+ *
+ * Every failure is UNMEASURED carrying its own `why`, never `NO_PR`. A
+ * missing token, a 403 and a rate limit are all states where nobody looked,
+ * and "this branch has no open PR" is a claim about the tracker. The refusal
+ * stands either way: whether a reason was declared is a fact about the
+ * command line, and the target is the helpful half of the sentence rather
+ * than the deciding one.
+ */
+export async function openPrForBranch(
+  projectRoot: string,
+  repo: string | null = null,
+): Promise<CommentTarget> {
+  const branch = branchOf(projectRoot);
+  if (branch === null || branch === "HEAD") {
+    return {
+      reading: "UNMEASURED",
+      why:
+        branch === "HEAD"
+          ? `\`${projectRoot}\` is a detached checkout, so there is no branch to find a PR for`
+          : `the branch of \`${projectRoot}\` could not be read`,
+    };
+  }
+  const slug = corpusSlug(projectRoot, repo);
+  if (slug === null) {
+    return { reading: "UNMEASURED", why: "no repository slug resolved, so no PR list was asked for" };
+  }
+  try {
+    const { owner } = parseOwnerRepo(slug);
+    const prs = await withTimeout(
+      listPRs(createGitHubClient(), slug, { state: "open", head: `${owner}:${branch}`, per_page: 5 }),
+      OPEN_ISSUE_TIMEOUT_MS,
+    );
+    const number = prs.find(p => typeof p?.number === "number")?.number;
+    return number === undefined ? { reading: "NO_PR", branch } : { reading: "PR", number, branch };
+  } catch {
+    return {
+      reading: "UNMEASURED",
+      why: `the open PRs of ${slug} could not be read, so the PR for \`${branch}\` was never found`,
+    };
   }
 }
 
@@ -1228,6 +1560,12 @@ export async function filingGate(
     readExisting?: (projectRoot: string, repo: string | null) => Promise<CorpusReading>;
     /** The adjudications already on the ledger. `null` means unreadable. */
     readLedger?: () => FilingLedgerRow[] | null;
+    /**
+     * Where a comment should go instead, when a filing is refused for having
+     * declared no reason (#1595). Injectable for the same reason
+     * `readExisting` is: the live one talks to GitHub.
+     */
+    readTarget?: (projectRoot: string, repo: string | null) => Promise<CommentTarget>;
   },
 ): Promise<FilingGateReading> {
   const attempts = filingAttempts(cmd);
@@ -1251,6 +1589,22 @@ export async function filingGate(
     return started;
   };
 
+  // The comment target, cached per tracker exactly as the corpus is, and
+  // LAZY in a way the corpus is not: the thunk is only called on the
+  // COMMENT_INSTEAD arm, so a command every clause of which is allowed pays
+  // nothing for it. A hook has no retry and no patience to spend on a read
+  // that only composes a sentence.
+  const readTarget = options.readTarget ?? openPrForBranch;
+  const targets = new Map<string, Promise<CommentTarget>>();
+  const targetFor = (repo: string | null) => {
+    const key = repo ?? "";
+    const hit = targets.get(key);
+    if (hit !== undefined) return hit;
+    const started = readTarget(options.projectRoot, repo);
+    targets.set(key, started);
+    return started;
+  };
+
   const rows: FilingLedgerRow[] = [];
   const refusals: string[] = [];
   const notes: string[] = [];
@@ -1267,8 +1621,61 @@ export async function filingGate(
   const priorRows = (options.readLedger ?? (() => readLedgerRows()))();
   if (priorRows === null) notes.push(unreadableLedgerNote());
 
+  // ── One issue per finding CLASS per run, never per instance (#1595) ──
+  //
+  // **Decided here and not in `adjudicateFiling`, because the unit is the
+  // COMMAND.** `markBlockedCommand` is the same shape for the same reason: a
+  // property of several clauses together cannot be read by a function that
+  // sees one. *"Flag the class of bug, so the author fixes every instance,
+  // not one line"* is CRC-N3, and this is its hook-side half — two clauses
+  // sharing a class are one item saying *every instance*.
+  //
+  // Every sibling carries its CLAUSE INDEX as its id. `UNFILED_ID` for all of
+  // them would make the comparison a no-op in exactly the configuration it is
+  // written for, which `lib/finding-arbiter.ts` records happening once
+  // already: *"treating the label as an identity is what made the in-batch
+  // dedupe a no-op"*.
+  //
+  // Only clauses that CLEARED become siblings. The refusal says "fold it into
+  // clause N", and that is only an instruction worth following if clause N is
+  // itself going to be filed.
+  const siblings: Finding[] = [];
+  const siblingTitles = new Map<string, string>();
+
   for (const [index, attempt] of attempts.entries()) {
-    const verdict = await adjudicateFiling(attempt, () => readFor(attempt.repo));
+    const read1 = await adjudicateFiling(
+      attempt,
+      () => readFor(attempt.repo),
+      readBodyFile,
+      () => targetFor(attempt.repo),
+    );
+    // The in-run class check, applied to anything the per-filing stages did
+    // not already refuse. It converts an UNMEASURED as well as an ALLOW, and
+    // that is deliberate: this reading needs no tracker, so an unreadable
+    // tracker is no reason to let one command file a class twice. The note
+    // below is keyed off `read1` rather than `verdict` so the unreadable
+    // tracker is still said out loud when that happens.
+    const { finding } = filingFinding(attempt);
+    const sameClass =
+      read1.outcome === "REFUSE" ? [] : duplicateCollisions(finding, siblings);
+    const verdict: FilingAdjudication =
+      sameClass.length === 0
+        ? read1
+        : {
+            ...read1,
+            outcome: "REFUSE",
+            refusal: "SAME_CLASS_IN_RUN",
+            collidingKeys: sameClass[0].keys,
+            // NOT `duplicateOf`: that field holds ISSUE numbers a reader can
+            // open, and a clause index is not one. The reason names the
+            // clause instead.
+            reason:
+              `clause ${Number(sameClass[0].id) + 1} of this same command already files this ` +
+              `class — "${siblingTitles.get(sameClass[0].id)}" — sharing ` +
+              `${sameClass[0].keys.length} key(s): ${sameClass[0].keys.slice(0, MAX_QUOTED_KEYS).join(", ")}. ` +
+              "One issue per finding class per run, never per instance: fold this instance into " +
+              "that filing and say *every instance* in it, rather than filing the second one.",
+          };
     const labelled = attempt.labels.includes(FILING_OVERRIDE_LABEL);
     const prior = priorRows === null ? null : priorRefusalFor(attempt.title, priorRows);
     // **An override waives A REFUSAL, and the refusal need not be this
@@ -1310,10 +1717,24 @@ export async function filingGate(
       duplicateOf: verdict.duplicateOf.length > 0 ? verdict.duplicateOf : (prior?.duplicateOf ?? []),
       overridden,
       refiledAfter: prior?.at ?? null,
+      exemption: verdict.exemption,
     });
 
+    // A cleared clause is what a later clause of this command is compared
+    // against. Pushed AFTER the row, so the clause never collides with
+    // itself — a self-collision would refuse every single-clause filing and
+    // read exactly like a gate that works.
+    if (cleared) {
+      siblings.push({ ...finding, id: String(index) });
+      siblingTitles.set(String(index), attempt.title);
+    }
+
     if (verdict.outcome === "REFUSE" && !overridden) refusals.push(refusalMessage(verdict));
-    if (verdict.outcome === "UNMEASURED") notes.push(unmeasuredNote(verdict));
+    // `read1`, never `verdict`: a clause whose tracker could not be read AND
+    // whose class a sibling already files is both facts at once, and the
+    // conversion above keeps only the second. An UNMEASURED nobody sees is
+    // the silent pass this file's header exists to prevent.
+    if (read1.outcome === "UNMEASURED") notes.push(unmeasuredNote(read1));
     if (overridden) notes.push(overrideNote(verdict, prior));
     // A re-draft that cleared the gate on its own is not refused and not
     // blocked — the gate does not get stricter here (#1536). It is SAID, so

@@ -31,7 +31,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
@@ -64,8 +64,16 @@ import {
   FILING_OVERRIDE_LABEL,
   LEDGER_SESSION_ENV,
   MAX_KEYS_PER_EXISTING_ISSUE,
+  COMMENT_EXEMPTIONS,
+  EXEMPTION_PREFIX,
+  commentTargetSentence,
+  declaredExemption,
+  exemptionReason,
+  filingFinding,
+  type CommentTarget,
   type FilingLedgerRow,
 } from "../lib/issue-filing-gate";
+import { DROPPED_CATEGORIES } from "../lib/finding-jury";
 import {
   readFindingOutcomes,
   summariseFindingOutcomes,
@@ -135,16 +143,33 @@ const DROPPED_FILING =
   '--body "`legalValues` in lib/config-loader.ts is not printed when the check refuses."';
 
 /**
+ * What every ALLOW fixture in this file must now say, as the caller types it.
+ *
+ * One constant, built from the library's own prefix and one of its own
+ * tokens, so a fixture cannot declare something `declaredExemption` does not
+ * accept and no spelling of the declaration lives in two places.
+ */
+const DECLARED = `${EXEMPTION_PREFIX} out-of-pr-diff`;
+
+/**
  * A novel correctness finding. Must be allowed.
  *
- * It names a claim because every ALLOW now has to: the last stage of
- * `adjudicateFiling` converts a claimless ALLOW into `NO_CLAIM`. Measured when
- * that stage landed — 17 of this file's cases went red, all of them ALLOW
- * controls, which is the population it was built to catch.
+ * It names a claim because every ALLOW has to: `adjudicateFiling` converts a
+ * claimless ALLOW into `NO_CLAIM`. Measured when that stage landed — 17 of
+ * this file's cases went red, all of them ALLOW controls.
+ *
+ * It declares an exemption for the same reason, since #1595: a filing that
+ * declares no reason it cannot be a comment is `COMMENT_INSTEAD`. Measured
+ * when THAT stage landed — **25** of this file's cases went red, every one an
+ * ALLOW control and not one of them for an unrelated reason, which is the
+ * population it was built to catch.
  */
+const NOVEL_BODY =
+  `\`pullRequestCache\` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4. ${DECLARED}`;
+
 const NOVEL_FILING =
   'gh issue create --title "pullRequestCache is never invalidated" ' +
-  '--body "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4."';
+  `--body ${JSON.stringify(NOVEL_BODY)}`;
 
 /**
  * The differential control the DUPLICATE row needs.
@@ -158,7 +183,7 @@ const NOVEL_FILING =
 const SAME_SYMBOL_NEW_READING =
   'gh issue create --title "retryBudget retries too often on a short sweep" ' +
   '--body "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts ' +
-  'completes 88 of 97. Claim 4."';
+  `completes 88 of 97. Claim 4. ${DECLARED}"`;
 
 interface HookReading {
   /** The parsed stdout payload, or `null` when the hook printed nothing. */
@@ -405,7 +430,7 @@ describe("#1261 the parts the decision is built from", () => {
     const v = await adjudicateFiling(
       fromFile("/planted/body.md"),
       tracker,
-      () => "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4.",
+      () => NOVEL_BODY,
     );
     expect(v.outcome).toBe("ALLOW");
   });
@@ -538,7 +563,7 @@ describe("#1261 the hook reaches the adjudication — read on stdout, not on the
    */
   test("FG-22 CONTROL: a NOVEL finding arriving by --body-file is allowed", () => {
     const at = join(scratch, "fg22-body.md");
-    writeFileSync(at, "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4.", "utf-8");
+    writeFileSync(at, NOVEL_BODY, "utf-8");
     const r = runHook(HOOK, `gh issue create --title "pullRequestCache is never invalidated" --body-file ${at}`);
     expect(r.blocked).toBe(false);
   });
@@ -593,7 +618,7 @@ describe("#1261 the four suppression classes", () => {
   // nothing.
   const STYLE_TITLE = "Typo in the retry comment";
   const REAL_TITLE = "retryBudget drops frames on resume";
-  const BODY = '--body "`retryBudget` in lib/pr-cache.ts holds 72 entries. Claim 4."';
+  const BODY = `--body "\`retryBudget\` in lib/pr-cache.ts holds 72 entries. Claim 4. ${DECLARED}"`;
 
   test("FG-28 BASELINE: the LAST --title decides, so a trailing style title blocks", () => {
     const [a] = filingAttempts(`gh issue create --title "${REAL_TITLE}" --title "${STYLE_TITLE}" ${BODY}`);
@@ -1276,6 +1301,7 @@ describe("FG-90..FG-96: a blocked command filed nothing (#1344)", () => {
       duplicateOf: [],
       overridden: false,
       refiledAfter: null,
+      exemption: null,
       ...over,
     });
     const refused = row({
@@ -1924,7 +1950,7 @@ describe("FG-79..FG-89: a filing names the claim it moves", () => {
     // refused" rather than "a claimless filing is refused".
     const withClaim = claimless(
       "pullRequestCache is never invalidated",
-      "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4.",
+      `\`pullRequestCache\` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4. ${DECLARED}`,
     );
     const v = await adjudicateFiling(filingAttempts(withClaim)[0], async () => measuredCorpus([]));
     expect(v.outcome).toBe("ALLOW");
@@ -1936,7 +1962,7 @@ describe("FG-79..FG-89: a filing names the claim it moves", () => {
       filingAttempts(
         claimless(
           "Claim 4: pullRequestCache is never invalidated",
-          "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours.",
+          `\`pullRequestCache\` in lib/pr-cache.ts holds 72 entries for 36 hours. ${DECLARED}`,
         ),
       )[0],
       async () => measuredCorpus([]),
@@ -2077,7 +2103,7 @@ describe("FG-100..FG-103: an override is a claim about a prior refusal", () => {
   const REDRAFT =
     `gh issue create --title ${JSON.stringify(TITLE)} ` +
     '--body "Overriding the arbiter: the issue it named is a different defect, about a cache. ' +
-    'This one is about a sweep abandoning work it had already started. Claim 4."';
+    `This one is about a sweep abandoning work it had already started. Claim 4. ${DECLARED}"`;
 
   const rowsFor = (title: string) => ledgerRows().filter(r => r.title === title);
 
@@ -2173,6 +2199,7 @@ describe("FG-100..FG-103: an override is a claim about a prior refusal", () => {
       duplicateOf: ["900"],
       overridden: false,
       refiledAfter: null,
+      exemption: null,
     };
     const older = { ...base, at: "2026-10-24T09:00:00.000Z" };
     // The most recent wins, and the walk must not depend on file order.
@@ -2200,5 +2227,437 @@ describe("FG-100..FG-103: an override is a claim about a prior refusal", () => {
       priorRefusalFor(TITLE, [{ ...base, withheldBy: COMMAND_BLOCKED }]),
       "and nor was a clause the command blocked before its own verdict landed",
     ).toBeNull();
+  });
+});
+
+/**
+ * FG-120..FG-139: not filing is the default, and the gate asks (#1595).
+ *
+ * `lib/finding-arbiter.ts` decided this in its own docblock — *"THE DEFAULT
+ * IS A COMMENT, NOT AN ISSUE … `Disposition` defaults to `COMMENT`, `ISSUE`
+ * requires an explicit declared reason from the caller"* — and the decision
+ * never reached the path agents use. The hook ran category, dedupe and
+ * `NO_CLAIM`, and none of the three asks *should this have been a comment?*
+ *
+ * Measured when #1595 was filed: 772 issues ever, 48 open, 3 older than three
+ * days, and 70–85% of everything closed each day since 2026-10-20 had been
+ * filed under six hours before it closed. Filing tracked closing almost
+ * exactly — 57 filed against 53 closed that day, 125 against 109 two days
+ * earlier — while `open` stayed flat. The hook-side half of the CRC-N3 item
+ * about flagging a class rather than an instance is the second block below.
+ *
+ * ## This gate's failure mode is SILENCE, so the controls are the deliverable
+ *
+ * A declaration check that always passes refuses nothing and looks exactly
+ * like a declaration check everybody satisfies. Four properties, and the
+ * third is the one a careless version of this file would miss:
+ *
+ * 1. undeclared is REFUSED, and the refusal names the comment target;
+ * 2. declared is ALLOWED — a gate that refuses everything is not a bar, and
+ *    `lib/issue-filing-gate.ts`'s own header warns against exactly that;
+ * 3. a mutant that makes the reason check ALWAYS PASS turns a case red.
+ *    **The mutant a parse-only test misses is `M1`**: `adjudicateFiling`
+ *    still calls `declaredExemption`, still gets the right answer out of it,
+ *    and never acts on it. Every assertion about parsing stays green under
+ *    M1 — only an assertion about the VERDICT moves, which is why FG-136
+ *    reads `outcome` and not `exemption`;
+ * 4. the population is asserted: N filings in, N rows on the ledger. An
+ *    absent row is UNMEASURED, never an empty population.
+ *
+ * ## Predicted before running, as values
+ *
+ * Every row below carries its predicted value in its assertion rather than a
+ * direction, because "I expect this to fail" cannot be wrong. The one
+ * prediction that was WRONG when this block was first run is recorded at
+ * FG-133, and it is kept rather than quietly corrected.
+ */
+describe("FG-120..FG-135: a filing declares why it cannot be a comment", () => {
+  /** The three readings of a comment target, as the gate may be handed them. */
+  const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
+  const noPr: CommentTarget = { reading: "NO_PR", branch: "rg/1595-filing-default" };
+  const unknownTarget: CommentTarget = { reading: "UNMEASURED", why: "the API said 403" };
+
+  /**
+   * A novel, claim-naming correctness finding that declares NOTHING.
+   *
+   * Every stage before the new one must clear it, or this block would be
+   * measuring the stage it shares an input with rather than the new one.
+   */
+  const UNDECLARED =
+    'gh issue create --title "zqxjSweepBudget abandons a sweep it started" ' +
+    '--body "`zqxjSweepBudget` in lib/zqxj-sweep.ts drops 31 of 44 commands, over 9107 runs. Claim 4."';
+
+  /** The same filing, declaring one of the three. The only axis that moves. */
+  const DECLARED_FILING = `${UNDECLARED.slice(0, -1)} ${DECLARED}"`;
+
+  const allow = async () => measuredCorpus([]);
+  const gateOn = (cmd: string, target: CommentTarget = onPr) =>
+    filingGate(cmd, {
+      projectRoot: scratch,
+      readExisting: allow,
+      readLedger: () => [],
+      readTarget: async () => target,
+    });
+
+  test("FG-120: a filing declaring no reason it cannot be a comment is REFUSED", async () => {
+    const v = await adjudicateFiling(filingAttempts(UNDECLARED)[0], allow);
+    expect(v.outcome).toBe("REFUSE");
+    expect(v.refusal).toBe("COMMENT_INSTEAD");
+    // The premise, asserted rather than assumed: no EARLIER stage is what
+    // refused it. Without this the row could be witnessing the dedupe.
+    //
+    // Through `DROPPED_CATEGORIES` and not against a literal category name:
+    // the first spelling asserted `"correctness"` and the classifier returns
+    // `"unclassified"` for this fixture, which is a true statement about the
+    // classifier and NOT the property being claimed here. The property is
+    // that the category stage did not drop it.
+    expect(DROPPED_CATEGORIES.has(v.category), `the category stage cleared it (${v.category})`).toBe(false);
+    expect(v.duplicateOf, "and nothing collided, so the dedupe cleared it").toEqual([]);
+    expect(namedClaim(UNDECLARED), "and it names a claim, so NO_CLAIM is not what fired").toBe(4);
+  });
+
+  test("FG-121 CONTROL: the same filing WITH a declaration is ALLOWED", async () => {
+    // A gate that refuses everything is not a bar. This is the row that
+    // separates "the declaration is read" from "this fixture is refused",
+    // and the declaration sentence is the only thing that differs.
+    const v = await adjudicateFiling(filingAttempts(DECLARED_FILING)[0], allow);
+    expect(v.outcome).toBe("ALLOW");
+    expect(v.refusal).toBeNull();
+    expect(v.exemption).toBe("out-of-pr-diff");
+  });
+
+  test("FG-122: the refusal NAMES the comment target and says which", async () => {
+    const r = await gateOn(UNDECLARED, onPr);
+    expect(r.refusal ?? "", "the command is blocked and the refusal is what the agent reads")
+      .toContain("PR #1595");
+    expect(r.refusal ?? "").toContain("Post it as a comment");
+  });
+
+  test("FG-123: the three target readings produce three different sentences", () => {
+    // `NO_PR` is a READING and not a gap: a branch with no open PR is a state
+    // an agent can act on. Collapsing it into UNMEASURED would be the Silent
+    // Default Substitution `.claude/rules/config-access.md` forbids, in the
+    // one sentence the agent actually reads.
+    expect(commentTargetSentence(onPr)).toContain("PR #1595");
+    expect(commentTargetSentence(noPr)).toContain("no open PR");
+    expect(commentTargetSentence(noPr)).not.toContain("UNMEASURED");
+    expect(commentTargetSentence(unknownTarget)).toContain("UNMEASURED");
+    expect(commentTargetSentence(unknownTarget), "and the reading's OWN why, never one composed here")
+      .toContain("the API said 403");
+  });
+
+  test("FG-124: the list is CLOSED — a token outside it is not a declaration", () => {
+    // The hole every format-only check has, closed the way `namedClaim`
+    // closes it: by bounding the value rather than by shaping it. Free text
+    // here would be the same bar as NO_CLAIM, which three of four filings on
+    // 2026-10-23 cleared in one sentence each.
+    for (const token of Object.keys(COMMENT_EXEMPTIONS)) {
+      expect(declaredExemption(`${EXEMPTION_PREFIX} ${token}`), token).toBe(token);
+    }
+    for (const miss of [
+      `${EXEMPTION_PREFIX} because I need it tracked`,
+      `${EXEMPTION_PREFIX} out-of-scope`,
+      `${EXEMPTION_PREFIX} important`,
+      "out-of-pr-diff",
+      "This cannot be a comment.",
+    ]) {
+      expect(declaredExemption(miss), miss).toBeNull();
+    }
+  });
+
+  test("FG-125: the spellings a person actually types all read", () => {
+    for (const text of [
+      "Cannot be a comment: green-check-lies",
+      "cannot be a comment: green-check-lies",
+      "CANNOT BE A COMMENT: GREEN-CHECK-LIES",
+      "Cannot be a comment:  `green-check-lies`",
+      "…and so: Cannot be a comment: green-check-lies — the required check goes green.",
+      "Cannot be a comment: not-a-token\nCannot be a comment: green-check-lies",
+    ]) {
+      expect(declaredExemption(text), text).toBe("green-check-lies");
+    }
+  });
+
+  test("FG-126: the refusal's own text does NOT satisfy the gate", () => {
+    // An agent that re-files after a refusal pastes the refusal. An allowlist
+    // that names what it exempts becomes evidence those things were named —
+    // so the gate's own words must not clear the gate. Measured by feeding
+    // the string back through the reader rather than by trusting the layout.
+    for (const target of [onPr, noPr, unknownTarget]) {
+      const text = exemptionReason(target);
+      expect(text, "the refusal does list the tokens, or it is not actionable")
+        .toContain("out-of-pr-diff");
+      expect(declaredExemption(text), "and listing them does not declare one").toBeNull();
+    }
+  });
+
+  test("FG-127: a DUPLICATE is still DUPLICATE, not COMMENT_INSTEAD", async () => {
+    // "Already filed as #900" is actionable; "declare why this cannot be a
+    // comment" about a finding that should not be filed at all sends the
+    // agent to do the wrong work. The ordering, asserted rather than said.
+    const v = await adjudicateFiling(filingAttempts(DUPLICATE_FILING)[0], async () =>
+      measuredCorpus([{ id: "900", title: "retryBudget gives up early", body: DUPLICATE_BODY }]),
+    );
+    expect(v.refusal).toBe("DUPLICATE");
+  });
+
+  test("FG-128: a claimless, undeclared filing is NO_CLAIM — the order is deliberate", async () => {
+    // The one ordering choice in #1595 worth defending. Putting this stage
+    // before `NO_CLAIM` makes NO_CLAIM unreachable for the common filing —
+    // a shipped gate deleted as a side effect of adding one — and the round
+    // trip it would save does not exist: `refusalMessage` already tells
+    // every refused filing to fix it in the PR or answer it in a comment.
+    const claimless = UNDECLARED.replace(" Claim 4.", "");
+    expect(namedClaim(claimless), "the fixture really does name no claim").toBeNull();
+    const v = await adjudicateFiling(filingAttempts(claimless)[0], allow);
+    expect(v.refusal).toBe("NO_CLAIM");
+  });
+
+  test("FG-129: an UNMEASURED tracker outranks the declaration test", async () => {
+    // A policy refusal that outranks a reading failure is a reading failure
+    // nobody ever sees.
+    const v = await adjudicateFiling(filingAttempts(UNDECLARED)[0], async () =>
+      unmeasuredCorpus("the open-issue set could not be read"),
+    );
+    expect(v.outcome).toBe("UNMEASURED");
+    expect(v.refusal).toBe("UNMEASURED");
+  });
+
+  test("FG-130: the override label posts an undeclared filing, and it is counted", async () => {
+    const r = await gateOn(`${UNDECLARED} --label ${FILING_OVERRIDE_LABEL}`);
+    expect(r.refusal, "an exception somebody declared is still postable").toBeNull();
+    expect(r.rows[0].refusal, "and the refusal it waived is recorded, not erased")
+      .toBe("COMMENT_INSTEAD");
+    expect(r.rows[0].overridden).toBe(true);
+  });
+
+  test("FG-131: N filings in, N dispositions recorded — on the real ledger", async () => {
+    // The POPULATION, read off the file the hook appends to rather than off
+    // a return value. An absent row is UNMEASURED, never an empty
+    // population, so the count is asserted before anything about its
+    // contents — and the three clauses are deliberately three DIFFERENT
+    // outcomes, because three rows that agree cannot show a missing one.
+    const before = ledgerRows().length;
+    const r = runHook(HOOK, `${DECLARED_FILING} && ${UNDECLARED} && ${DROPPED_FILING}`);
+    expect(r.blocked, "the command is blocked, and every clause is still recorded").toBe(true);
+    const mine = ledgerRows().slice(before);
+    expect(mine, "three clauses in, three rows out").toHaveLength(3);
+    expect(
+      mine.map(x => x.disposition),
+      "and a disposition on every one of them, kept and dropped alike",
+    ).toEqual(["ISSUE", "DROP", "DROP"]);
+    expect(mine.map(x => x.refusal)).toEqual([null, "COMMENT_INSTEAD", "DROPPED_CATEGORY"]);
+  });
+
+  test("FG-132: the declared reason is on the row, allowed and refused alike", async () => {
+    // Scope item 3. The rate #1595 wants computable is per CLASS and its
+    // denominator is EVERY row in the class, so a column carried only on the
+    // refusals could never supply one. `symptomHash` is the class key and
+    // has been on the row since #1261, so this needs one new column.
+    const r = await gateOn(`${DECLARED_FILING} && ${UNDECLARED}`);
+    expect(r.rows.map(x => x.exemption)).toEqual(["out-of-pr-diff", null]);
+    expect(
+      r.rows.every(x => typeof x.symptomHash === "string" && x.symptomHash !== ""),
+      "and the class key the rate groups by is on both",
+    ).toBe(true);
+  });
+
+  test("FG-133: two clauses of one class in one command — the second is refused", async () => {
+    // **The prediction that was wrong.** Before running this block I
+    // predicted FG-66 and FG-71 — both of which file `NOVEL_FILING` twice in
+    // one command — would go red when this stage landed. They did not: they
+    // assert on row identity and row count, which a refusal does not move.
+    // So the in-run class check had to be asserted here, on the verdict,
+    // rather than inferred from a suite that stayed green.
+    const r = await gateOn(`${DECLARED_FILING} && ${DECLARED_FILING}`);
+    expect(r.rows.map(x => x.refusal)).toEqual([null, "SAME_CLASS_IN_RUN"]);
+    expect(r.refusal ?? "", "and the refusal names the clause to fold it into").toContain("clause 1");
+    expect(r.refusal ?? "").toContain("every instance");
+  });
+
+  test("FG-134 CONTROL: two clauses of DIFFERENT classes in one command both clean", async () => {
+    // Without this row FG-133 would be witnessing "a command with two
+    // clauses is refused", which is a gate on the `&&` and not on the class.
+    const r = await gateOn(`${DECLARED_FILING} && ${NOVEL_FILING}`);
+    expect(r.rows.map(x => x.refusal)).toEqual([null, null]);
+    expect(r.refusal).toBeNull();
+  });
+
+  test("FG-135: a clause never collides with ITSELF", async () => {
+    // The cheapest wrong implementation compares each clause against a list
+    // it has already been added to, which refuses every single-clause filing
+    // in the tree and reads exactly like a gate that works.
+    const r = await gateOn(DECLARED_FILING);
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0].refusal).toBeNull();
+  });
+
+  test("FG-136: `filingFinding` is the one binding both readers use", () => {
+    // Two spellings of "what finding is this command filing" would be two
+    // deciders for one question, and the second always agrees with the first
+    // until the day it does not.
+    const [attempt] = filingAttempts(DECLARED_FILING);
+    const { finding, body } = filingFinding(attempt);
+    expect(finding.title).toBe(attempt.title);
+    expect(body).toBe(attempt.body);
+    // A body-file that cannot be read: `body` is null, the finding still
+    // carries the inline text. Different fields, different facts.
+    const unreadable = filingFinding({ ...attempt, bodyFile: "/nope.md" }, () => null);
+    expect(unreadable.body).toBeNull();
+    expect(unreadable.finding.body).toBe(attempt.body);
+  });
+});
+
+/**
+ * FG-137..FG-139: the reason check, removed and observed (#1595).
+ *
+ * The mutant is a real copy of `lib/issue-filing-gate.ts`, not a predicate
+ * re-spelled in this file. `FG-68` records why that was not possible there —
+ * *"a mutant copy … in a scratch directory cannot resolve its own relative
+ * imports and would fail to LOAD, which on a count reads exactly like a guard
+ * that held"* — and `buildMutant` is the answer to it: every sibling of the
+ * real module is symlinked beside the mutant, so each relative import
+ * resolves to the code under test and nothing is rewritten.
+ *
+ * ## Four things the builder asserts rather than assumes
+ *
+ * - **the anchor appears exactly once**, or a mutation that did not apply
+ *   reads exactly like one that did;
+ * - **every relative import of the mutant source has a sibling in its
+ *   directory**, so a module-resolution death cannot be mistaken for a
+ *   refusal. Type-only imports are erased at transpile and need no sibling
+ *   at runtime; they are asserted anyway, because the cost is nothing and
+ *   the alternative is a rule about which imports count;
+ * - **each mutant gets its OWN directory.** Bun resolves a dynamic
+ *   `import()` against a cached listing of the containing directory, so two
+ *   mutants written into one scratch dir give row one a load and row two a
+ *   miss, with `existsSync` true for both — byte-identical to the mutant
+ *   being rejected on the merits;
+ * - **the mutant LOADS and still allows the declared filing**, read before
+ *   any mutation row below it.
+ *
+ * ## The two mutants, and which one a careless test misses
+ *
+ * | id | mutation | what it models |
+ * |---|---|---|
+ * | `M1` | `declared === null` → `false` | the gate PARSES the declaration and never acts on it |
+ * | `M2` | the closed-list membership test is dropped | the list is open: any word declares |
+ *
+ * **M1 is the one requiring care.** Under it `declaredExemption` is still
+ * called, still returns the right value, and still reaches the ledger row —
+ * so every assertion about parsing, and every assertion about `exemption`,
+ * stays green. Only an assertion on the VERDICT moves. FG-137 reads
+ * `outcome`, and FG-139 states the miss by measuring it: the field a
+ * parse-only test would have asserted is shown to be identical across the
+ * real gate and M1.
+ */
+describe("FG-137..FG-139: a mutant that always passes the reason check turns a case red", () => {
+  const LIB = join(REPO, "lib");
+  const UNIT = "issue-filing-gate.ts";
+
+  /**
+   * A real mutant of the module, in a directory of its own, built once.
+   *
+   * Memoised so a later row can reach an earlier row's mutant without
+   * depending on execution order and without a second `symlinkSync` over the
+   * same names — and so the directory-per-mutant property above holds by
+   * construction rather than by every caller remembering it.
+   */
+  const built = new Map<string, string>();
+  function buildMutant(name: string, anchor: string, replacement: string): string {
+    const already = built.get(name);
+    if (already !== undefined) return already;
+    const dir = join(scratch, `mut-${name}`);
+    mkdirSync(dir, { recursive: true });
+    const src = readFileSync(join(LIB, UNIT), "utf-8");
+    expect(src.split(anchor).length - 1, `the ${name} anchor must appear exactly once in ${UNIT}`).toBe(1);
+
+    const carried = new Set<string>();
+    for (const file of readdirSync(LIB)) {
+      if (file === UNIT) continue;
+      symlinkSync(join(LIB, file), join(dir, file));
+      carried.add(file);
+    }
+    // Asserted, not assumed: a missing sibling is a load failure, and a load
+    // failure reads as a refusal on every channel this battery watches.
+    const wanted = [...src.matchAll(/from "\.\/([A-Za-z0-9._-]+)"/g)].map(m => `${m[1]}.ts`);
+    expect(wanted.length, "the mutant really does import siblings").toBeGreaterThan(0);
+    expect(
+      wanted.filter(f => !carried.has(f)),
+      `every relative import of the mutant must have a sibling in ${dir}`,
+    ).toEqual([]);
+
+    const at = join(dir, UNIT);
+    writeFileSync(at, src.replace(anchor, replacement), "utf-8");
+    built.set(name, at);
+    return at;
+  }
+
+  /** `M1` — the declaration is read and never acted on. */
+  const M1 = "declared === null";
+  /** `M2` — the closed list stops being closed. */
+  const M2 = "if (token in COMMENT_EXEMPTIONS) return token as CommentExemption;";
+
+  const UNDECLARED =
+    'gh issue create --title "zqxjMutantProbe abandons a sweep it started" ' +
+    '--body "`zqxjMutantProbe` in lib/zqxj-mutant.ts drops 23 of 58 commands, over 7731 runs. Claim 4."';
+  const DECLARED_FILING = `${UNDECLARED.slice(0, -1)} ${DECLARED}"`;
+  const NONSENSE = `${UNDECLARED.slice(0, -1)} ${EXEMPTION_PREFIX} i-just-want-it-tracked"`;
+
+  type Gate = typeof import("../lib/issue-filing-gate");
+  const verdictOf = async (gate: Gate, cmd: string) =>
+    gate.adjudicateFiling(gate.filingAttempts(cmd)[0], async () => gate.measuredCorpus([]));
+
+  test("FG-137: M1 — the real gate REFUSES the undeclared filing and M1 allows it", async () => {
+    const mutant: Gate = await import(buildMutant("always-declared", M1, "false"));
+
+    // BASELINE FIRST. A mutant that failed to load throws above; a mutant
+    // that loaded but refuses everything would make the row below pass for
+    // the wrong reason, so the declared control is read before the mutation.
+    expect(
+      (await verdictOf(mutant, DECLARED_FILING)).outcome,
+      "the mutant must load and still ALLOW a declared filing",
+    ).toBe("ALLOW");
+
+    expect((await verdictOf(await import("../lib/issue-filing-gate"), UNDECLARED)).outcome).toBe("REFUSE");
+    expect(
+      (await verdictOf(mutant, UNDECLARED)).outcome,
+      "with the reason check removed, the undeclared filing sails through",
+    ).toBe("ALLOW");
+  });
+
+  test("FG-138: M2 — the closed list is what refuses an invented reason", async () => {
+    const mutant: Gate = await import(buildMutant("open-list", M2, "return token as CommentExemption;"));
+
+    expect(
+      (await verdictOf(mutant, DECLARED_FILING)).outcome,
+      "the mutant must load and still ALLOW a real declaration",
+    ).toBe("ALLOW");
+
+    const real = await import("../lib/issue-filing-gate");
+    expect(
+      (await verdictOf(real, NONSENSE)).refusal,
+      "an invented token is not a declaration",
+    ).toBe("COMMENT_INSTEAD");
+    expect(
+      (await verdictOf(mutant, NONSENSE)).outcome,
+      "and with the membership test gone, any word somebody types is one",
+    ).toBe("ALLOW");
+  });
+
+  test("FG-139: the field a PARSE-only test would assert is identical under M1", async () => {
+    // The miss, measured rather than described. `exemption` is what a test
+    // written to "check the reason was read" would assert, and it is the
+    // same value on the real gate and on a gate that ignores the reason
+    // entirely. A battery that only varied the input would never see it.
+    const mutant: Gate = await import(buildMutant("always-declared", M1, "false"));
+    const real = await import("../lib/issue-filing-gate");
+
+    const realV = await verdictOf(real, UNDECLARED);
+    const mutantV = await verdictOf(mutant, UNDECLARED);
+    expect(mutantV.exemption, "the parse agrees, so a parse assertion cannot tell them apart")
+      .toBe(realV.exemption);
+    expect(mutantV.outcome, "and the verdict does not, which is the only axis that moves")
+      .not.toBe(realV.outcome);
   });
 });
