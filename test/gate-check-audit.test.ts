@@ -275,6 +275,44 @@ describe("SC-2520, SC-2521: the audit's unit is the path, not the check body", (
     expect(unassertedWarnPaths(src)).toEqual([]);
   });
 
+  test("a sibling branch's return does not close the warn's path", () => {
+    // PR #1539's own AI review, high. The forward scan stopped at the first
+    // `return` at or above the warn's depth, wherever it sat — so a `return`
+    // belonging to a LATER, unrelated branch read as the warn's path leaving
+    // the check. Here the warn's own block closes without returning, the path
+    // merges back into the main flow, and it reaches an assertion that can
+    // fail. A warn only leaves the check if it reaches a `return` while still
+    // inside its own enclosing block.
+    const src = [
+      `test("a: warns, then merges back into the main flow", () => {`,
+      `  if (!a) {`,
+      `    console.warn("WARN: odd");`,
+      `  }`,
+      `  if (b) return;`,
+      `  expect(y, "m").toBe(true);`,
+      `});`,
+    ].join("\n");
+    expect(unassertedWarnPaths(src)).toEqual([]);
+    expect(checksThatCannotFail(src)).toEqual([]);
+  });
+
+  test("a braced sibling return does not close it either", () => {
+    // The same defect where the sibling's `return` sits DEEPER than the warn,
+    // so the depth dips below the warn's block and comes back up. A scan that
+    // only compares each token's own depth against the warn's cannot see the
+    // dip; the running minimum between them is what carries it.
+    const src = [
+      `test("a: warns, then a deeper sibling returns", () => {`,
+      `  if (!a) {`,
+      `    console.warn("WARN: odd");`,
+      `  }`,
+      `  if (b) { return; }`,
+      `  expect(y, "m").toBe(true);`,
+      `});`,
+    ].join("\n");
+    expect(unassertedWarnPaths(src)).toEqual([]);
+  });
+
   test("a bare tier gate is not named", () => {
     // THE OUTAGE CONTROL. `if (tier === "LIGHT") return;` opens most checks in
     // the suite. It is deliberate scoping, not a swallowed refusal, and a

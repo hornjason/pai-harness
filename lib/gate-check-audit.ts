@@ -224,7 +224,20 @@ const WARN_CALL = /^console\s*\.\s*warn\s*\(/;
 const EXPECT_CALL = /^expect\s*(?:<[^>()]*>)?\s*\(/;
 const RETURN_KEYWORD = /^return\b/;
 
-type PathToken = { kind: "expect" | "warn" | "return"; at: number; depth: number };
+type PathToken = {
+  kind: "expect" | "warn" | "return";
+  at: number;
+  depth: number;
+  /**
+   * The shallowest depth reached between the previous token and this one.
+   *
+   * Without it a forward scan can only compare each token's own depth against
+   * the warn's, which cannot see a block closing and re-opening in between —
+   * so a `return` inside a LATER, unrelated branch reads as the warn's own
+   * path leaving the check. PR #1539's review caught exactly that.
+   */
+  minBefore: number;
+};
 
 /**
  * Bracket-depth-aware token scan over a check body, skipping strings and
@@ -240,6 +253,11 @@ function pathTokens(body: string): { tokens: PathToken[]; assertDepthAt: Map<num
   const assertDepthAt = new Map<number, number | null>();
   let depth = 0;
   let assertDepth: number | null = null;
+  let minSinceToken = 0;
+  const push = (kind: PathToken["kind"], at: number) => {
+    tokens.push({ kind, at, depth, minBefore: Math.min(minSinceToken, depth) });
+    minSinceToken = depth;
+  };
   for (let i = 0; i < body.length; i++) {
     const c = body[i]!;
     const next = body[i + 1];
@@ -274,6 +292,7 @@ function pathTokens(body: string): { tokens: PathToken[]; assertDepthAt: Map<num
     if (c === "(" || c === "[" || c === "{") { depth++; continue; }
     if (c === ")" || c === "]" || c === "}") {
       depth--;
+      if (depth < minSinceToken) minSinceToken = depth;
       if (assertDepth !== null && depth < assertDepth) assertDepth = null;
       continue;
     }
@@ -283,13 +302,13 @@ function pathTokens(body: string): { tokens: PathToken[]; assertDepthAt: Map<num
     if (i > 0 && /[\w$.]/.test(body[i - 1]!)) continue;
     const rest = body.slice(i, i + 200);
     if (EXPECT_CALL.test(rest)) {
-      tokens.push({ kind: "expect", at: i, depth });
+      push("expect", i);
       assertDepth = assertDepth === null ? depth : Math.min(assertDepth, depth);
     } else if (WARN_CALL.test(rest)) {
-      tokens.push({ kind: "warn", at: i, depth });
+      push("warn", i);
       assertDepthAt.set(i, assertDepth);
     } else if (RETURN_KEYWORD.test(rest)) {
-      tokens.push({ kind: "return", at: i, depth });
+      push("return", i);
     }
   }
   return { tokens, assertDepthAt };
@@ -317,11 +336,19 @@ export function unassertedWarnPaths(source: string): WarnReturnPath[] {
       const warn = tokens[t]!;
       if (warn.kind !== "warn") continue;
       if (assertDepthAt.get(warn.at) !== null) continue;
-      let leaves = true;
+      // The warn leaves the check only if it reaches a `return` while still
+      // inside its OWN enclosing block. Once the running minimum drops below
+      // the warn's depth that block has closed, the path has merged back into
+      // the main flow, and every `return` and `expect` after that belongs to
+      // the flow rather than to this warn.
+      let leaves = false;
+      let runningMin = warn.depth;
       for (let u = t + 1; u < tokens.length; u++) {
         const after = tokens[u]!;
-        if (after.kind === "expect") { leaves = false; break; }
-        if (after.kind === "return" && after.depth <= warn.depth) break;
+        runningMin = Math.min(runningMin, after.minBefore);
+        if (runningMin < warn.depth) break;
+        if (after.kind === "expect") break;
+        if (after.kind === "return" && after.depth <= warn.depth) { leaves = true; break; }
       }
       if (!leaves) continue;
       out.push({
