@@ -154,6 +154,35 @@ describe("#363 SC-810: every documented bunx command actually runs", () => {
     }
   });
 
+  test("every invocation announces the version it is actually running", () => {
+    // The reading a CI log cannot otherwise take. `bunx rungate@<v>` is
+    // authored text wherever it appears, so the only thing that can say
+    // which version EXECUTED is the executing process.
+    //
+    // On stderr, not stdout, for two reasons that are both load-bearing.
+    // `ai-review.yml` captures the adjudicator with `2>&1`, so stderr
+    // reaches the log either way — nothing is lost. And `--version` exists
+    // to be read by a machine: a banner on stdout would make its output two
+    // lines, and every command's stdout becomes something a caller has to
+    // strip before parsing.
+    const r = runCli(["create-sc", "--list"]);
+    expect(r.status).toBe(0);
+    expect(r.stderr, "the CLI ran without saying which version it was").toContain(
+      `rungate-version: ${PKG.version}`,
+    );
+    expect(r.stdout, "the announcement contaminated machine-readable stdout").not.toContain(
+      "rungate-version:",
+    );
+  });
+
+  test("--version stays exactly one line on stdout", () => {
+    // The regression the banner is most likely to cause, asserted rather
+    // than reasoned about.
+    const r = runCli(["--version"]);
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe(PKG.version);
+  });
+
   test("the subcommand name is stripped before the script sees argv", () => {
     // The script reads process.argv.slice(2) at the top level. Forget the
     // rewrite and `create-sc` receives `["create-sc", "--list"]`, where
