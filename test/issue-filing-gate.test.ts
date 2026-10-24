@@ -54,6 +54,7 @@ import {
   measuredCorpus,
   namedClaim,
   openFindings,
+  openPrForBranch,
   priorRefusalFor,
   readBodyFile,
   readLedgerRows,
@@ -70,6 +71,7 @@ import {
   declaredExemption,
   exemptionReason,
   filingFinding,
+  type CommentExemption,
   type CommentTarget,
   type FilingLedgerRow,
 } from "../lib/issue-filing-gate";
@@ -2351,7 +2353,7 @@ describe("FG-120..FG-135: a filing declares why it cannot be a comment", () => {
     // closes it: by bounding the value rather than by shaping it. Free text
     // here would be the same bar as NO_CLAIM, which three of four filings on
     // 2026-10-23 cleared in one sentence each.
-    for (const token of Object.keys(COMMENT_EXEMPTIONS)) {
+    for (const token of Object.keys(COMMENT_EXEMPTIONS) as CommentExemption[]) {
       expect(declaredExemption(`${EXEMPTION_PREFIX} ${token}`), token).toBe(token);
     }
     for (const miss of [
@@ -2659,5 +2661,42 @@ describe("FG-137..FG-139: a mutant that always passes the reason check turns a c
       .toBe(realV.exemption);
     expect(mutantV.outcome, "and the verdict does not, which is the only axis that moves")
       .not.toBe(realV.outcome);
+  });
+
+  /**
+   * FG-140..FG-141: the live target resolver's two local arms.
+   *
+   * Only the arms that need no credential are asserted, and that is the
+   * point rather than a limitation: both of them are states that would
+   * otherwise be reported as `NO_PR`, which is a claim about the tracker.
+   * The `PR` arm needs a token and is measured by hand — against this
+   * worktree on 2026-10-24 `openPrForBranch` returned
+   * `{reading:"NO_PR",branch:"rg/1595-filing-default"}`, a real API call for
+   * a branch that had no PR open yet.
+   */
+  test("FG-140: a directory that is not a git repository is UNMEASURED, naming it", async () => {
+    const notARepo = join(scratch, "not-a-repo");
+    mkdirSync(notARepo, { recursive: true });
+    const t = await openPrForBranch(notARepo);
+    expect(t.reading, "nobody looked — that is not the same as no PR existing").toBe("UNMEASURED");
+    expect(t.reading === "UNMEASURED" ? t.why : "").toContain(notARepo);
+  });
+
+  test("FG-141: a DETACHED checkout is UNMEASURED, not a branch with no PR", async () => {
+    // The two states one observable would collapse: `head=owner:HEAD` returns
+    // an empty list, which is byte-identical to a branch nobody has opened a
+    // PR for. Only one of them is a reading.
+    const repo = join(scratch, "detached");
+    mkdirSync(repo, { recursive: true });
+    const git = (...args: string[]) =>
+      spawnSync("git", ["-C", repo, ...args], { encoding: "utf-8" });
+    git("init", "-q", "-b", "main");
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x");
+    const detach = git("checkout", "-q", "--detach");
+    expect(detach.status, "the fixture must really detach, or this row proves nothing").toBe(0);
+
+    const t = await openPrForBranch(repo);
+    expect(t.reading).toBe("UNMEASURED");
+    expect(t.reading === "UNMEASURED" ? t.why : "").toContain("detached");
   });
 });
