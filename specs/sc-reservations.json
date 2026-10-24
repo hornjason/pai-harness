@@ -72,14 +72,14 @@
       "from": 100,
       "to": 119,
       "namespace": "FG",
-      "note": "#1536 - the override must survive a re-drafted body. FG-90..99 is the highest declared block and FG-96 the highest id on main, so this sits above every declared block, which is what the allocator hands an owner who has none. Declared before any id is consumed. Delete when the PR merges."
+      "note": "#1536 - the override must survive a re-drafted body. FG-90..99 is the highest declared block and FG-96 the highest id on main, so this sits above every declared block, which is what the allocator hands an owner who has none. Declared before any id is consumed. FG-100..103 are consumed. Delete when the PR merges."
     },
     {
-      "owner": "rg/1536-arbiter-keys",
+      "owner": "rg/1536-arbiter-keys#AR",
       "from": 36,
       "to": 50,
       "namespace": "AR",
-      "note": "#1536 - a bare integer is not a symptom key. AR-21..35 is the highest declared block and AR-26 the highest id on main, so this sits above every declared block. Declared before any id is consumed. Delete when the PR merges."
+      "note": "#1536 - a bare integer is not a symptom key. AR-21..35 is the highest declared block and AR-26 the highest id on main, so this sits above every declared block. AR-36..39 are consumed. The owner is suffixed because `reservationFor` matches the owner string EXACTLY and returns the FIRST match, so one owner can hold at most one reachable block: declared as the bare branch name beside the FG entry above, this block was silently unreachable and `test/sc-reservation-store.test.ts` caught it on CI. One owner string per namespace, which is what every other entry here already does. Delete when the PR merges."
     }
   ]
 }
