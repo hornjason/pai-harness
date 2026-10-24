@@ -203,34 +203,83 @@ function skipRegex(src: string, start: number): number {
 
 // ── Argument extraction ───────────────────────────────────────────
 
-/** The first argument of the call whose `(` is at `open`, as source text. */
-export function firstArgument(src: string, open: number): string {
+/**
+ * Walk `src` from `at`, tracking bracket depth, and stop where `done` says.
+ *
+ * Shared by both argument scanners because both have to skip regex literals,
+ * and only one of them did. `match[1].replace(/`/g, "")` holds a BACKTICK
+ * inside a regex: read as a template-literal opener it swallows every line up
+ * to the next backtick, and the scanner returns an initialiser spanning
+ * unrelated statements. That put two `lib/conformity.ts` writes on the
+ * violation list for the word "spec" in prose four hundred lines away.
+ */
+function scanExpression(
+  src: string,
+  at: number,
+  done: (c: string, depth: number) => boolean,
+): number {
   let depth = 0;
-  let i = open;
-  const start = open + 1;
+  let i = at;
+  let prevSignificant = "";
   while (i < src.length) {
     const c = src[i];
     if (c === '"' || c === "'" || c === "`") {
       i = skipQuoted(src, i, c);
+      prevSignificant = c;
+      continue;
+    }
+    if (c === "/" && regexCanStartAfter(prevSignificant)) {
+      i = skipRegex(src, i);
+      prevSignificant = "/";
       continue;
     }
     if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") {
-      depth--;
-      if (depth === 0) return src.slice(start, i).trim();
-    } else if (c === "," && depth === 1) return src.slice(start, i).trim();
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    if (done(c, depth)) return i;
+    if (!/\s/.test(c)) prevSignificant = c;
     i++;
   }
-  return src.slice(start).trim();
+  return src.length;
 }
 
-/** The local initialiser of a bare identifier, or `""`. */
+/** The first argument of the call whose `(` is at `open`, as source text. */
+export function firstArgument(src: string, open: number): string {
+  const start = open + 1;
+  const end = scanExpression(
+    src,
+    open,
+    (c, depth) => (depth === 0 && ")]}".includes(c)) || (c === "," && depth === 1),
+  );
+  return src.slice(start, end).trim();
+}
+
+/**
+ * EVERY local initialiser of a bare identifier in the file, joined, or `""`.
+ *
+ * Every, not the first. This has no function-scope awareness — resolving one
+ * properly needs a parser, which this sweep deliberately is not — so the only
+ * question is which way it is allowed to be wrong. Reading the FIRST
+ * declaration is wrong in the **unsafe** direction: a file with
+ * `const filePath = join(outDir, "report.json")` in one function and
+ * `const filePath = join(specsDir, "NEW-SPEC.md")` in another would have its
+ * real spec write read through the report path, match nothing, and be
+ * silently omitted — the exact shape of miss #1552 exists to end, rebuilt
+ * inside the detector meant to catch it. Found by the AI review on this PR.
+ *
+ * Taking the union over-reports instead: a site is spec-targeting if ANY
+ * same-named binding in the file names a spec. An over-report costs one line
+ * in `NOT_A_SPEC_PATH` with a reason; an under-report costs an unguarded
+ * writer nobody can see.
+ */
 export function initialiserOf(src: string, name: string): string {
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) return "";
-  const decl = new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*(?::[^=\\n]+)?=\\s*`);
-  const m = decl.exec(src);
-  if (!m) return "";
-  return firstArgumentFromAssignment(src, m.index + m[0].length);
+  const decl = new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*(?::[^=\\n]+)?=\\s*`, "g");
+  const parts: string[] = [];
+  for (const m of src.matchAll(decl)) {
+    const init = firstArgumentFromAssignment(src, m.index + m[0].length);
+    if (init) parts.push(init);
+  }
+  return parts.join(" ");
 }
 
 /**
@@ -303,20 +352,8 @@ export function expandView(src: string, expr: string): string {
 
 /** The initialiser expression starting at `at`, to the end of the statement. */
 function firstArgumentFromAssignment(src: string, at: number): string {
-  let depth = 0;
-  let i = at;
-  while (i < src.length) {
-    const c = src[i];
-    if (c === '"' || c === "'" || c === "`") {
-      i = skipQuoted(src, i, c);
-      continue;
-    }
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") depth--;
-    else if (depth === 0 && (c === ";" || c === "\n")) break;
-    i++;
-  }
-  return src.slice(at, i).trim();
+  const end = scanExpression(src, at, (c, depth) => depth === 0 && (c === ";" || c === "\n"));
+  return src.slice(at, end).trim();
 }
 
 // ── The sweep ─────────────────────────────────────────────────────

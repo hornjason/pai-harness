@@ -549,6 +549,28 @@ describe("#1552: the sweep's reading is what it claims", () => {
     expect(out).not.toContain("writeFileSync");
   });
 
+  test("a backtick inside a regex literal does not swallow the next statements", () => {
+    // Distinct from the row below, and from `blankComments`: the ARGUMENT
+    // scanner does its own walk, and it had no regex awareness. `.replace(
+    // /`/g, "")` in `lib/conformity.ts` read as a template-literal opener,
+    // so an initialiser ran on for four hundred lines and dragged the word
+    // "spec" in from unrelated prose. Two writes were flagged for it.
+    const root = tempRoot("backtick");
+    plant(
+      root,
+      "lib/t.ts",
+      [
+        'const out = text.replace(/`/g, "");',
+        'const label = "a spec mentioned far away";',
+        "writeFileSync(out, body);",
+      ].join("\n"),
+    );
+    const sites = writeSites(root, ["lib"]);
+    expect(sites.length).toBe(1);
+    expect(sites[0].view, "the view stopped at the statement").not.toMatch(/spec/i);
+    expect(sites[0].specTargeting).toBe(false);
+  });
+
   test("a quote inside a regex literal does not open a string", () => {
     // `lib/` holds `/from ["']\\.[^"']*\\/derived-spec["']/`. Treating the
     // `"` inside it as a string opener swallows the rest of the file, and
@@ -597,14 +619,55 @@ describe("#1552: the sweep's reading is what it claims", () => {
     // by excluding `.` from the lookbehind — and that made
     // `require("fs").writeFileSync(reportPath, …)` in `lib/conformity.ts`
     // invisible. This row is why the detector is two sites wider than it was.
+    //
+    // The suffix fixtures are spelled to be MUTANT-SENSITIVE, which the first
+    // version of this row was not: `safeWriteFileSync` holds `WriteFileSync`
+    // with a capital W, so the case-sensitive pattern never matched it with
+    // or without the lookbehind, and the row was green for a reason that had
+    // nothing to do with the mechanism it is named for. The AI review on this
+    // PR found that — a vacuous assertion inside the test written to catch
+    // vacuous assertions. `xwriteFileSync` and `safe_writeFileSync` both
+    // contain the exact lowercase spelling, so deleting the lookbehind turns
+    // this row red.
     const root = tempRoot("suffix");
     plant(
       root,
       "lib/s.ts",
-      ["safeWriteFileSync(specPath, v);", "fs.writeFileSync(specPath, v);"].join("\n"),
+      [
+        "xwriteFileSync(specPath, v);",
+        "safe_writeFileSync(specPath, v);",
+        "fs.writeFileSync(specPath, v);",
+      ].join("\n"),
     );
     const sites = writeSites(root, ["lib"]);
-    expect(sites.map((s) => s.line)).toEqual([2]);
+    expect(sites.map((s) => s.line)).toEqual([3]);
+  });
+
+  test("a same-named binding in another function cannot hide a spec write", () => {
+    // The high-severity AI-review finding on this PR, as a case. Resolving a
+    // bare identifier to the FIRST matching declaration in the file reads the
+    // report path, matches nothing, and omits a genuine unguarded spec write.
+    // The union over all same-named bindings is wrong in the safe direction.
+    const root = tempRoot("shadow");
+    plant(
+      root,
+      "lib/two.ts",
+      [
+        "export function writeReport(outDir: string, body: string) {",
+        '  const filePath = join(outDir, "report.json");',
+        "  writeFileSync(filePath, body);",
+        "}",
+        "export function writeTheSpec(specsDir: string, body: string) {",
+        '  const filePath = join(specsDir, "NEW-SPEC.md");',
+        "  writeFileSync(filePath, body);",
+        "}",
+      ].join("\n"),
+    );
+    const found = specChokepointViolations(root, ["lib"]);
+    // Both sites report, because the sweep has no scope and says so: the
+    // report write is an over-report costing one classified line, and the
+    // spec write is the one that must never be missed.
+    expect(found.map((s) => s.line)).toEqual([3, 7]);
   });
 
   test("the swept directories are the ones the issue enumerated", () => {
