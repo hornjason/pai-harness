@@ -218,30 +218,48 @@ describe("#992 — one decider, and registered where the repo can see it", () =>
       .toContain("from '../lib/harness-project'");
   });
 
-  test("AC-10: the hook IS registered, in the repo-owned scopes, by name", () => {
-    // The inversion. This arm used to assert the hook was registered nowhere
-    // and it went red the moment the registration landed — which is what it
-    // was for. Jason has taken the decision, so it now asserts the other
-    // direction with the same strictness: a later silent DEREGISTRATION is
-    // as loud as the registration was.
+  test("AC-10: the hook is DECLARED in the inventory and NOT registered at project scope (#1578)", () => {
+    // Inverted a second time, and the reason is a measurement rather than a
+    // preference.
     //
-    // Repo scopes only: machine settings are UNMEASURABLE on a CI runner,
-    // and an arm whose input is absent there passes vacuously. This one a
-    // runner can answer, which is the #976 lesson.
+    // This arm first asserted the hook was registered nowhere, then — when
+    // #992 took the decision — that `.claude/settings.json` and
+    // `.claude/rungate/hooks.json` both named it. #1578 measured what that
+    // project registration actually bought: nothing. A session in a worktree
+    // carrying that exact file did not load it, while a user-scoped refusal
+    // fired on the same Bash matcher in the same session. The hook was green,
+    // registered and inert from #1050 to #1578.
     //
-    // `.claude/rungate.json` is the monolith layout, which this repo is not
-    // on. It is read when present and skipped when absent rather than being
-    // asserted either way — asserting over a file that does not exist is an
-    // assertion about nothing.
-    const scopes = [".claude/settings.json", ".claude/rungate/hooks.json"];
-    const read: string[] = [];
-    for (const rel of scopes) {
-      const src = readFileSync(join(ROOT, rel), "utf-8");
-      read.push(rel);
-      expect(src, `${rel} no longer registers TopLevelCdGuard — #992 decided it should`)
-        .toContain("TopLevelCdGuard.hook.ts");
-    }
-    expect(read, "a scope went unread, so this arm compared less than it claims").toEqual(scopes);
+    // So the two scopes now part company and the split is the claim:
+    //
+    //  - `.claude/rungate/hooks.json` — the INVENTORY. Still names the hook;
+    //    the entry is what declares it exists and carries `scope: "user"`.
+    //  - `.claude/settings.json` — the project REGISTRATION. Must NOT name
+    //    it. SC-518: the two scopes are not de-duplicated, so a leftover
+    //    project registration fires the hook twice the moment a human adds
+    //    the real one to `~/.claude/settings.json`.
+    //
+    // Repo scopes only, unchanged from the #976 lesson: machine settings are
+    // UNMEASURABLE on a CI runner and an arm whose input is absent there
+    // passes vacuously. The honest reading of the machine scope is the
+    // UNMEASURED finding in `test/hook-registration-reconciler.test.ts`.
+    const inventory = readFileSync(join(ROOT, ".claude", "rungate", "hooks.json"), "utf-8");
+    expect(
+      inventory,
+      ".claude/rungate/hooks.json no longer declares TopLevelCdGuard — the inventory entry is " +
+        "what carries the scope, and deleting it hides the hook rather than reclassifying it",
+    ).toContain("TopLevelCdGuard.hook.ts");
+    expect(
+      JSON.parse(inventory).find((e: { name?: string }) => e.name === "TopLevelCdGuard")?.scope,
+      'the inventory no longer declares user scope; #1578 measured project scope dead for this hook',
+    ).toBe("user");
+
+    const settings = readFileSync(join(ROOT, ".claude", "settings.json"), "utf-8");
+    expect(
+      settings,
+      ".claude/settings.json registers TopLevelCdGuard while the inventory declares user scope. " +
+        "SC-518 says that fires the hook twice; remove the project registration.",
+    ).not.toContain("TopLevelCdGuard.hook.ts");
 
     // The mirror of #898's AC-5: a registered hook carrying the
     // unregistered declaration is a stale waiver that would satisfy AC-4
