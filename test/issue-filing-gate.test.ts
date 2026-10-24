@@ -2833,6 +2833,11 @@ describe("FG-137..FG-139: a mutant that always passes the reason check turns a c
     const repo = join(scratch, "detached");
     mkdirSync(repo, { recursive: true });
     const git = (...args: string[]) =>
+      // late-env-ok: the child is `git`, which reads neither of the variables
+      // this file writes late — RUNGATE_OPEN_FINDINGS and the ledger session
+      // id are both read by the gate under test, in this process, and never
+      // by a git subprocess. The detach below is asserted rather than
+      // assumed, so a child that somehow lost its environment fails the row.
       spawnSync("git", ["-C", repo, ...args], { encoding: "utf-8" });
     git("init", "-q", "-b", "main");
     git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x");
