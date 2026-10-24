@@ -13,7 +13,8 @@
  *   SCs tagged with (behavioral) bypass matchPattern validation.
  */
 
-import { existsSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
+import { writeSpec } from "../lib/write-spec";
 import { join } from "path";
 import { isMatchablePattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
 import { loadRegistry, type RegistryEntry } from "../lib/create-sc";
@@ -158,7 +159,9 @@ compliance: strict
 ${scSection}
 `;
 
-writeFileSync(filePath, content);
+// #1552: create-only, like `convert-spec.ts` — it refuses by name above when
+// the file exists. Routed through the chokepoint regardless; see there.
+writeSpec(filePath, content, { label: `specs/${filename}` });
 console.log(`Created specs/${filename}`);
 if (governs.startsWith("TODO")) {
   console.log(`  governs: is TODO — update it before scaffolding`);

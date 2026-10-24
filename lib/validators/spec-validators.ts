@@ -8,7 +8,8 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { localCalendarDay } from "../local-calendar-day";
 import { SC_ID_SOURCE } from "../sc-ids";
-import { mayWrite, readDerivedDeclaration, skipLine } from "../derived-spec";
+import { skipLine } from "../derived-spec";
+import { maySpecBeWritten, writeSpec } from "../write-spec";
 
 /**
  * SC-278: Detect specs that exceed 500 lines and suggest splitting.
@@ -66,15 +67,15 @@ export function addFrontmatterToSpecs(specsDir: string, actions: string[]): void
     // #1286: both writes below rewrite this spec's own bytes. On a spec a
     // generator owns, the frontmatter belongs in the generator — injecting
     // it here is discarded at the next run after breaking what pins it.
-    const derived = readDerivedDeclaration(content);
-    if (!mayWrite(derived)) {
-      actions.push(skipLine(`specs/${file}`, derived));
+    const early = maySpecBeWritten(content);
+    if (!early.allowed) {
+      actions.push(skipLine(`specs/${file}`, early.reading));
       continue;
     }
 
     if (!content.startsWith("---\n")) {
       const frontmatter = `---\ndoc-type: spec\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\ngoverns: TODO — describe what this spec governs\ntestable: false\n---\n\n`;
-      writeFileSync(filePath, frontmatter + content);
+      writeSpec(filePath, frontmatter + content, { label: `specs/${file}` });
       actions.push(`UPDATED: specs/${file} (added frontmatter)`);
     } else {
       // Validate existing frontmatter has required fields
@@ -87,7 +88,7 @@ export function addFrontmatterToSpecs(specsDir: string, actions: string[]): void
       if (!fm.includes("governs:")) missing.push(`governs: TODO`);
       if (missing.length > 0) {
         const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
-        writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
+        writeSpec(filePath, newFm + content.substring(fmEnd + 4), { label: `specs/${file}` });
         actions.push(`UPDATED: specs/${file} (added missing frontmatter fields: ${missing.map(m => m.split(":")[0]).join(", ")})`);
       }
       // SC-269: WARN for specs with missing or TODO governs
@@ -160,15 +161,15 @@ export function addFrontmatterToAdrs(adrDir: string, actions: string[]): void {
     // at the next regeneration exactly as a generated spec does, and an
     // unguarded sibling beside a guarded one reads as an oversight because
     // that is what it was.
-    const derived = readDerivedDeclaration(content);
-    if (!mayWrite(derived)) {
-      actions.push(skipLine(`docs/adr/${file}`, derived));
+    const early = maySpecBeWritten(content);
+    if (!early.allowed) {
+      actions.push(skipLine(`docs/adr/${file}`, early.reading));
       continue;
     }
 
     if (!content.startsWith("---\n")) {
       const frontmatter = `---\ndoc-type: adr\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\n---\n\n`;
-      writeFileSync(filePath, frontmatter + content);
+      writeSpec(filePath, frontmatter + content, { label: `docs/adr/${file}` });
       actions.push(`AUTO-FIXED: docs/adr/${file} (added frontmatter)`);
     } else {
       const fmEnd = content.indexOf("\n---", 4);
@@ -203,7 +204,9 @@ export function addFrontmatterToAdrs(adrDir: string, actions: string[]): void {
         const newFm = missing.length > 0
           ? `---\n${corrected}\n${missing.join("\n")}\n---`
           : `---\n${corrected}\n---`;
-        writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
+        writeSpec(filePath, newFm + content.substring(fmEnd + 4), {
+          label: `docs/adr/${file}`,
+        });
         const what = [
           ...(missing.length > 0 ? [`added missing: ${missing.map(m => m.split(":")[0]).join(", ")}`] : []),
           ...(retyped !== null ? [`doc-type was "${retyped}", set to adr`] : []),

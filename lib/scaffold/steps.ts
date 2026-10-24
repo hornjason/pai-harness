@@ -12,7 +12,7 @@ import { readdirSorted } from "../readdir-sorted";
 import { fileExtensions } from "../file-extensions";
 import { join, basename, dirname, resolve, sep } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
-import { mayWrite, readDerivedDeclaration, skipLine } from "../derived-spec";
+import { writeSpec } from "../write-spec";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
 import { HARNESS_PACKAGE, isHarnessItself } from "../harness-identity";
 import { scanSpecs } from "../scanner";
@@ -1699,16 +1699,13 @@ export function copySpecTemplateIfEmpty(specsDir: string, actions: string[]): vo
   // spec writers and missed this one, because its completeness check is built
   // from files that read and write the same path — and this writes a path it
   // never read. Ask who owns the bytes before replacing them.
+  // #1552: the reading, the refusal line and the write are one call now.
   const existed = existsSync(destPath);
-  if (existed) {
-    const reading = readDerivedDeclaration(readFileSync(destPath, "utf-8"));
-    if (!mayWrite(reading)) {
-      actions.push(skipLine("specs/SPEC-TEMPLATE.md", reading));
-      return;
-    }
+  const result = writeSpec(destPath, template, { label: "specs/SPEC-TEMPLATE.md" });
+  if (!result.written) {
+    actions.push(result.refusal!);
+    return;
   }
-
-  writeFileSync(destPath, template);
   // #1549: the verb is a reading, not a label. `CREATED` for a file that was
   // already on disk tells a reader scanning the report for destructive
   // actions the opposite of what happened.

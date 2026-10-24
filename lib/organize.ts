@@ -22,7 +22,8 @@ import {
 import { join, relative, dirname, basename } from "path";
 import { loadComplianceConfig, type OrganizeExternalSource } from "./config-loader.js";
 import { matchesAnyAlias, projectAliases } from "./project-aliases.js";
-import { mayWrite, readDerivedDeclaration, skipLine } from "./derived-spec";
+import { skipLine } from "./derived-spec";
+import { writeSpec } from "./write-spec";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -555,14 +556,13 @@ function updateInternalReferences(root: string, moveMap: Map<string, string>): v
     // #1286: organize moves docs into `specs/`, `docs/` and `reference/` and
     // then rewrites links INSIDE them. A moved file can be a spec a generator
     // owns, and rewriting its links is discarded at the next regeneration.
-    const derived = readDerivedDeclaration(content);
-    if (changed && !mayWrite(derived)) {
-      console.warn(skipLine(newPath, derived));
-      continue;
-    }
-
+    // #1552: the refusal is no longer restated here — `writeSpec` asks the
+    // one decider and hands back the line to print. The target is a moved
+    // document, which the static sweep cannot see is a spec path, so this
+    // site is routed by hand rather than because a check demanded it.
     if (changed) {
-      writeFileSync(fullPath, content);
+      const result = writeSpec(fullPath, content, { label: newPath });
+      if (result.refusal) console.warn(result.refusal);
     }
   }
 }
