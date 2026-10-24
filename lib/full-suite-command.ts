@@ -2,7 +2,7 @@
 const SUITE_INVOCATION = /^bun\s+test(?![:\w-])/;
 
 /** A redirection operator, attached target or not: `>`, `2>`, `&>>`, `2>&1`. */
-const REDIRECT = /^(?:\d*|&)>>?(?:&\d+)?(.*)$/;
+const REDIRECT = /^(?:\d*)>>?(?:&\d+)?(.*)$/;
 
 /**
  * True for a whole-suite run, false for one scoped to paths.
