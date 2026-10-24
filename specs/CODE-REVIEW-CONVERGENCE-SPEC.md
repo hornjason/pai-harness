@@ -169,6 +169,66 @@ repository is how conventions ship. A false finding is a whole round. Re-take
 this reading after it lands; a baseline measured across a known artefact is a
 baseline that will appear to improve for the wrong reason.
 
+#### The re-take, 2026-10-24 — the baseline has NOT moved
+
+#1449 and #1452 landed at 2026-10-23T21:46Z. Re-read over the 45 most recent
+pull requests, **45 measured, 0 unmeasured**, and no ledger truncated, so no
+round fell off the front of a window:
+
+| | their before | their after | us, 2026-10-23 | **us, 2026-10-24** |
+|---|---|---|---|---|
+| passed after one round | 65% | 78% | 39.4% | **44.2%** |
+| five or more rounds | 8.9% | 1.5% | 20.5% | **20.0%** |
+| mean rounds to pass | 2.08 | 1.32 | 2.64 | **2.65** |
+
+The tail did not collapse. Phases 1 and 2 keep their ordering, and the
+argument for it is inherited rather than remade.
+
+##### The split that says the opposite, and why it is wrong
+
+Splitting that population at the moment the fix landed looks decisive, and
+reporting it would have been a mistake:
+
+| | pre-fix (31) | post-fix (14) |
+|---|---|---|
+| passed after one round | 30.0% | **76.9%** |
+| five or more rounds | 25.8% | **7.1%** |
+| mean rounds to pass | 3.07 | **1.69** |
+
+76.9% against a target of 78% reads as the thing this document said would
+invalidate its own plan. **It is an artefact of cohort age.** Rounds
+accumulate over a pull request's life, and the two cohorts are not the same
+age: pre-fix spans 4.5–9.2h old, post-fix 0.5–4.1h. A younger cohort shows
+fewer rounds whether or not anything improved.
+
+Counting rounds inside a fixed window from each pull request's **own**
+creation, and including only pull requests that have actually reached that
+age, so both cohorts are read at the same point in their own lives:
+
+| window | pre n | pre mean | post n | post mean |
+|---|---|---|---|---|
+| 1h | 31 | 0.81 | 12 | **1.75** |
+| 2h | 31 | 0.84 | 9 | **1.67** |
+| 3h | 31 | 1.13 | 5 | 1.00 |
+| 4h | 31 | 1.35 | 1 | 1.00 |
+
+At matched age the improvement is **absent**, and at the two windows with a
+usable `n` the post-fix cohort is accumulating rounds slightly faster. Read
+that direction as noise rather than as harm: `n` is 12 and 9, and the cohorts
+differ in what work they carry as well as in when they started. What the rows
+will not support is the headline the naive split offers.
+
+The 3h and 4h rows are reported because they exist and are read as nothing:
+at `n` of 5 and 1 they are a sample size, not a measurement.
+
+**The lesson is the one this document keeps relearning.** A reading taken
+four hours after a fix lands is a reading about the four hours, and *"the
+fix has landed"* is not the same precondition as *"the population has turned
+over"*. The re-take instruction below asked for the first and meant the
+second. Re-take again when the post-fix cohort has reached the age of the
+pre-fix one — that is a question about elapsed time, not about what else
+ships.
+
 ### What stays human
 
 - [ ] CRC-H1: Direction, taste and scope — whether to build it at all.
@@ -420,6 +480,21 @@ request editing `.claude/` or `CLAUDE.md`, which in this repository is how
 conventions ship. If the tail collapses on its own, Phases 1 and 2 are
 ordered against a baseline that no longer exists, and the ordering argument
 has to be made again rather than inherited.
+
+**Taken, 2026-10-24: it did not collapse** — 2.65 mean, 20.0% at five rounds
+or more, against 2.64 and 20.5%. The ordering is inherited. Full reading, and
+the age-controlled split that refuses the much better number the naive one
+offers, under *Where we actually stand, measured*.
+
+**And the instruction above is now a worked example of its own failure
+mode.** It says *"after #1449 and #1452 land"*, which is a question about a
+merge, and it meant *"after the population they affect has turned over"*,
+which is a question about elapsed time. Read literally it was satisfiable
+four hours after the fix, on a cohort 0.5–4.1h old measured against one
+4.5–9.2h old — and that comparison reports a 47-point improvement in
+one-round pass that disappears entirely when the two are read at the same
+age. **State a precondition a reader can be wrong about.** "The fix has
+merged" is checkable and was the wrong thing to check.
 
 ## Known deviations, declared
 
