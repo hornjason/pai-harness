@@ -31,7 +31,7 @@ import {
   type SameTreeReading,
   type VarianceCapture,
 } from "../evals/ai-review-control/variance-capture";
-import { symptomKeys, type Finding } from "../lib/finding-arbiter";
+import { quantityKeys, type Finding } from "../lib/finding-arbiter";
 import { adjudicateFiling, measuredCorpus } from "../lib/issue-filing-gate";
 
 /**
@@ -145,9 +145,14 @@ describe("the plants separate a live adjudicator from an inert one", () => {
 
   // The twin needs TWO shared quantities, not one. A twin carrying one number
   // would reproduce the original defect in a different costume.
+  //
+  // `quantityKeys` and not `symptomKeys` since #1536: readings left the
+  // identity set for their own producer, and a bare integer is no longer a
+  // key at all — so this read zero and the row went red while the plant
+  // itself still landed. Which is the right way round: the assertion names
+  // the property, and the property moved house.
   test("the twin names at least two quantities", () => {
-    const qty = symptomKeys(DUPLICATE_PLANT_TWIN).filter(k => k.startsWith("qty:"));
-    expect(qty.length).toBeGreaterThanOrEqual(2);
+    expect(quantityKeys(DUPLICATE_PLANT_TWIN).length).toBeGreaterThanOrEqual(2);
   });
 });
 

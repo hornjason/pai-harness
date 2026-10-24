@@ -142,6 +142,16 @@ export const UNFILED_ID = "new";
 
 export type SymptomKeyKind = "sym" | "file" | "qty";
 
+/**
+ * A quantity key, `qty:<n>:<what was counted>`.
+ *
+ * Its own type because it is **not** a symptom key since #1536: it answers
+ * "did these two take the same reading?", which is a different question from
+ * "are these two the same finding?", and only the second belongs in an
+ * identity. See `quantityKeys`.
+ */
+export type QuantityKeyKind = "qty";
+
 /** How many cited symbols the branch-scope reading will pay a `git grep` for. */
 const MAX_SYMBOLS_PROBED = 8;
 
@@ -218,19 +228,74 @@ function pathsIn(body: string): string[] {
 }
 
 /**
- * Integers a finding reports as a reading.
+ * Readings a finding reports, each as `<n>:<what it counted>`.
  *
- * The exclusions are what make this a measurement and not a number: an issue
- * reference (`#1188`), an SC or AC id, a date component, and anything under
- * ten. Without the first of those, every finding that cites the same prior
- * issue collides with every other — which is a reading of the cross-reference
- * graph, not of the defect.
+ * ## A BARE INTEGER IS NOT A SYMPTOM (#1536)
+ *
+ * This emitted the integer alone, and the integer alone cannot say whether
+ * `19` is a line number, a count of check names or a byte figure. Two
+ * measured false `DUPLICATE`s on 2026-10-24, both overridden after a human
+ * read the issue the refusal named:
+ *
+ * | refused | called a duplicate of | on |
+ * |---|---|---|
+ * | #1520 instruction-surface headroom | #1506 reservation protocol | `qty:20`, `qty:99` + one path |
+ * | #1534 clean arm's banked reading | #1162 findings discarded four ways | `qty:19`, `qty:22`, `qty:28` + one symbol |
+ *
+ * In #1534 the three integers are LINE NUMBERS — *"the clean arm changes
+ * 7–11, 22, 25, 28"* — and in #1162 they are counts: *"19 distinct check
+ * names"*, *"22 times"*, *"28 carrying refusals"*. Nothing the old key
+ * carried could tell those apart, so any issue quoting a measurement
+ * collided with any other issue quoting a measurement.
+ *
+ * So the key carries **the word the number qualifies**: the token
+ * immediately after it, joined by one space or one hyphen. `19 violations`
+ * is a reading; `19` followed by a comma, a full stop or a line end is a
+ * position in a list and emits nothing. No stopword list and no second
+ * threshold — a number with nothing naming what it counted is simply not a
+ * key, which is the one direction this function is allowed to be wrong in.
+ *
+ * Measured over a 103-issue live corpus (43 open + the 60 most recent
+ * closed) on 2026-10-24, 5,253 pairs, before and after — together with
+ * moving these keys out of the identity set, which is the other half of the
+ * change and cannot be measured apart from it:
+ *
+ * | | pairs flagged | byte-identical re-filings refused |
+ * |---|---|---|
+ * | before | 6 — **4 of them false** | 96/103 |
+ * | after | **3** — all four false pairs gone | 93/103 |
+ *
+ * Both true duplicates on that corpus survive (#1456/#1454 at 0.900,
+ * #1409/#1406 at 1.000) and one new pair appears: **#1394/#1353**, two
+ * ai-review ledger defects in one file at containment exactly 0.800. It is
+ * named here rather than tuned away, the way this file names the rest of
+ * its false positives — the refusal is reviewable and `arbiter-override`
+ * waives it.
+ *
+ * The price, stated: ten findings carrying one to three location keys
+ * (#1492, #1395, #1341, #1167, #1160, #1157, #1437, #1426, #1413, #1412)
+ * reached the floor only through bare integers and can now be re-filed
+ * byte-identically. A duplicate that gets filed is a tracker row somebody
+ * closes; a false `DUPLICATE` silences a finding. The asymmetry this file
+ * argues everywhere else is what chooses the direction.
+ *
+ * The other exclusions are unchanged and are what make this a measurement
+ * and not a number: an issue reference (`#1188`), an SC or AC id, a date
+ * component, and anything under ten. Without the first of those, every
+ * finding that cites the same prior issue collides with every other — which
+ * is a reading of the cross-reference graph, not of the defect.
  */
-function quantitiesIn(body: string): number[] {
-  const out: number[] = [];
+function quantitiesIn(body: string): string[] {
+  const out: string[] = [];
   // Blank out the shapes whose digits are identifiers rather than readings,
   // keeping the length so no two tokens are glued together by the removal.
   const masked = body
+    // Emphasis first, and to a SPACE so lengths still hold. `**144** rows`
+    // and `144 rows` are the same reading written twice, and a qualifier the
+    // author happened to bold away would be the second shape in
+    // `.claude/rules/checks-must-be-able-to-fail.md` — a detector narrower
+    // than what it detects, defeated by a reformat.
+    .replace(/\*/g, " ")
     .replace(/#\d+/g, m => " ".repeat(m.length))
     .replace(/\b(?:SC|AC|PR|H|R)-?\d+/gi, m => " ".repeat(m.length))
     .replace(/\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?/g, m => " ".repeat(m.length))
@@ -260,9 +325,18 @@ function quantitiesIn(body: string): number[] {
     .replace(/(?<![\d:])\d{1,2}:\d{2}(?::\d{2})?(?!\d)/g, m => " ".repeat(m.length))
     .replace(/:\d+/g, m => " ".repeat(m.length))
     .replace(/\bv?\d+\.\d+(?:\.\d+)?/g, m => " ".repeat(m.length));
-  for (const m of masked.matchAll(/\b\d[\d,]*\b/g)) {
-    const n = Number.parseInt(m[0].replace(/,/g, ""), 10);
-    if (Number.isFinite(n) && n >= 10) out.push(n);
+  // The qualifier is whatever word the number runs into, with no vocabulary
+  // of accepted units: a list of units is a list somebody has to maintain,
+  // and one that is missing a word silently drops a real reading. Two
+  // findings agreeing on `144:of` agree on more than two findings agreeing
+  // on `144`, which is the entire claim.
+  // `[ -]+` and not `[ -]`: the emphasis mask above turns `**144** rows`
+  // into two spaces, and a reading that depended on how many spaces the
+  // author's markdown left behind would be the second shape in
+  // `.claude/rules/checks-must-be-able-to-fail.md` all over again.
+  for (const m of masked.matchAll(/\b(\d[\d,]*)[ -]+([A-Za-z]+)/g)) {
+    const n = Number.parseInt(m[1].replace(/,/g, ""), 10);
+    if (Number.isFinite(n) && n >= 10) out.push(`${n}:${m[2].toLowerCase()}`);
   }
   return out;
 }
@@ -270,31 +344,94 @@ function quantitiesIn(body: string): number[] {
 /**
  * The keys a finding is deduplicated on.
  *
+ * ## What the key set is FOR, and why quantities are no longer in it (#1536)
+ *
+ * It answers one question and no other: **would these two findings be
+ * closed by the same change?** Every admission rule below follows from that
+ * and from nothing else. A `sym:` or `file:` key names something a fix would
+ * edit — which is why a bare lowercase word is not a symbol and an unsnaked
+ * all-caps token is not either: `CLEAN` and `dequote` name nothing anybody
+ * would change.
+ *
+ * **A measurement is not part of that identity.** A reading is evidence
+ * *about* a defect, and the same defect measured twice gives two numbers
+ * while two unrelated defects give one. That is not a claim from first
+ * principles; it is the shape of both false `DUPLICATE`s of 2026-10-24,
+ * which `quantitiesIn` records. So quantities moved out of this set and into
+ * `quantityKeys`, read by the one arm that asks about readings.
+ *
+ * That split is also what stopped the fix costing the pair this module was
+ * built on. Qualifying the quantity and leaving it here was tried first and
+ * **lost #1175/#1177**, whose containment fell from 1.000 to 0.417: the key
+ * sets grew, because prose repeats a number beside a different word each
+ * time, and a ratio whose denominator grows with prose is measuring prose.
+ * A reading could never have belonged in that denominator.
+ *
+ * This set is deliberately NOT a relevance score, not a topic model, and not
+ * an index: a key that merely says two findings are *about* the same area
+ * produces the `lib/bash-write-guard.ts` cluster, six distinct defects in
+ * one file that this rule exists to keep apart.
+ *
+ * What was measured and NOT adopted, so the next reader does not re-derive
+ * it: #1536 also asks whether a path or symbol appearing only as *cited
+ * evidence* — inside a blockquote, or in a table of candidates — should
+ * weigh as a subject. Both variants were run over the same 103-issue corpus.
+ * Excluding blockquote lines moved **nothing**: zero pairs, zero re-filings.
+ * Excluding table rows as well cost a TRUE duplicate — #1456/#1454 fell from
+ * 0.900 to 0.750 — because in this repository a table is where a finding
+ * states its own fixture paths. Neither narrowing removed a false positive
+ * the qualified quantity had not already removed, so neither shipped: an
+ * admission rule with no measured case is an unproven rule, and this file
+ * already has more constants than corpus to justify them.
+ *
  * Sorted and de-duplicated, so two runs over one finding agree byte for byte
  * and a caller can print the intersection without re-deriving it.
  */
 export function symptomKeys(finding: Finding): string[] {
   const keys = new Set<string>();
-  // The title contributes symbols and paths but NOT quantities: a title
-  // states a headline number the body also states, and counting it twice
-  // would let two findings agree on one reading reported in two places.
   for (const span of [...codeSpans(finding.body), finding.title]) {
     for (const id of identifiersIn(span)) keys.add(`sym:${id}`);
   }
   for (const p of [...pathsIn(finding.body), ...pathsIn(finding.title)]) keys.add(`file:${p}`);
-  for (const q of quantitiesIn(finding.body)) keys.add(`qty:${q}`);
   return [...keys].sort();
 }
 
-/** A stable identity for the symptom as a whole — the one hashing binding. */
+/**
+ * The readings a finding reports — a different question from its identity.
+ *
+ * Read ONLY by `duplicateOverlap`'s same-reading arm. Deliberately not part
+ * of `symptomKeys`, `symptomHash` or `containmentOf`: see `symptomKeys` for
+ * what the identity set is for, and `quantitiesIn` for the two false
+ * `DUPLICATE`s that moved these out of it.
+ *
+ * The body only, never the title. A title states a headline number the body
+ * also states, and counting it twice would let two findings agree on one
+ * reading reported in two places.
+ */
+export function quantityKeys(finding: Finding): string[] {
+  return [...new Set(quantitiesIn(finding.body).map(q => `qty:${q}`))].sort();
+}
+
+/**
+ * A stable identity for the symptom as a whole — the one hashing binding.
+ *
+ * Location keys only since #1536, so **re-measuring does not change the
+ * hash**. Hashes written to `~/.rungate/finding-ledger.jsonl` before that
+ * date were taken over a different key set and will not match one taken now;
+ * the field was never a row identity and `FilingLedgerRow.key` says so.
+ */
 export function symptomHash(finding: Finding): string {
   return contentHash(symptomKeys(finding).join("\n"));
 }
 
-/** Keys two findings have in common, sorted. */
+/**
+ * Keys two findings have in common, sorted — both kinds, because this is
+ * what a refusal prints and a reader asked to review a refusal needs to see
+ * every key it was decided on, not only the ones in the identity set.
+ */
 export function sharedKeys(a: Finding, b: Finding): string[] {
-  const left = new Set(symptomKeys(a));
-  return symptomKeys(b).filter(k => left.has(k));
+  const left = new Set([...symptomKeys(a), ...quantityKeys(a)]);
+  return [...symptomKeys(b), ...quantityKeys(b)].filter(k => left.has(k)).sort();
 }
 
 /**
@@ -406,6 +543,27 @@ export const DUPLICATE_MIN_SHARED_LOCATIONS = 1;
  * silently withheld — the direction this file already calls worse. Missing a
  * duplicate means a duplicate gets filed, which a human can see.
  *
+ * ### THE TIE IS BROKEN, AND NOT BY EITHER CONSTANT (#1536)
+ *
+ * Everything above is still the correct reading *of a ratio taken over a key
+ * set that mixed readings with locations*. It stopped being the reading when
+ * quantities left `symptomKeys` — re-measured against the four live bodies
+ * on 2026-10-24:
+ *
+ * | pair | before | after |
+ * |---|---|---|
+ * | #1195/#1196, the true duplicate | 0.750 | **0.833 — caught** |
+ * | #1195/#1239, the distinct pair | 0.750 | **0.000 — below the floor** |
+ *
+ * Both constants are untouched. What moved is the denominator: #1239's three
+ * remaining keys put it under `DUPLICATE_CONTAINMENT_MIN_KEYS`, and #1196's
+ * five shared symbols are five of its six. So the sentence above — *no value
+ * of this constant admits the first and excludes the second* — was true of
+ * the ratio and false of the problem, and the capability it declared lost
+ * was never a property of the cut. That is worth saying plainly rather than
+ * deleting: a measurement that names a mechanism it never varied will read
+ * as settled for as long as nobody varies it.
+ *
  * **The 946-pair table above is not reproducible.** It was measured live
  * against a tracker that has moved and no corpus was stored, so neither
  * constant can be re-derived by anyone — including anyone who disagrees with
@@ -475,6 +633,10 @@ function references(text: string, id: string): boolean {
 export function duplicateOverlap(a: Finding, b: Finding): { duplicate: boolean; keys: string[] } {
   const keys = sharedKeys(a, b);
   if (references(a.body, b.id) || references(b.body, a.id)) return { duplicate: false, keys };
+  // Counted from their own producers rather than by prefix over `keys`
+  // (#1536). The two kinds are now two sets and the prefix test was the
+  // place that still treated them as one — a quantity that slipped into the
+  // identity set would be counted by both arms and nothing would say so.
   const quantities = keys.filter(k => k.startsWith("qty:")).length;
   const locations = keys.length - quantities;
   const sameSymptom =
@@ -505,11 +667,16 @@ export function duplicateOverlap(a: Finding, b: Finding): { duplicate: boolean; 
  * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
  */
 export function containmentOf(a: Finding, b: Finding): number {
-  const sizeA = symptomKeys(a).length;
+  const left = new Set(symptomKeys(a));
+  const sizeA = left.size;
   const sizeB = symptomKeys(b).length;
   if (Math.min(sizeA, sizeB) < DUPLICATE_CONTAINMENT_MIN_KEYS) return 0;
-  const keys = sharedKeys(a, b);
-  return Math.max(keys.length / sizeA, keys.length / sizeB);
+  // Identity keys ONLY, on both sides of the ratio (#1536). A reading in the
+  // denominator makes the ratio move when a finding re-states a number, and
+  // that is what cost #1175/#1177 when the qualifier was tried inside
+  // `symptomKeys` — see that function's header.
+  const shared = symptomKeys(b).filter(k => left.has(k)).length;
+  return Math.max(shared / sizeA, shared / sizeB);
 }
 
 /**

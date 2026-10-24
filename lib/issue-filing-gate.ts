@@ -95,7 +95,7 @@
  *   that join and nothing more, exactly as `CandidateRecord` says of itself.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, statSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 
@@ -355,6 +355,36 @@ export interface FilingLedgerRow {
   duplicateOf: string[];
   /** The refusal was overridden with `--label arbiter-override`. */
   overridden: boolean;
+  /**
+   * The `at` of a prior REFUSE row for this same title, when one exists.
+   *
+   * **The field that makes an override survive a re-drafted body (#1536).**
+   * `overridden` used to read `verdict.outcome === "REFUSE" && labelled`,
+   * which is correct about this adjudication and blind to the one that came
+   * before it: the body feeds `symptomHash`, so writing down *why* you are
+   * overriding changes the keys, the duplicate stops matching, the verdict
+   * is no longer a refusal and the label is never exercised. Measured on the
+   * live ledger — the #1520 filing, same title, 37 seconds apart:
+   *
+   *     10:55:08.109Z  DROP   refusal=DUPLICATE  emitted=false  overridden=false
+   *     10:55:45.786Z  ISSUE  refusal=null       emitted=true   overridden=false
+   *
+   * One `overridden: true` row had ever been written, against two overrides
+   * performed that day. The countability `refusalMessage` promises was 50%
+   * in the only sample there was.
+   *
+   * The join is the **title**, not the hash, and that is the whole point: an
+   * override is a claim about a specific prior refusal, so it has to be
+   * recognised by something the re-draft does not touch. `duplicateOf` on
+   * this row then carries that refusal's targets, so the row names what was
+   * waived rather than implying it.
+   *
+   * `null` also when the ledger could not be read — `priorRefusalFor`
+   * returns `null` for "nothing matched" and the gate pushes
+   * `unreadableLedgerNote` for "could not look", because those are different
+   * states and only one of them is a reading.
+   */
+  refiledAfter: string | null;
 }
 
 /**
@@ -1087,6 +1117,91 @@ export function recordAdjudication(row: FilingLedgerRow, path: string = ledgerPa
   }
 }
 
+/**
+ * Every row on the ledger, or `null` when the file is there and unreadable.
+ *
+ * **An absent ledger is an empty one; a corrupt ledger is neither.** That is
+ * `.claude/rules/config-access.md`'s distinction, applied to the one file
+ * this gate now reads as well as writes: a machine that has never adjudicated
+ * a filing genuinely has no prior refusals, and saying UNMEASURED there would
+ * put a note on the first `gh issue create` anybody ever runs.
+ *
+ * A single malformed line is skipped rather than refusing the file. The
+ * ledger is append-only from several processes and a torn final write is the
+ * expected failure, not a corrupted store — but a file that cannot be opened
+ * at all is `null`, because that one cannot be told apart from a lookup
+ * nobody performed.
+ */
+export function readLedgerRows(path: string = ledgerPath()): FilingLedgerRow[] | null {
+  if (!existsSync(path)) return [];
+  let text: string;
+  try {
+    text = readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
+  const rows: FilingLedgerRow[] = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      rows.push(JSON.parse(line) as FilingLedgerRow);
+    } catch {
+      // A torn append, not a corrupt store.
+    }
+  }
+  return rows;
+}
+
+/**
+ * The most recent refusal of a filing under this exact title, if any.
+ *
+ * Exported so the gate has ONE binding for "has this been refused before?"
+ * and a test can read the same answer the gate acts on — two spellings of
+ * this question would be the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * **Exact title, and no time bound.** A title is what the issue's own
+ * evidence shows surviving a re-draft, and loosening it to a similarity
+ * would re-introduce exactly the thing #1536 is about: a judgement over
+ * prose, defeated by changing the prose. A window would be a second
+ * threshold with no corpus behind it, and the cost of attributing an
+ * override to a refusal from last month is a row that says so — visible,
+ * and nothing is withheld by it.
+ *
+ * ## THREE ROWS THAT ARE NOT A REFUSAL, AND LOOK LIKE ONE
+ *
+ * The first spelling of this was `refusal !== null && !emitted`, and
+ * `FG-48 CONTROL` turned it red inside the hour — a filing that had nothing
+ * to do with #1536 started carrying `refiledNote` because an earlier row on
+ * the shared ledger had the same title.
+ *
+ * - **`UNMEASURED` is not a refusal.** It is this file's whole doctrine
+ *   that a filing nobody could adjudicate and a filing somebody refused are
+ *   different states, and the first predicate collapsed them.
+ * - **A clean clause blocked by a sibling** carries `withheldBy: BLOCKED`
+ *   and `refusal: null` — withheld by the command, never adjudicated down.
+ * - **A refusal that was overridden** reached the tracker. The next filing
+ *   of that title is a second finding, not a re-draft of a waived one.
+ *
+ * So the test is that the row's OWN adjudication withheld it:
+ * `withheldBy === refusal` is what distinguishes a refusal the row earned
+ * from one it inherited, and it is the field `markBlockedCommand` moves.
+ */
+export function priorRefusalFor(
+  title: string,
+  rows: readonly FilingLedgerRow[],
+): FilingLedgerRow | null {
+  let best: FilingLedgerRow | null = null;
+  for (const row of rows) {
+    if (row.title !== title) continue;
+    if (row.refusal === null || row.refusal === "UNMEASURED") continue;
+    if (row.emitted || row.overridden) continue;
+    if (row.withheldBy !== row.refusal) continue;
+    if (best === null || row.at >= best.at) best = row;
+  }
+  return best;
+}
+
 export interface FilingGateReading {
   /** The block reason, or `null` to allow. */
   refusal: string | null;
@@ -1111,6 +1226,8 @@ export async function filingGate(
     projectRoot: string;
     now?: string;
     readExisting?: (projectRoot: string, repo: string | null) => Promise<CorpusReading>;
+    /** The adjudications already on the ledger. `null` means unreadable. */
+    readLedger?: () => FilingLedgerRow[] | null;
   },
 ): Promise<FilingGateReading> {
   const attempts = filingAttempts(cmd);
@@ -1143,9 +1260,24 @@ export async function filingGate(
   const batch = filingBatch(at);
   if (batch === null) notes.push(unkeyedLedgerNote());
 
+  // Read ONCE per command, before any clause, for the same reason the
+  // corpus is: two clauses adjudicated against two snapshots of the same
+  // store are two readings nobody can compare. `null` is a failed read and
+  // is said out loud rather than standing in for "no prior refusal".
+  const priorRows = (options.readLedger ?? (() => readLedgerRows()))();
+  if (priorRows === null) notes.push(unreadableLedgerNote());
+
   for (const [index, attempt] of attempts.entries()) {
     const verdict = await adjudicateFiling(attempt, () => readFor(attempt.repo));
-    const overridden = verdict.outcome === "REFUSE" && attempt.labels.includes(FILING_OVERRIDE_LABEL);
+    const labelled = attempt.labels.includes(FILING_OVERRIDE_LABEL);
+    const prior = priorRows === null ? null : priorRefusalFor(attempt.title, priorRows);
+    // **An override waives A REFUSAL, and the refusal need not be this
+    // adjudication's** (#1536). `verdict.outcome === "REFUSE" && labelled`
+    // is blind to the re-drafted body that stopped colliding — see
+    // `FilingLedgerRow.refiledAfter` for the two live rows 37 seconds apart
+    // that measured it. Nothing here is stricter: `prior` cannot cause a
+    // refusal, only name one that already happened.
+    const overridden = labelled && (verdict.outcome === "REFUSE" || prior !== null);
     // **This clause's own reading, and nothing about the command.** The
     // command-level decision is not available yet — it needs every clause —
     // so `emitted` here is provisional and `markBlockedCommand` below applies
@@ -1171,13 +1303,23 @@ export async function filingGate(
       emitted: cleared,
       withheldBy: cleared ? null : verdict.refusal,
       jury: null,
-      duplicateOf: verdict.duplicateOf,
+      // This adjudication's collisions when it had any; otherwise the ones
+      // the refusal being waived named, so the row NAMES the refusal rather
+      // than leaving a reader to infer it from a timestamp. #1536 asks for
+      // exactly this and points at the field.
+      duplicateOf: verdict.duplicateOf.length > 0 ? verdict.duplicateOf : (prior?.duplicateOf ?? []),
       overridden,
+      refiledAfter: prior?.at ?? null,
     });
 
     if (verdict.outcome === "REFUSE" && !overridden) refusals.push(refusalMessage(verdict));
     if (verdict.outcome === "UNMEASURED") notes.push(unmeasuredNote(verdict));
-    if (overridden) notes.push(overrideNote(verdict));
+    if (overridden) notes.push(overrideNote(verdict, prior));
+    // A re-draft that cleared the gate on its own is not refused and not
+    // blocked — the gate does not get stricter here (#1536). It is SAID, so
+    // the honest filer who labels the override and the filer who reworded
+    // until it passed stop producing the same ledger.
+    else if (prior !== null && verdict.outcome !== "REFUSE") notes.push(refiledNote(attempt.title, prior));
   }
 
   // ── A refusal blocks the COMMAND, and every clean clause is NAMED in the
@@ -1401,10 +1543,60 @@ export function unkeyedLedgerNote(): string {
   );
 }
 
-/** An override is a decision somebody made, so it leaves a trace. */
-export function overrideNote(v: FilingAdjudication): string {
+/**
+ * An override is a decision somebody made, so it leaves a trace.
+ *
+ * `prior` is the ledger row this filing is waiving when the body was
+ * re-drafted and the collision no longer reproduces. Naming its timestamp
+ * rather than describing it is the point: a reader can find the refusal.
+ */
+export function overrideNote(v: FilingAdjudication, prior: FilingLedgerRow | null = null): string {
+  if (v.refusal !== null) {
+    return (
+      `[FindingArbiter] Allowed by --label ${FILING_OVERRIDE_LABEL}, over a ${v.refusal} ` +
+      `refusal: ${v.reason}. Recorded in ${ledgerPath()}.`
+    );
+  }
   return (
-    `[FindingArbiter] Allowed by --label ${FILING_OVERRIDE_LABEL}, over a ${v.refusal} ` +
-    `refusal: ${v.reason}. Recorded in ${ledgerPath()}.`
+    `[FindingArbiter] Allowed by --label ${FILING_OVERRIDE_LABEL}, over the ${prior?.refusal} ` +
+    `refusal of this same title at ${prior?.at}. This adjudication did not reproduce it — the ` +
+    "body has changed since, and the body is an input to the symptom keys — so the override is " +
+    `recorded against that row rather than this one. Recorded in ${ledgerPath()}.`
+  );
+}
+
+/**
+ * This title was refused before and is being filed again without the label.
+ *
+ * **Not a refusal.** #1536 says in as many words not to make the gate
+ * stricter: the defect is that a re-draft was *invisible*, not that it got
+ * through. So this is the visibility, and the filing proceeds.
+ */
+export function refiledNote(title: string, prior: FilingLedgerRow): string {
+  return (
+    `[FindingArbiter] This title was refused at ${prior.at} (${prior.refusal}` +
+    `${prior.duplicateOf.length > 0 ? `, against ${prior.duplicateOf.map(d => `#${d}`).join(", ")}` : ""}) ` +
+    "and this adjudication does not reproduce it, because the body has changed and the body is " +
+    `an input to the symptom keys. The filing is ALLOWED and nothing is blocked. If you meant to ` +
+    `override that refusal, say so with --label ${FILING_OVERRIDE_LABEL} so it is counted; if the ` +
+    `re-draft genuinely describes a different finding, this note is the only record that the two ` +
+    `share a title. Title: ${title}`
+  );
+}
+
+/**
+ * The prior-refusal lookup could not be performed, which is not the same as
+ * finding nothing.
+ *
+ * Same split as `unmeasuredNote` and for the same reason: an override
+ * attributed to no refusal and an override whose refusal could not be looked
+ * up are different states, and only one of them is a reading.
+ */
+export function unreadableLedgerNote(): string {
+  return (
+    `[FindingArbiter] UNMEASURED prior refusals — ${ledgerPath()} exists and could not be read, ` +
+    "so this command's rows carry `refiledAfter: null` meaning *not looked up* rather than *none " +
+    "found*. The filing is allowed and recorded; an override in it may be counted against no " +
+    "refusal."
   );
 }
