@@ -186,6 +186,47 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
     }
     return out;
   }
+  /**
+   * #1473's delta, as a SECOND frozen reference rather than an edit to the
+   * first.
+   *
+   * The pre-#793 reference above must never be updated to track the live
+   * module — its own docblock says so, and a reference that follows its
+   * subject agrees with it unconditionally. But #1473 deliberately changed
+   * what the live parse sees: a root spelled inline, binding no name.
+   *
+   * So the equivalence claim is no longer `live == ref`. It is
+   * `live == ref + the inline form`, and that is what the case below
+   * asserts. This pattern is an independent re-implementation of the delta
+   * ONLY — identifier-rooted declarations are not its business — so the two
+   * references still cannot agree by construction.
+   */
+  const REF_INLINE_DECL_SOURCE = String.raw`([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(mkdtempSync\s*\(\s*)?join\(\s*(?:import\.meta\.dir|process\.cwd\(\))\s*,\s*"(\.[^"]*)"`;
+
+  function refInlineFixedScratchRoots(source: string): string[] {
+    const src = stripJsComments(source);
+    const out: string[] = [];
+    for (const m of src.matchAll(new RegExp(REF_INLINE_DECL_SOURCE, "g"))) {
+      const [, name, wrapped, literal] = m;
+      if (wrapped) continue;
+      if (refIsNavigation(literal!)) continue;
+      const mutates = new RegExp(`(?:mkdirSync|rmSync)\\(\\s*(?:join\\(\\s*)?${name}\\b`);
+      if (mutates.test(src)) out.push(`${name} = ${literal}`);
+    }
+    return out;
+  }
+  function refInlineUniqueScratchPrefixes(source: string): string[] {
+    const src = stripJsComments(source);
+    const out: string[] = [];
+    for (const m of src.matchAll(new RegExp(REF_INLINE_DECL_SOURCE, "g"))) {
+      const [, , wrapped, literal] = m;
+      if (!wrapped) continue;
+      if (refIsNavigation(literal!)) continue;
+      if (!out.includes(literal!)) out.push(literal!);
+    }
+    return out;
+  }
+
   function refUniqueScratchPrefixes(source: string): string[] {
     const src = stripJsComments(source);
     const roots = refRepoRootIdents(src);
@@ -218,10 +259,16 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
     // stopped reading a file the reference reads shows up here as a missing
     // element, in that file, by name. Element by element, never a count — a
     // count is satisfied by any substitution that preserves the total.
+    // #1473: the reference the live parse is held against is now
+    // `pre-#793 + the inline form`. Both halves are frozen and neither
+    // tracks the live module. `repoRootIdents` is NOT part of the delta —
+    // #1473 did not touch it — so idents stay an exact equality.
     const divergences: string[] = [];
     let identTotal = 0;
     let prefixTotal = 0;
     let fixedTotal = 0;
+    let inlineTotal = 0;
+    const sorted = (xs: string[]) => JSON.stringify([...xs].sort());
     for (const { file, raw, stripped } of treeSources()) {
       const liveIdents = [...repoRootIdents(stripped)].sort();
       const refIdents = [...refRepoRootIdents(stripped)].sort();
@@ -230,15 +277,25 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
         divergences.push(`test/${file} idents: live ${JSON.stringify(liveIdents)} vs reference ${JSON.stringify(refIdents)}`);
       }
       const livePrefixes = uniqueScratchPrefixes(raw);
-      const refPrefixes = refUniqueScratchPrefixes(raw);
+      // Deduped, because `uniqueScratchPrefixes` dedupes and the two halves
+      // of the reference can legitimately find the same prefix in different
+      // spellings — `test/scratch-paths-unique.test.ts` declares `.x-` both
+      // ROOT-rooted and inline, as two separate fixtures. Comparing a
+      // deduped list against a raw concatenation reports that as a
+      // divergence, which is the comparison being wrong, not the parse.
+      const refPrefixes = [
+        ...new Set([...refUniqueScratchPrefixes(raw), ...refInlineUniqueScratchPrefixes(raw)]),
+      ];
       prefixTotal += refPrefixes.length;
-      if (JSON.stringify(livePrefixes) !== JSON.stringify(refPrefixes)) {
+      if (sorted(livePrefixes) !== sorted(refPrefixes)) {
         divergences.push(`test/${file} prefixes: live ${JSON.stringify(livePrefixes)} vs reference ${JSON.stringify(refPrefixes)}`);
       }
       const liveFixed = fixedScratchRoots(raw);
-      const refFixed = refFixedScratchRoots(raw);
+      const refInlineFixed = refInlineFixedScratchRoots(raw);
+      const refFixed = [...refFixedScratchRoots(raw), ...refInlineFixed];
       fixedTotal += refFixed.length;
-      if (JSON.stringify(liveFixed) !== JSON.stringify(refFixed)) {
+      inlineTotal += refInlineFixed.length;
+      if (sorted(liveFixed) !== sorted(refFixed)) {
         divergences.push(`test/${file} fixed roots: live ${JSON.stringify(liveFixed)} vs reference ${JSON.stringify(refFixed)}`);
       }
     }
@@ -252,14 +309,27 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
       .toBeGreaterThanOrEqual(5);
     expect(fixedTotal, "the reference parse classified no fixed roots at all — it should see this file's own fixtures")
       .toBeGreaterThan(0);
+    // #1473's own vacuity control, and the one that matters most here. The
+    // inline half of the reference contributing ZERO would make this case
+    // byte-identical to the pre-#1473 one: it would pass by comparing the
+    // live parse against a delta that found nothing, and the widening would
+    // be unwitnessed at tree level. The fixtures in
+    // `test/scratch-paths-unique.test.ts` are what it reads.
+    expect(
+      inlineTotal,
+      "the inline half of the reference matched nothing in test/, so this comparison is the " +
+        "pre-#1473 one wearing a new name — the widening is unwitnessed over the real tree",
+    ).toBeGreaterThan(0);
 
     expect(
       divergences,
-      "the live parse and the frozen pre-#793 parse disagree over test/. The one legal\n" +
-      "divergence class is an identifier literally prefixed by const/let/var at the start\n" +
-      "of an assignment — see the two cases below — and if that is what this is, the LIVE\n" +
-      "reading is the correct one and this expectation needs the file carved out by name,\n" +
-      "not the reference relaxed:\n" + divergences.join("\n"),
+      "the live parse and the frozen reference disagree over test/. The reference is\n" +
+      "`pre-#793 + #1473's inline-root form`, both frozen. Two legal divergence classes:\n" +
+      "an identifier literally prefixed by const/let/var at the start of an assignment\n" +
+      "(see the two cases below), and a root spelled inline as import.meta.dir or\n" +
+      "process.cwd(). If it is either, the LIVE reading is the correct one and this\n" +
+      "expectation needs the file carved out by name, not a reference relaxed:\n" +
+      divergences.join("\n"),
     ).toEqual([]);
   }, 60_000);
 

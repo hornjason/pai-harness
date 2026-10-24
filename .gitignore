@@ -19,6 +19,7 @@ node_modules
 .tmp-sc-drift-test-*/
 .sc-arity-probe-*/
 .rg713-*/
+.tmp-scan-test-*/
 
 # Added by rungate scaffold
 dist/

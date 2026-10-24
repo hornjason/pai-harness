@@ -58,11 +58,27 @@ export function scanStaleIssues(opts: {
   repo?: string;
   exclude?: number[];
   dryRun?: boolean;
+  /**
+   * How to ask whether an issue is open. Defaults to the real `gh` call
+   * (#1473).
+   *
+   * `dryRun` does NOT suppress that call and must not: a dry run reports
+   * what it WOULD close, and an issue already closed is not one of them, so
+   * the reading is load-bearing. What `dryRun` suppresses is the write.
+   *
+   * The seam exists because a test that cannot replace the reading has to
+   * perform it. `test/scan-stale-issues.test.ts` spawned `gh issue view`
+   * once per scanned issue — with a 15s per-spawn timeout against a 5s
+   * per-test budget — which is how a four-case file whose own work is a
+   * regex came to redden the required `test` check at 8319ms.
+   */
+  isIssueOpen?: (issueNum: number, repo: string) => boolean;
 }): ScanResult {
   const root = opts.projectRoot || ROOT;
   const repo = opts.repo || "hornjason/pai-config";
   const exclude = new Set(opts.exclude || []);
   const dryRun = opts.dryRun ?? false;
+  const isIssueOpen = opts.isIssueOpen ?? checkIssueOpen;
 
   const stateFile = join(root, "project-state.json");
   const state: ProjectState = JSON.parse(readFileSync(stateFile, "utf-8"));
@@ -80,7 +96,7 @@ export function scanStaleIssues(opts: {
   let scanned = 0;
   for (const num of completedIssues) {
     scanned++;
-    if (!checkIssueOpen(num, repo)) continue;
+    if (!isIssueOpen(num, repo)) continue;
     if (dryRun) {
       console.log(`Would close #${num}`);
       closed.push(num);
