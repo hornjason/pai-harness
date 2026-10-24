@@ -80,13 +80,14 @@ repository rather than quoted in the manifest, and that the candidates agree
 line for line outside the arm. Each of those is backed by a mutation row in
 that file's header.
 
-## Running it
+## Running it locally
 
 ```bash
 bun evals/ai-review-control/run.ts list
 bun evals/ai-review-control/run.ts stage suite-lock-redirect/planted /tmp/subj
 git -C /tmp/subj diff                      # the diff a reviewer reads
-# …point a reviewer at it, collect the findings payload it writes…
+# point a reviewer at it — see "Putting a subject in front of the deployed
+# reviewer" below for the only route that works on this repository
 bun evals/ai-review-control/run.ts score suite-lock-redirect/planted \
     /tmp/findings.json --reviewer rungate@0.8.0
 ```
@@ -96,6 +97,170 @@ published package (`.github/workflows/ai-review.yml`, `bunx rungate@<pin>`,
 deliberate per #1013) while the tree runs ahead of it, so a reading that cannot
 say which of those it watched is a number about nothing. An unnamed reading is
 UNMEASURED.
+
+## Putting a subject in front of the deployed reviewer (#1509)
+
+The line between `stage` and `score` was an ellipsis for the whole life of this
+directory, and the reason was a decision nobody had made rather than a script
+nobody had written. **The deployed reviewer is not pointable at a scratch
+directory.** It runs as the `ai-review` job on a pull request, writes its
+payload to a path under the runner's temp directory, and uploads it nowhere.
+
+### The route, and what was rejected
+
+| route | verdict |
+|---|---|
+| **Leave the subject where it lives** and open a pull request touching `evals/**/subjects/**` | **rejected.** `REVIEW.md`'s *Do not flag* list names that path — a finding there is a declared false positive by construction, so the reading would measure whether the reviewer obeyed the exclusion. Editing the exclusion to get a reading measures the edit, not the reviewer. |
+| **Open a pull request against `main`** staging the candidate at its `reviewPath` | **rejected.** The base would hold the real module, so the diff would be *production module → compacted copy* and not *baseline → candidate*. A different diff is a different measurement. |
+| **A pair of measurement branches**, base holding the subject's `baseline` at its `reviewPath` and head holding the candidate | **chosen.** The pull request's diff is then byte-identical to what `stage` writes locally, the file sits under `lib/`, where the reviewer does look, and nothing in the tree says it is a subject. |
+
+The pull request is **draft**, its title begins `MEASUREMENT — DO NOT MERGE:`,
+auto-merge is never armed, no label is ever applied, and it is **closed** with
+a comment saying what it measured. It carries the staged candidate and nothing
+else. Both branches are deleted afterwards.
+
+```bash
+# 1. the base: the subject's baseline at its own reviewPath
+git switch -c measurement/<n>-baseline origin/main
+cp evals/ai-review-control/subjects/<subject>/baseline.ts <reviewPath>
+git commit -am "MEASUREMENT base (#<n>)" && git push -u origin HEAD
+
+# 2. the head: the candidate, and nothing else
+git switch -c measurement/<n>-<case>
+cp evals/ai-review-control/subjects/<subject>/<case>.ts <reviewPath>
+git commit -am "MEASUREMENT candidate (#<n>)" && git push -u origin HEAD
+
+# 3. the draft pull request. NEVER --fill from a closing keyword, never
+#    `gh pr merge`, never `gh pr edit --add-label`.
+gh pr create --draft --base measurement/<n>-baseline \
+  --title "MEASUREMENT — DO NOT MERGE: <subject>/<case> (#<n>)" --body "…"
+```
+
+### Capturing what the reviewer wrote
+
+The only durable copy of a round's findings is the **ledger comment**
+(`lib/ai-review-rounds.ts`), and `capture` lifts one round out of it. Fetching
+the comment is the caller's job for the reason `rounds` already gives — a
+measurement that can only run against one forge is not one a consumer can take.
+
+```bash
+PR=<the draft measurement pull request>
+gh api "repos/hornjason/pai-harness/issues/$PR/comments" --paginate --jq \
+  '[.[] | select(.user.login == "github-actions[bot]"
+                 and (.body | contains("<!-- rungate:ai-review-ledger:v1 -->")))]
+   | first // {body: null} | {body: .body}' > /tmp/ledger.json
+
+bun evals/ai-review-control/run.ts capture /tmp/ledger.json \
+    --round 1 --draw 1 --out /tmp/findings.json
+
+bun evals/ai-review-control/run.ts score worktree-state-write/planted \
+    /tmp/findings.json --reviewer "<the pinned package, or the tree's sha>"
+```
+
+`--draw` is required when the ledger holds more than one entry under a round
+number, and `capture` refuses rather than taking the first: those entries are
+separate draws of a sampled instrument, and reporting one as "the" behaviour is
+the thing N exists to prevent. A round recorded as `findings: null` is refused
+too — writing `{"findings": []}` for it would convert "nobody can say what the
+reviewer found" into "the reviewer found nothing".
+
+### What the ledger does NOT carry, and what that costs
+
+#1509 proposed the ledger as the cheapest capture path on the grounds that it
+"already carries `findings` per round in the shape `score` wants". **Measured,
+it does not**, and the gap is two named fields. The writer's projection is
+`[ .findings[] | {severity, file, line, summary} ]` plus a `text` anchor, and
+the round entry around it is `{at, sha, merge, run, attempt, identity, round,
+turns, findings}`.
+
+| the payload contract requires | the ledger holds | what `score` reads |
+|---|---|---|
+| `verdict`: `PASS` or `BLOCK` | nothing — no round entry has ever carried one | `VERDICT_ABSENT`, on **every** round |
+| `failure_scenario` on each blocking finding | projected away | `BLOCKING_FINDING_INCOMPLETE`, on **every** blocking finding |
+| `severity`, `file`, `line`, `summary` | all four | — |
+
+The second row decides what this path can measure. `DETECTED` requires a
+blocking finding at the declared location, and a blocking finding read out of
+the ledger is always incomplete — so **a ledger capture can reach `QUIET`,
+`FIRED` and `MISSED`, and cannot reach `DETECTED`.** Recall is the half the
+control exists for, and through this path it is structurally unreachable.
+
+Both available repairs are refused in `capture.ts`, by name:
+
+- **Synthesising the verdict** from the findings makes clean subjects readable
+  and makes `CONTRADICTION` — the #1178 shape, roughly a third of runs —
+  impossible to observe, because the word compared would be derived from the
+  thing it is compared against. Two deciders that cannot disagree.
+- **Synthesising `failure_scenario`** is writing the content of a finding on
+  the reviewer's behalf, which is the one thing a control may never do.
+
+The fix is for the ledger writer in `lib/scaffold/ai-review-step.ts` to record
+the verdict and `failure_scenario`, and it is **#1511**. That is outside this
+directory, and until it lands the ledger route gives the raw findings a human
+can read beside the subject's declared answer, and an `UNMEASURED` from
+`score`.
+
+## The first readings, 2026-10-24
+
+Stored in `baselines/review-control-readings.json`, taken through the protocol
+above on draft pull request **#1510**, which was never merged, never labelled,
+never auto-merged, and is closed. Reviewer: the `ai-review` job on
+`hornjason/pai-harness`, adjudicated by `bunx rungate@0.8.2
+ai-review-findings`.
+
+**N = 2 per case**, each a separate attempt of one workflow run, on a
+byte-identical tree. The reviewer is a sampled instrument (#1290, CRC-B3) and
+one reading is one draw.
+
+| case | N | `score` outcome, every draw | what the reviewer actually wrote, every draw |
+|---|---|---|---|
+| `worktree-state-write/planted` | 2 | `UNMEASURED` (`BLOCKING_FINDING_INCOMPLETE` ×2, `VERDICT_ABSENT`) | `high` at line **46** of the staged `lib/project-state-root.ts` — *"a linked worktree now falls through the `repoRoot !== projectRoot` guard into the ok path"* — **inside the declared plant range [42, 47]**, plus the confound below. 31 and 39 turns. |
+| `worktree-state-write/clean` | 2 | `UNMEASURED` (`BLOCKING_FINDING_INCOMPLETE`, `VERDICT_ABSENT`) | **nothing at the arm**, both draws. The confound below and nothing else. 33 turns both draws. |
+| `suite-lock-redirect/planted` | 0 | — | not measured, see below |
+| `suite-lock-redirect/clean` | 0 | — | not measured, see below |
+
+**The outcome set did not vary across draws**, which is a reading and not a
+promise: four draws, two trees, no disagreement, against the 2 of 2 attempts
+that disagreed on #1504. Two draws is not a variance estimate.
+
+### Substantively, and through the instrument, are different answers
+
+Through `score` all four readings are `UNMEASURED`, for the ledger-projection
+reason above and for no reason about the reviewer. Read beside the subject's
+declared answer, the raw findings say the reviewer **located the convention
+break at the declared line, twice, and stayed silent about the arm in the
+clean variant, twice** — which is what CRC-A4's promotion condition asks for
+and is not a substitute for a reading the instrument can take.
+
+**It is therefore not grounds to tick CRC-A4.** `.claude/rules/claiming-sc-coverage.md`
+is explicit, and the whole of #1169 is that a reading nobody can take and a
+reading that came back clean print the same.
+
+### The confound, named rather than netted off
+
+A `critical` finding at line **39** of the staged file appears in **all four
+draws**, including both clean ones: the module has been replaced with a
+compacted stub that no longer exports what its callers import. That is true of
+the baseline, the planted candidate and the clean candidate alike — it is a
+property of staging a compacted subject at a live production path, not of the
+arm under measurement.
+
+It costs the clean half its reading. A blocking finding on a clean subject is
+`FIRED` by the control's rule, and the control has no way to tell a precision
+failure about the subject from a true observation about the staging. A subject
+whose `reviewPath` named a module the tree does not already have would not
+have it, and that is the change to consider before the next reading.
+
+### Why `suite-lock-redirect` was not measured
+
+Its `reviewPath`, `lib/test-suite-lock.ts`, is named by five conformity
+criteria — SC-648, SC-649, SC-759, SC-760 and SC-625 — which require content
+the compacted subject copy does not carry. Staging it makes the pre-push
+conformity gate refuse the measurement branch, and `--no-verify` is not an
+option here. Measured: **5 of 1410** conformity cases red with the subject
+staged, **0 of 1410** with it absent. That is a true refusal by a gate doing
+its job, so the subject is unmeasurable by this route until its `reviewPath`
+moves off a module the repository asserts the contents of.
 
 ## The five readings
 

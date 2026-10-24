@@ -61,6 +61,7 @@
  *
  * The honest fix is for the ledger writer to record both, and that is a change
  * to `lib/scaffold/ai-review-step.ts`, outside this module and outside #1509.
+ * It is filed as **#1511**.
  *
  * ## Why the forge query is the caller's job
  *
