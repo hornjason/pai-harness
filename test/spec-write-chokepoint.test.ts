@@ -41,20 +41,20 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { join } from "path";
 import {
   CHOKEPOINT,
-  EXPANSION_DEPTH,
   NOT_A_SPEC_PATH,
+  REASSIGNABLE_TARGETS,
   SWEPT_DIRS,
+  SWEPT_JS_DIRS,
   WRITE_PRIMITIVES,
-  blankComments,
-  callArguments,
-  expandView,
-  identifiersIn,
   shellCorpus,
   shellSpecWrites,
   specChokepointViolations,
+  undeterminedTargets,
   writeSites,
   type WriteSite,
 } from "../lib/spec-write-sweep";
+import { EXPANSION_DEPTH, specTargetingOf, writeSitesIn } from "../lib/spec-write-ast";
+import { parseTsModule } from "../lib/ts-ast";
 import { writeSpec, maySpecBeWritten, maySpecBeReplaced } from "../lib/write-spec";
 import { DERIVED_KEY } from "../lib/derived-spec";
 
@@ -154,6 +154,50 @@ describe("#1552: the real tree routes every spec write through the chokepoint", 
     expect(
       Object.keys(NOT_A_SPEC_PATH).filter((k) => !keys.has(k)),
       "these sites no longer exist — delete the entry",
+    ).toEqual([]);
+  });
+
+  test("#1566: every reassignable target is declared, and no declaration is stale", () => {
+    // The second reading the green above needs. A target built from a `let`
+    // is one whose value at the write cannot be established, so without this
+    // it reads exactly like a target the resolver followed and cleared.
+    expect(
+      undeterminedTargets(REPO).map((s) => `${s.file}::${s.target}`),
+      "this write's target is built from a let/var, so the sweep cannot say " +
+        "what it writes. Make the binding const, or add it to " +
+        "REASSIGNABLE_TARGETS in lib/spec-write-sweep.ts with what it writes (#1566)",
+    ).toEqual([]);
+
+    // VACUITY CONTROL: the declared list must be non-empty and every entry
+    // must still be in the population. An empty list with an empty verdict is
+    // the two-empty-collections shape, and a stale entry is an exemption for
+    // a site that no longer exists.
+    const reassignable = new Set(
+      writeSites(REPO)
+        .filter((s) => s.reassignable)
+        .map((s) => `${s.file}::${s.target}`),
+    );
+    expect(reassignable.size, "no site on this tree is reassignable — is the flag wired?").toBe(
+      Object.keys(REASSIGNABLE_TARGETS).length,
+    );
+    expect(
+      Object.keys(REASSIGNABLE_TARGETS).filter((k) => !reassignable.has(k)),
+      "these sites are no longer reassignable — delete the entry",
+    ).toEqual([]);
+  });
+
+  test("#1566: the undetermined reading is a SEPARATE claim from the violation one", () => {
+    // Two deciders that agree are behaviourally one decider. These answer
+    // different questions about the same population and the counts must
+    // differ, or one of them is dead and no behavioural test can say which.
+    const sites = writeSites(REPO);
+    const specTargeting = sites.filter((s) => s.specTargeting).length;
+    const reassignable = sites.filter((s) => s.reassignable).length;
+    expect(specTargeting).toBe(1); // the chokepoint
+    expect(reassignable).toBe(Object.keys(REASSIGNABLE_TARGETS).length);
+    expect(
+      sites.filter((s) => s.specTargeting && s.reassignable),
+      "a site is in both populations — the two readings are no longer separable here",
     ).toEqual([]);
   });
 });
@@ -496,7 +540,9 @@ ${DERIVED_KEY}: scripts/sync-spec.ts
     // not compare a status, or it becomes a second decider and the mutation
     // rows above stop meaning what they say.
     const src = readFileSync(CHOKEPOINT_SOURCE, "utf-8");
-    const code = blankComments(src);
+    // Transpiling drops comments, so a `.status ===` written in prose cannot
+    // read as a decision. This replaced a hand-rolled comment blanker (#1566).
+    const code = parseTsModule(src)!.js;
     expect(
       [...code.matchAll(/\.status\s*[=!]==?/g)].map((m) => m[0]),
       "writeSpec compares a DerivedStatus — call mayWrite instead",
@@ -583,15 +629,6 @@ describe("#1552: the sweep's reading is what it claims", () => {
     expect(writeSites(root, ["lib"])).toEqual([]);
   });
 
-  test("blankComments preserves every byte offset", () => {
-    const src = 'const a = 1; // writeFileSync\nconst b = "//not a comment";\n';
-    const out = blankComments(src);
-    expect(out.length).toBe(src.length);
-    expect(out.split("\n").length).toBe(src.split("\n").length);
-    expect(out).toContain('"//not a comment"');
-    expect(out).not.toContain("writeFileSync");
-  });
-
   test("a rename or copy is read at its DESTINATION, not its source", () => {
     // Round-4 AI-review finding. `renameSync(src, dest)` and
     // `copyFileSync(src, dest)` write their second argument; reading the
@@ -612,48 +649,54 @@ describe("#1552: the sweep's reading is what it claims", () => {
     expect(found[0].target).toBe('join(specsDir, "NEW-SPEC.md")');
   });
 
-  test("callArguments splits one call in one pass, whatever the nesting", () => {
-    // The depth bug this fix first shipped with: restarting the scan at each
-    // comma loses the depth the open paren contributed, so argument two ran
-    // to the end of the file. Measured on this repo's own renameSync sites.
-    const src = 'f(join(a, b), `x${g(1, 2)}y`, /a,b/, "c,d");';
-    expect(callArguments(src, src.indexOf("("))).toEqual([
-      "join(a, b)",
-      "`x${g(1, 2)}y`",
-      "/a,b/",
-      '"c,d"',
-    ]);
+  test("arguments are split by the parser, whatever the nesting", () => {
+    // The depth bug the hand-rolled splitter first shipped with: restarting
+    // the scan at each comma lost the depth the open paren contributed, so
+    // argument two ran to the end of the file. The parser has no such state
+    // to lose — this row is kept as the regression it was written for.
+    const sites = writeSitesIn(
+      'renameSync(join(a, b), `x${g(1, 2)}y`);\ncopyFileSync(/a,b/.source, "c,d");',
+    );
+    expect(sites.map((s) => s.target)).toEqual(["`x${g(1, 2)}y`", '"c,d"']);
   });
 
   test("MECHANICALLY GENERATED: no surrounding fragment hides a planted spec write", () => {
-    // Four review rounds found four edge cases in this hand-rolled scanner,
-    // each by example. Examples are what the reviewer called the approach
-    // problem, and its own suggested remedy was a generator rather than more
-    // examples. `typescript` is a devDependency and `lib/` is published, so
-    // swapping in a real parser cannot land here — this is the other remedy.
+    // Four review rounds found four edge cases in the hand-rolled scanner this
+    // replaced, each by example. Examples were what the reviewer called the
+    // approach problem, and its own remedy was a generator rather than more
+    // examples. The scanner is now a parser (#1566) and the generator is kept:
+    // it is what demonstrates the parser is not merely wrong in new places.
+    //
+    // Bindings are suffixed per POSITION. Without that, `before === after`
+    // declares the same `const` twice, which is a genuine SyntaxError — 7 of
+    // the 100 cases were invalid programs, and the old scanner never noticed
+    // because it never parsed. An invalid fixture tests the parser's error
+    // path, not the detector.
     //
     // Every PAIR of fragments from the alphabet is placed before and after a
     // known spec write. The write must be found in all of them, and a known
     // non-spec write in the same contexts must never be.
-    const ALPHABET = [
+    const alphabet = (s: string) => [
       "",
-      "const re = /[\"']x/;",
-      'const b = text.replace(/`/g, "");',
-      "const t = `a${nested(`b${deep}`)}c`;",
+      `const re${s} = /["']x/;`,
+      `const b${s} = text.replace(/\`/g, "");`,
+      `const t${s} = \`a\${nested(\`b\${deep}\`)}c\`;`,
       "// writeFileSync(specPath, commented)",
       "/* writeFileSync(specPath, blocked) */",
-      'const s = "a string with specs/ inside it";',
-      "const div = total / count / 2;",
-      "const tagged = sql`select ${col}`;",
-      'const obj = { "key, with comma": [1, 2] };',
+      `const s${s} = "a string with specs/ inside it";`,
+      `const div${s} = total / count / 2;`,
+      `const tagged${s} = sql\`select \${col}\`;`,
+      `const obj${s} = { "key, with comma": [1, 2] };`,
     ];
+    const BEFORE = alphabet("A");
+    const AFTER = alphabet("B");
     const PLANTED = 'writeFileSync(join(specsDir, "PLANTED-SPEC.md"), body);';
     const INNOCENT = 'writeFileSync(join(outDir, "report.json"), body);';
 
     const missed: string[] = [];
     const falsePositives: string[] = [];
-    for (const before of ALPHABET) {
-      for (const after of ALPHABET) {
+    for (const before of BEFORE) {
+      for (const after of AFTER) {
         const root = tempRoot("gen");
         plant(root, "lib/g.ts", [before, PLANTED, INNOCENT, after].join("\n"));
         const found = specChokepointViolations(root, ["lib"]);
@@ -666,7 +709,7 @@ describe("#1552: the sweep's reading is what it claims", () => {
         }
       }
     }
-    expect(ALPHABET.length ** 2, "the generator produced no cases").toBe(100);
+    expect(BEFORE.length * AFTER.length, "the generator produced no cases").toBe(100);
     expect(missed, "these contexts hid a planted spec write from the sweep").toEqual([]);
     expect(falsePositives, "these contexts made an unrelated write look like a spec").toEqual([]);
   });
@@ -698,21 +741,24 @@ describe("#1552: the sweep's reading is what it claims", () => {
     // `"` inside it as a string opener swallows the rest of the file, and
     // every call site after it vanishes — a sweep that silently shrinks.
     const src = 'const re = /["\']x/; writeFileSync(specPath, v);';
-    expect(blankComments(src)).toContain("writeFileSync(specPath, v)");
+    expect(writeSitesIn(src).map((s) => s.target)).toEqual(["specPath"]);
   });
 
   test(`the view follows ${EXPANSION_DEPTH} links of local initialiser`, () => {
     // Measured, not chosen: `scripts/split-spec.ts` needs three to reach the
     // word "spec", and at one link that write is invisible.
-    const src = [
-      'const parentDir = dirname(specPath);',
-      'const splitDir = join(parentDir, dirName);',
-      'const filePath = join(splitDir, name);',
+    const chain = [
+      "const parentDir = dirname(specPath);",
+      "const splitDir = join(parentDir, dirName);",
+      "const filePath = join(splitDir, name);",
     ].join("\n");
-    expect(expandView(src, "filePath")).toMatch(/spec/i);
-    expect(expandView(src, "unrelated"), "an unknown identifier expands to itself").toBe(
-      "unrelated",
-    );
+    expect(specTargetingOf(writeSitesIn(`${chain}\nwriteFileSync(filePath, b);`)[0]!)).toBe(true);
+
+    // NEGATIVE CONTROL: an identifier with no local binding expands to itself
+    // and is reported unresolved rather than resolving to a neighbour's value.
+    const lone = writeSitesIn(`${chain}\nwriteFileSync(unrelated, b);`)[0]!;
+    expect(lone.view).toBe("unrelated");
+    expect(lone.unresolved).toEqual(["unrelated: not-found"]);
   });
 
   test("a lone backtick in the view does not blind the rest of the chase", () => {
@@ -773,8 +819,12 @@ describe("#1552: the sweep's reading is what it claims", () => {
     // `const md = …` elsewhere in the file and spliced its text into the
     // view. That alone put four AGENTS.md and CLAUDE.md writes on the
     // violation list, each for a word inside a filename.
-    const src = ['const md = buildSpecMap();', 'const p = join(root, "AGENTS.md");'].join("\n");
-    expect(expandView(src, "p")).not.toMatch(/spec/i);
+    const src = [
+      "const md = buildSpecMap();",
+      'const p = join(root, "AGENTS.md");',
+      "writeFileSync(p, v);",
+    ].join("\n");
+    expect(specTargetingOf(writeSitesIn(src)[0]!)).toBe(false);
   });
 
   test("no fragment can make the harvester stop reading before the end", () => {
@@ -787,9 +837,12 @@ describe("#1552: the sweep's reading is what it claims", () => {
     // says to do when a guard's view of its input can shrink: assert on the
     // view itself.
     //
-    // The invariant: appending a fresh identifier to any fragment must add
-    // that identifier to the harvest. Anything that jumps to the end of the
-    // string loses the marker, whatever the mechanism.
+    // The invariant, restated for a parser (#1566): appending a fresh
+    // identifier to any fragment must either put that identifier in the view,
+    // or REFUSE. What is forbidden is the third outcome — parsing happily and
+    // silently losing the tail, which is what every one of those three rounds
+    // actually did. An unparseable fragment now throws UNMEASURED, so the
+    // shrink cannot be silent.
     const MARKER = "zzTrailingMarker";
     const fragments = [
       "`", // lone backtick — round 3
@@ -804,12 +857,33 @@ describe("#1552: the sweep's reading is what it claims", () => {
       "a + `unclosed ${b}",
       "`text` + ident",
     ];
-    const lost = fragments.filter((f) => !identifiersIn(`${f} ${MARKER}`).includes(MARKER));
+    let parsed = 0;
+    let refused = 0;
+    const lost = fragments.filter((f) => {
+      const src = `const zz = ${f} + ${MARKER};\nwriteFileSync(zz, v);`;
+      let sites;
+      try {
+        sites = writeSitesIn(src);
+      } catch {
+        refused++;
+        return false; // a refusal is loud, and loud is allowed
+      }
+      parsed++;
+      return sites.length === 1 && !sites[0]!.view.includes(MARKER);
+    });
     expect(
       lost,
-      "the harvester stopped reading before the end of these fragments, so every " +
-        "identifier after them is invisible and a spec write built from one is missed",
+      "the sweep parsed these fragments and silently lost everything after them, so a " +
+        "spec write built from one is invisible while the report reads clean",
     ).toEqual([]);
+
+    // Non-vacuity, both ways: if everything refused, the row asserts nothing
+    // about reading; if nothing refused, the catch is dead and the row would
+    // pass with the refusal path removed.
+    expect(parsed, "no fragment parsed — the row proves nothing about the view").toBeGreaterThan(0);
+    expect(refused, "no fragment refused — the UNMEASURED path is untested here").toBeGreaterThan(
+      0,
+    );
   });
 
   test("every primitive in WRITE_PRIMITIVES is actually detected", () => {
@@ -854,30 +928,50 @@ describe("#1552: the sweep's reading is what it claims", () => {
   });
 
   test("a same-named binding in another function cannot hide a spec write", () => {
-    // The high-severity AI-review finding on this PR, as a case. Resolving a
-    // bare identifier to the FIRST matching declaration in the file reads the
-    // report path, matches nothing, and omits a genuine unguarded spec write.
-    // The union over all same-named bindings is wrong in the safe direction.
+    // The high-severity AI-review finding on #1557, as a case, and the ONE
+    // site in this suite whose classification MOVED when the name scan became
+    // a scope resolution (#1566).
+    //
+    // Two functions each declare `filePath`. Three readings are possible:
+    //   first-match name scan  → [3]     — reads report.json for BOTH, and the
+    //                                      real spec write at 7 is MISSED.
+    //   union of all bindings  → [3, 7]  — finds 7, and invents 3.
+    //   scope resolution       → [7]     — each use reads its own binding.
+    // The first is the defect; the second is what #1557 shipped; the third is
+    // the only one that is simply correct.
+    const two = [
+      "export function writeReport(outDir: string, body: string) {",
+      '  const filePath = join(outDir, "report.json");',
+      "  writeFileSync(filePath, body);",
+      "}",
+      "export function writeTheSpec(specsDir: string, body: string) {",
+      '  const filePath = join(specsDir, "NEW-SPEC.md");',
+      "  writeFileSync(filePath, body);",
+      "}",
+    ].join("\n");
     const root = tempRoot("shadow");
+    plant(root, "lib/two.ts", two);
+    expect(specChokepointViolations(root, ["lib"]).map((s) => s.line)).toEqual([7]);
+
+    // NEGATIVE CONTROL: the same file with the two bodies exchanged. A reading
+    // that answered [7] because it always picks the LAST binding would answer
+    // [7] here too; the correct reading tracks the spec, so it moves to [3].
+    const swapped = tempRoot("shadow-swapped");
     plant(
-      root,
+      swapped,
       "lib/two.ts",
       [
-        "export function writeReport(outDir: string, body: string) {",
-        '  const filePath = join(outDir, "report.json");',
-        "  writeFileSync(filePath, body);",
-        "}",
         "export function writeTheSpec(specsDir: string, body: string) {",
         '  const filePath = join(specsDir, "NEW-SPEC.md");',
         "  writeFileSync(filePath, body);",
         "}",
+        "export function writeReport(outDir: string, body: string) {",
+        '  const filePath = join(outDir, "report.json");',
+        "  writeFileSync(filePath, body);",
+        "}",
       ].join("\n"),
     );
-    const found = specChokepointViolations(root, ["lib"]);
-    // Both sites report, because the sweep has no scope and says so: the
-    // report write is an over-report costing one classified line, and the
-    // spec write is the one that must never be missed.
-    expect(found.map((s) => s.line)).toEqual([3, 7]);
+    expect(specChokepointViolations(swapped, ["lib"]).map((s) => s.line)).toEqual([3]);
   });
 
   test("the swept directories are the ones the issue enumerated", () => {

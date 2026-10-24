@@ -1,0 +1,554 @@
+/**
+ * Scope resolution at a write site (#1566).
+ *
+ * ## Why this file exists
+ *
+ * `initialiserOf` in the merged #1552 sweep answered "which binding does this
+ * identifier resolve to" with a file-global name scan. The AI review on #1557
+ * found it reading the FIRST same-named declaration in the file; the fix taken
+ * there — union over ALL same-named declarations — removed the silent false
+ * negative and replaced it with a silent false positive. Both are name scans
+ * answering a scope-and-position question, and this repository has already
+ * paid for that lesson twice (#968, #1555: a token scan wrong five times
+ * across four revisions, two shapes still wrong in merged code).
+ *
+ * So the population below is not "cases that broke". It is an ENUMERATION of
+ * the ways an identifier at a write site can resolve, written before the fix,
+ * each with a NEGATIVE CONTROL: the same fixture with exactly one feature
+ * removed, which must produce the opposite reading. A shape that answers the
+ * same either way has told you nothing.
+ *
+ * **Every fixture names its bindings `p`, `q`, `dest` or `out` — never
+ * `specPath`.** An identifier containing "spec" would make `SPEC_TARGET` match
+ * the NAME rather than the resolved value, and every row here would pass
+ * without the resolver doing anything. That is the vacuous-assertion shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, and it is the easiest way to
+ * write this file wrong.
+ *
+ * The before/after reading over the real tree is not in this file, because it
+ * is a measurement rather than an invariant: run `bun scripts/spec-write-census.ts`
+ * on each side of the change and diff the two. What that produced for #1566 is
+ * quoted in the PR, with this command beside it.
+ *
+ * Covers SC-1566-SCOPE (the eight resolution shapes) and SC-1566-DETECT (the
+ * write-site detection shapes).
+ */
+import { describe, expect, test } from "bun:test";
+import { specTargetingOf, writeSitesIn } from "../lib/spec-write-ast";
+
+/** The one write site in a single-site fixture. */
+function onlySite(source: string) {
+  const sites = writeSitesIn(source);
+  expect(sites.length, `expected exactly one write site in:\n${source}`).toBe(1);
+  return sites[0]!;
+}
+
+/** Does the fixture's single write site read as aiming at a derived document? */
+function targets(source: string): boolean {
+  return specTargetingOf(onlySite(source));
+}
+
+/** Which identifiers at the site could not be resolved, as `name: reason`. */
+function unresolved(source: string): string[] {
+  return onlySite(source).unresolved;
+}
+
+// ── The eight resolution shapes, each with its negative control ──────
+
+describe("SC-1566-SCOPE: an identifier at a write site resolves by scope, not by name", () => {
+  test("shape 1 — a module-level const resolves to its initialiser", () => {
+    expect(
+      targets(`
+        const p = join(d, "A-SPEC.md");
+        function f() { writeFileSync(p, "x"); }
+      `),
+    ).toBe(true);
+
+    // NEGATIVE CONTROL: same shape, non-spec initialiser. Flips, which proves
+    // the reading came from the VALUE and not from the identifier existing.
+    expect(
+      targets(`
+        const p = join(d, "report.json");
+        function f() { writeFileSync(p, "x"); }
+      `),
+    ).toBe(false);
+  });
+
+  test("shape 2 — a function-local binding shadows a module-level one", () => {
+    // The DEFECT direction: the local names a spec, the module-level one does
+    // not. A first-match name scan reads `report.json` and reports clean on a
+    // real spec write. This is the HIGH finding from #1557, as a case.
+    expect(
+      targets(`
+        const p = join(d, "report.json");
+        function f() {
+          const p = join(d, "A-SPEC.md");
+          writeFileSync(p, "x");
+        }
+      `),
+    ).toBe(true);
+
+    // NEGATIVE CONTROL / the other direction: the module-level one names a
+    // spec and the local does not. The write cannot reach the module-level
+    // binding, so the honest answer is false — and a union over all same-named
+    // declarations (the fix taken in #1557) answers true here.
+    expect(
+      targets(`
+        const p = join(d, "A-SPEC.md");
+        function f() {
+          const p = join(d, "report.json");
+          writeFileSync(p, "x");
+        }
+      `),
+    ).toBe(false);
+  });
+
+  test("shape 3 — a parameter is UNRESOLVED, not clean", () => {
+    expect(unresolved(`function f(p) { writeFileSync(p, "x"); }`)).toEqual(["p: parameter"]);
+
+    // NEGATIVE CONTROL: a local declaration of the same name resolves, so the
+    // unresolved list empties. Without this the row cannot distinguish "a
+    // parameter is reported" from "everything is reported".
+    expect(
+      unresolved(`function f(q) { const p = join(d, "A-SPEC.md"); writeFileSync(p, "x"); }`),
+    ).toEqual([]);
+  });
+
+  test("shape 4 — a block-scoped let in a sibling branch is not in scope", () => {
+    // The write is in the ELSE branch and sees only the else branch's binding.
+    expect(
+      targets(`
+        function f(c) {
+          if (c) { let p = join(d, "A-SPEC.md"); use(p); }
+          else { let p = join(d, "report.json"); writeFileSync(p, "x"); }
+        }
+      `),
+    ).toBe(false);
+
+    // NEGATIVE CONTROL: move the spec into the branch that actually writes.
+    expect(
+      targets(`
+        function f(c) {
+          if (c) { let p = join(d, "report.json"); use(p); }
+          else { let p = join(d, "A-SPEC.md"); writeFileSync(p, "x"); }
+        }
+      `),
+    ).toBe(true);
+  });
+
+  test("shape 5 — a destructured binding is UNRESOLVED", () => {
+    expect(unresolved(`const { p } = cfg; writeFileSync(p, "x");`)).toEqual(["p: destructured"]);
+
+    // NEGATIVE CONTROL: the same name bound by a plain declarator resolves.
+    expect(unresolved(`const p = cfg.p; writeFileSync(p, "x");`)).toEqual([]);
+  });
+
+  test("shape 6 — an imported binding is UNRESOLVED, because the value is in another module", () => {
+    expect(
+      unresolved(`import { p } from "./paths"; writeFileSync(p, "x");`),
+    ).toEqual(["p: import"]);
+
+    // NEGATIVE CONTROL: same identifier, declared locally instead.
+    expect(unresolved(`const p = join(d, "A-SPEC.md"); writeFileSync(p, "x");`)).toEqual([]);
+  });
+
+  test("shape 7 — a reassignment between declaration and use is read as a union", () => {
+    // Over-reporting is the allowed direction: the initialiser alone is
+    // `report.json`, so a declaration-only reading reports clean on a write
+    // that demonstrably can aim at a spec.
+    expect(
+      targets(`
+        let p = join(d, "report.json");
+        p = join(d, "A-SPEC.md");
+        writeFileSync(p, "x");
+      `),
+    ).toBe(true);
+
+    // NEGATIVE CONTROL: remove the reassignment — the one feature — and it
+    // flips. Without this the row would also pass if the resolver simply
+    // reported every `let` as spec-targeting.
+    expect(
+      targets(`
+        let p = join(d, "report.json");
+        writeFileSync(p, "x");
+      `),
+    ).toBe(false);
+  });
+
+  test("shape 7b — a DESTRUCTURING reassignment counts as a reassignment", () => {
+    // AI-review finding on #1569, high. The tracker read only `x = …`, so a
+    // reassignment through a pattern was silently dropped and the identifier
+    // resolved to its initialiser alone — the permissive direction again, in
+    // the very mechanism added to stop it.
+    expect(
+      targets(`
+        let p = join(d, "report.json");
+        [p] = [join(d, "A-SPEC.md")];
+        writeFileSync(p, "x");
+      `),
+    ).toBe(true);
+
+    expect(
+      targets(`
+        let p = join(d, "report.json");
+        ({ p } = { p: join(d, "A-SPEC.md") });
+        writeFileSync(p, "x");
+      `),
+    ).toBe(true);
+
+    // NEGATIVE CONTROL for each: the same destructuring shape assigning a
+    // non-spec value must stay false, or the rows above would pass for a
+    // resolver that merely gave up and reported everything.
+    expect(
+      targets(`
+        let p = join(d, "first.json");
+        [p] = [join(d, "second.json")];
+        writeFileSync(p, "x");
+      `),
+    ).toBe(false);
+
+    expect(
+      targets(`
+        let p = join(d, "first.json");
+        ({ p } = { p: join(d, "second.json") });
+        writeFileSync(p, "x");
+      `),
+    ).toBe(false);
+  });
+
+  test("shape 8 — a nested closure's parameter shadows an outer const", () => {
+    expect(
+      unresolved(`
+        const p = join(d, "A-SPEC.md");
+        items.forEach((p) => { writeFileSync(p, "x"); });
+      `),
+    ).toEqual(["p: parameter"]);
+
+    // NEGATIVE CONTROL: rename the closure parameter — the one feature — and
+    // the outer const becomes reachable again.
+    expect(
+      targets(`
+        const p = join(d, "A-SPEC.md");
+        items.forEach((q) => { writeFileSync(p, "x"); });
+      `),
+    ).toBe(true);
+  });
+});
+
+// ── The property that makes the assignment enumeration stop mattering ──
+
+describe("SC-1566-SCOPE: a reassignable binding makes a target undetermined", () => {
+  /** The spellings a widened assignment tracker still misses. */
+  const MISSED_BY_ENUMERATION: [string, string][] = [
+    ["a default inside a pattern", '[p = join(d, "A-SPEC.md")] = [];'],
+    ["for ([p] of …)", 'for ([p] of [[join(d, "A-SPEC.md")]]) { }'],
+    ["for (p of …)", 'for (p of [join(d, "A-SPEC.md")]) { }'],
+  ];
+
+  test("every spelling the tracker misses comes out UNDETERMINED, not clean", () => {
+    // This is the whole point of deciding eligibility by binding kind. Each
+    // of these assigns a spec path in a form the tracker does not read, so
+    // under a spelling-based reading the site says "not a spec" — the
+    // permissive direction. `let` is untrusted by the language's own rule, so
+    // all three say "cannot tell" instead, and so does a fourth spelling
+    // nobody has thought of.
+    const clean: string[] = [];
+    for (const [name, assignment] of MISSED_BY_ENUMERATION) {
+      const site = onlySite(
+        `let p = join(d, "report.json");\n${assignment}\nwriteFileSync(p, "x");`,
+      );
+      if (!site.opaque && !specTargetingOf(site)) clean.push(name);
+      expect(site.reassignable, `${name}: p is a let and must be flagged`).toBe(true);
+    }
+    expect(
+      clean,
+      "these spellings assigned a spec path and the sweep reported the site as clean",
+    ).toEqual([]);
+  });
+
+  test("NEGATIVE CONTROL: the same shapes on a const are determined", () => {
+    // Without this the row above would pass for a resolver that called
+    // everything undetermined, which is the louder-not-better failure.
+    const site = onlySite('const p = join(d, "report.json");\nwriteFileSync(p, "x");');
+    expect(site.reassignable).toBe(false);
+    expect(site.opaque).toBe(false);
+    expect(specTargetingOf(site)).toBe(false);
+
+    const spec = onlySite('const p = join(d, "A-SPEC.md");\nwriteFileSync(p, "x");');
+    expect(spec.reassignable).toBe(false);
+    expect(specTargetingOf(spec)).toBe(true);
+  });
+
+  test("the flag propagates through the expansion, not just the outer binding", () => {
+    // Six of this tree's declared entries are locally `const` and land in the
+    // population because an identifier INSIDE the target is a let. A reading
+    // that only checked the outermost binding would clear all of them.
+    const site = onlySite(
+      'let base = outDir;\nconst p = join(base, "f.json");\nwriteFileSync(p, "x");',
+    );
+    expect(site.reassignable, "p is const but base is not").toBe(true);
+
+    // NEGATIVE CONTROL: make the inner binding const and it clears.
+    const fixed = onlySite(
+      'const base = outDir;\nconst p = join(base, "f.json");\nwriteFileSync(p, "x");',
+    );
+    expect(fixed.reassignable).toBe(false);
+  });
+});
+
+// ── Shape 9, found by the AI review on #1569 round 3 ─────────────────
+
+describe("SC-1566-SCOPE: the expansion dedup is per BINDING, not per name", () => {
+  /**
+   * Two distinct bindings named `d` on one expansion chain. The local one is
+   * reached first, so a dedup keyed on the NAME marks `d` done and the
+   * module-level one — the link that actually holds the spec path — is never
+   * expanded. Same defect class as `initialiserOf`: a name standing in for a
+   * binding, one level further in.
+   *
+   * Written as `const` throughout on purpose. A `let` anywhere would make the
+   * site `opaque` and the row would pass on the undetermined reading instead
+   * of on the resolution, which is the vacuous direction.
+   */
+  const COLLIDING = `
+    const d = join(root, "A-SPEC.md");
+    const q = join(d, "x");
+    function f() {
+      const d = "safe";
+      const p = join(q, d);
+      writeFileSync(p, "y");
+    }
+  `;
+
+  test("a shadowed name later in the chain is still expanded", () => {
+    expect(targets(COLLIDING)).toBe(true);
+  });
+
+  test("PREMISE CONTROL: with no name collision the same chain already resolved", () => {
+    // Rename the local — the one feature — and the chain has no repeat. If
+    // this row were red the fixture would be failing for some other reason
+    // (depth budget, the literal being unreachable) and the row above would
+    // prove nothing about the dedup.
+    expect(targets(COLLIDING.replace(/\bd = "safe"/, 'e = "safe"').replace(/, d\)/, ", e)"))).toBe(
+      true,
+    );
+  });
+
+  test("NEGATIVE CONTROL: the same collision with no spec at the end stays false", () => {
+    // Otherwise the fix could be "keep expanding until something matches".
+    expect(targets(COLLIDING.replace("A-SPEC.md", "report.json"))).toBe(false);
+  });
+
+  test("the dedup still fires — one binding named twice is resolved once", () => {
+    // Removing the dedup entirely also makes the row above pass. This is what
+    // separates "key it by binding" from "stop deduping".
+    const site = onlySite(`const p = join(a, "x");\nwriteFileSync(join(p, p), "y");`);
+    expect(
+      site.view.match(/join\(a, "x"\)/g),
+      "the single binding `p` was expanded once per occurrence",
+    ).toHaveLength(1);
+  });
+});
+
+// ── The four "cannot tell" states, each able to go red ──────────────
+
+describe("SC-1566-SCOPE: each cannot-tell state fails if the resolver starts claiming it", () => {
+  // Three of the four — parameter, destructured, import — are asserted in
+  // shapes 3, 5 and 6 as an EQUALITY on `unresolved`, so a resolver that
+  // started producing a value for one of them empties the list and reddens
+  // the row. `opaque` had no such case until this block: it was only ever
+  // asserted false, which is the direction a resolver drifts towards.
+
+  test("opaque is TRUE when the target shows no literal and nothing resolves", () => {
+    const site = onlySite(`function f(p) { writeFileSync(p, "x"); }`);
+    expect(site.opaque, "a bare parameter target is entirely invisible").toBe(true);
+    expect(specTargetingOf(site)).toBe(false);
+  });
+
+  test("NEGATIVE CONTROL: a literal in the target makes it not opaque", () => {
+    // One feature removed — the target now shows a readable filename, so the
+    // sweep can say it is not a spec rather than that it cannot tell. Without
+    // this the row above passes for a resolver that calls everything opaque.
+    const site = onlySite(`function f(p) { writeFileSync(join(p, "report.json"), "x"); }`);
+    expect(site.unresolved, "p is still a parameter").toEqual(["p: parameter"]);
+    expect(site.opaque).toBe(false);
+    expect(specTargetingOf(site)).toBe(false);
+  });
+
+  test("opaque survives a visible literal when a binding is reassignable", () => {
+    // The two inputs disagree: there IS a literal, and the path is still not
+    // establishable. `reassignable` has to win, or the `let` property is
+    // decorative on every target that happens to name a file.
+    const site = onlySite(`let d = tmp;\nwriteFileSync(join(d, "report.json"), "x");`);
+    expect(site.opaque).toBe(true);
+    expect(site.reassignable).toBe(true);
+
+    // NEGATIVE CONTROL: same bytes, const.
+    const fixed = onlySite(`const d = tmp;\nwriteFileSync(join(d, "report.json"), "x");`);
+    expect(fixed.opaque).toBe(false);
+  });
+});
+
+// ── Shape 10, found by the AI review on #1569 round 4 ────────────────
+
+describe("SC-1566-SCOPE: an assignment never completes a value set it did not start", () => {
+  /**
+   * The round-3 fix asked the wrong question. `reassignable` keyed on the
+   * binding KIND being `let`/`var`, which is a statement about how the name
+   * was introduced, not about whether the sweep can see every value it can
+   * hold. A `param`, a `catch` binding and a destructured one are all
+   * assignable too — and worse, an assignment to one *removed* its
+   * `unresolved` reason, because the reason was only recorded when the value
+   * list came out empty. One conditional assignment and a binding whose
+   * incoming value is wholly unknowable read as fully determined.
+   *
+   * The property: a value set is complete only when the DECLARATION
+   * establishes it and nothing can change it afterwards — `const` with an
+   * initialiser. Everything else is a lower bound, and an assignment adds to
+   * a lower bound rather than closing it.
+   */
+  const SHAPES: [string, string][] = [
+    [
+      "a parameter",
+      `function f(p, c) {
+         if (c) p = join(d, "report.json");
+         writeFileSync(p, "x");
+       }`,
+    ],
+    [
+      "a destructured binding",
+      `let { p } = cfg;
+       p = join(d, "report.json");
+       writeFileSync(p, "x");`,
+    ],
+    [
+      "a catch binding",
+      `try { g(); } catch (p) {
+         p = join(d, "report.json");
+         writeFileSync(p, "x");
+       }`,
+    ],
+  ];
+
+  test("an assignment does not erase the reason the declaration gave no value", () => {
+    const claimed: string[] = [];
+    for (const [name, src] of SHAPES) {
+      const site = onlySite(src);
+      if (site.unresolved.length === 0) claimed.push(name);
+    }
+    expect(
+      claimed,
+      "these bindings carry an unknowable incoming value and the sweep reported " +
+        "them as fully resolved, because one assignment supplied a value",
+    ).toEqual([]);
+  });
+
+  test("each of them is UNDETERMINED even though a literal is visible", () => {
+    const determined: string[] = [];
+    for (const [name, src] of SHAPES) {
+      const site = onlySite(src);
+      if (!site.reassignable) determined.push(name);
+      expect(site.opaque, `${name}: the path at the write is not establishable`).toBe(true);
+    }
+    expect(determined, "the value set is a lower bound, not a complete reading").toEqual([]);
+  });
+
+  test("NEGATIVE CONTROL: a const with an initialiser is still determined", () => {
+    // The whole population must not become undetermined — that is louder, not
+    // more accurate, and it would make every row above pass vacuously.
+    const site = onlySite('const p = join(d, "report.json");\nwriteFileSync(p, "x");');
+    expect(site.reassignable).toBe(false);
+    expect(site.opaque).toBe(false);
+    expect(site.unresolved).toEqual([]);
+    expect(specTargetingOf(site)).toBe(false);
+  });
+
+  test("NEGATIVE CONTROL: the assignment is still READ, over-reporting not dropped", () => {
+    // Marking the site undetermined must not stop the sweep seeing the spec
+    // path the assignment names. Both readings, or the fix trades one silent
+    // miss for another.
+    const site = onlySite(
+      `function f(p, c) {
+         if (c) p = join(d, "A-SPEC.md");
+         writeFileSync(p, "x");
+       }`,
+    );
+    expect(specTargetingOf(site)).toBe(true);
+    expect(site.reassignable).toBe(true);
+  });
+});
+
+// ── Write-site DETECTION, which is the same question one level up ────
+
+describe("SC-1566-DETECT: a write site is a call, not a spelling", () => {
+  test("a write primitive inside a string literal is not a call site", () => {
+    // The merged regex matches this: it reads source text, and the text
+    // contains `writeFileSync(`. Two named lines in the review were a sample,
+    // not a population — this is the population the AST closes.
+    expect(writeSitesIn(`const msg = "call writeFileSync(p, x) instead";`)).toEqual([]);
+
+    // NEGATIVE CONTROL: the same bytes as an actual call.
+    expect(writeSitesIn(`writeFileSync(p, "x");`).length).toBe(1);
+  });
+
+  test("a write primitive inside a comment is not a call site", () => {
+    expect(writeSitesIn(`// never call writeFileSync(p, x) here\nconst a = 1;`)).toEqual([]);
+    expect(writeSitesIn(`/* writeFileSync(p, x) */ const a = 1;`)).toEqual([]);
+  });
+
+  test("an ALIASED import is a call site — the name scan cannot see this at all", () => {
+    const sites = writeSitesIn(
+      `import { writeFileSync as wfs } from "fs";\nwfs(join(d, "A-SPEC.md"), "x");`,
+    );
+    expect(sites.length).toBe(1);
+    expect(sites[0]!.primitive).toBe("writeFileSync");
+    expect(specTargetingOf(sites[0]!)).toBe(true);
+
+    // NEGATIVE CONTROL: the same local name bound to something that is not a
+    // write primitive must NOT be a site.
+    expect(writeSitesIn(`import { readFileSync as wfs } from "fs";\nwfs(p);`)).toEqual([]);
+  });
+
+  test("a member call is a call site", () => {
+    expect(writeSitesIn(`fs.writeFileSync(p, "x");`).length).toBe(1);
+    expect(writeSitesIn(`require("fs").writeFileSync(p, "x");`).length).toBe(1);
+
+    // NEGATIVE CONTROL: a same-named method on something that is not fs is
+    // still reported — the sweep reads the primitive name on purpose, and the
+    // cost of that over-report is one classified line. Stated so the boundary
+    // is argued with rather than discovered.
+    expect(writeSitesIn(`myLogger.writeFileSync(p, "x");`).length).toBe(1);
+  });
+
+  test("a local alias of a write primitive is a call site", () => {
+    expect(writeSitesIn(`const w = writeFileSync;\nw(p, "x");`).length).toBe(1);
+
+    // NEGATIVE CONTROL: aliasing something else is not.
+    expect(writeSitesIn(`const w = readFileSync;\nw(p);`)).toEqual([]);
+  });
+
+  test("Bun.write is a call site and `safeWriteFileSync` is not", () => {
+    expect(writeSitesIn(`Bun.write(p, "x");`).length).toBe(1);
+    // `e` is an identifier character, so this was already excluded — kept as a
+    // row because it is the boundary the lookbehind used to get wrong.
+    expect(writeSitesIn(`safeWriteFileSync(p, "x");`)).toEqual([]);
+    expect(writeSitesIn(`xwriteFileSync(p, "x");`)).toEqual([]);
+  });
+
+  test("renameSync and copyFileSync are read on their SECOND argument", () => {
+    expect(targets(`renameSync(join(d, "A-SPEC.md"), join(d, "report.json"));`)).toBe(false);
+    expect(targets(`renameSync(join(d, "report.json"), join(d, "A-SPEC.md"));`)).toBe(true);
+  });
+});
+
+// ── The instrument must refuse rather than report clean ──────────────
+
+describe("SC-1566-DETECT: an unparseable source is UNMEASURED, not empty", () => {
+  test("writeSitesIn throws on source that does not parse", () => {
+    expect(() => writeSitesIn(`function f( {{{ `)).toThrow(/UNMEASURED/);
+  });
+
+  test("a source with no writes parses and returns empty through the normal path", () => {
+    expect(writeSitesIn(`export const a = 1;`)).toEqual([]);
+  });
+});
