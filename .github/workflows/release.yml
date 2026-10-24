@@ -209,5 +209,25 @@ jobs:
       # Removing `--publish-log` does not switch the check off: with no
       # receipt the guard falls back to refusing an unconfirmed read exactly
       # as it did before, and test/release-guard.test.ts drives both paths.
-      - name: Postflight — the registry actually serves this version
+      #
+      # THE NAME ASKS THE QUESTION; IT DOES NOT ANSWER IT (#1563). It used to
+      # read "the registry actually serves this version", and on v0.8.3 the
+      # step exited 0 having printed, in its own message, that it had taken no
+      # such reading: PROPAGATION PENDING, 25 reads over 120s, with `npm view
+      # rungate version --prefer-online` returning 0.8.2 from outside CI. Both
+      # of `postflightDecision`'s green readings produce the same name and the
+      # same conclusion, so the name is the one thing in the run summary that
+      # cannot be wrong — which is why it must not assert either of them.
+      #
+      # The reading is NOT available here, and that is why the title moved
+      # rather than the check. The packument is CDN-fronted and eventually
+      # consistent; v0.8.1 took about 16 minutes against a 120s budget. #407
+      # already tried waiting longer and #445 recorded it as a bigger guess
+      # rather than a different mechanism.
+      #
+      # Which reading was taken now leaves the log: the guard prints a
+      # `::notice` annotation carrying the verdict, so PROPAGATION PENDING and
+      # REGISTRY SERVES differ in the run summary and not only 5.7 MB into a
+      # log body.
+      - name: Postflight — what the registry says about this version
         run: bun scripts/release-guard.ts --phase postflight --publish-log "$RUNNER_TEMP/publish.log"

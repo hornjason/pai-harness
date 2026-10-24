@@ -45,6 +45,7 @@ import {
   awaitRegistryServes,
   NPM_REGISTRY,
   parsePublishReceipt,
+  postflightAnnotation,
   postflightDecision,
   preflightRefusal,
   registryState,
@@ -155,6 +156,11 @@ async function main(): Promise<void> {
   }
 
   const decision = postflightDecision(PKG, treeVersion!, reading!, receipt);
+  // The verdict, on a channel that leaves the log (#1563). Emitted BEFORE the
+  // exits below, because `refuse` and `unmeasured` never return — and emitted
+  // for every outcome, so the annotation's absence means the step did not
+  // reach its decision rather than meaning the decision was fine.
+  console.log(postflightAnnotation(decision));
   if (decision.outcome === "refused") refuse(decision.message);
   if (decision.outcome === "unmeasured") unmeasured(decision.message);
   console.log(`postflight OK: ${decision.message}`);

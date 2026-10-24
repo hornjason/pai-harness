@@ -39,8 +39,12 @@ import {
   POSTFLIGHT_BUDGET_MS,
   POSTFLIGHT_DELAY_MS,
   parsePublishReceipt,
+  postflightAnnotation,
   postflightAttempts,
+  postflightDecision,
   postflightVerdict,
+  type PostflightDecision,
+  type PostflightLabel,
   preflightRefusal,
   registryServes,
   registryState,
@@ -1264,4 +1268,235 @@ describe("#472: the publish receipt answers what the packument cannot", () => {
     expect(publishStep, "the log path is interpolated rather than read from the environment")
       .not.toMatch(/\$\{\{/);
   });
+});
+
+/**
+ * The postflight step's NAME, as YAML wrote it.
+ *
+ * Throws rather than returning `""` when the step has no name line. An empty
+ * string satisfies every `not.toContain` below, so a parser that quietly
+ * missed the step would turn the whole block green while reading nothing.
+ */
+export function postflightStepName(src: string): string {
+  const line = src.split("\n").find(l => /^\s*-\s+name:\s*Postflight/.test(l));
+  if (!line) throw new Error("no `- name: Postflight` step in the workflow");
+  return line.slice(line.indexOf("name:") + "name:".length).trim();
+}
+
+/**
+ * #1563 — the step title asserted the reading its own message withheld.
+ *
+ * On `v0.8.3` the postflight exited 0 and printed, verbatim:
+ *
+ *   postflight OK: PROPAGATION PENDING — npm accepted rungate@0.8.3 and the
+ *   registry is not serving it yet after 25 reads over 120s. This is NOT a
+ *   confirmed read of the registry; it is the publish receipt plus npm's own
+ *   stat…
+ *
+ * Two independent reads outside CI agreed with that message and contradicted
+ * the step's name, *"Postflight — the registry actually serves this
+ * version"*: `npm view rungate version --prefer-online` returned `0.8.2` and
+ * `GET registry.npmjs.org/rungate` carried `dist-tags.latest: 0.8.2` with
+ * `0.8.3` absent.
+ *
+ * **`postflightDecision` returns `confirmed` for two different readings**, and
+ * only one of them is a registry read. They share an exit code, a step
+ * conclusion and — before this — a step name, so the only place they differed
+ * was a 5.7 MB log body. That is the sixth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` inverted: two mechanisms, one
+ * observable, and the observable asserts the stronger of them.
+ *
+ * **Why the title moved rather than the reading.** The alternative fix is to
+ * make the step genuinely take the reading it claimed. It cannot: the
+ * packument is CDN-fronted and eventually consistent, `v0.8.1` took about 16
+ * minutes and `POSTFLIGHT_BUDGET_MS` is 120s. Waiting longer is the fix #407
+ * already shipped and #445 recorded as *a bigger guess rather than a different
+ * mechanism*, and failing instead is how 0.3.0, 0.4.0 and 0.4.1 were all
+ * recorded as failed releases. The reading is genuinely not available at that
+ * point in the job, measured four times.
+ *
+ * So the criterion is NOT "the title is accurate", which is unfalsifiable
+ * prose. It is that **the two confirmed outcomes are distinguishable without
+ * opening the log**: one annotation each, carrying different verdicts, on a
+ * channel GitHub renders in the run summary beside the title.
+ */
+describe("#1563: the postflight's title cannot assert what its message withheld", () => {
+  const reading = (packument: { versions: string[]; latest: string | null }) => ({
+    latest: packument.latest,
+    attempts: 25,
+    waitedMs: 120_000,
+    verdict: postflightVerdict("rungate", "0.8.3", state(packument.versions, packument.latest), {
+      attempts: 25,
+      waitedMs: 120_000,
+    }),
+  });
+
+  const RECEIPT = {
+    version: "0.8.3",
+    propagationWarned: true,
+    bytes: 4096,
+  };
+
+  /** The registry carries the version: a real, confirmed read. */
+  const served = () =>
+    postflightDecision("rungate", "0.8.3", reading({ versions: ["0.8.2", "0.8.3"], latest: "0.8.3" }), RECEIPT);
+
+  /** The v0.8.3 reading itself: receipt plus npm's lag notice, nothing more. */
+  const pending = () =>
+    postflightDecision("rungate", "0.8.3", reading({ versions: ["0.8.2"], latest: "0.8.2" }), RECEIPT);
+
+  test("the step name does not claim the reading only ONE of the two outcomes takes", () => {
+    const name = postflightStepName(readFileSync(WORKFLOW, "utf-8"));
+    expect(name.length, "the step name is empty, so every assertion below is vacuous")
+      .toBeGreaterThan(10);
+
+    // The positive control for the assertion that follows. `serves` is the
+    // wording `lib/release-preflight.ts` reserves for the outcome where the
+    // packument actually carried the version, and withholds from the other.
+    // If that stops being true this guard is pointed at nothing.
+    expect(served().message, "the confirmed-read message no longer says `serves`")
+      .toContain("the registry serves");
+    expect(pending().message, "the pending message now claims a read it did not take")
+      .not.toContain("the registry serves");
+
+    expect(
+      name.toLowerCase(),
+      `the step is named "${name}", which asserts the registry read that PROPAGATION ` +
+        `PENDING explicitly withholds — and both outcomes produce this same name`,
+    ).not.toContain("serves");
+  });
+
+  test("THE AC: the two green readings differ somewhere other than the log body", () => {
+    const a = served();
+    const b = pending();
+
+    // The control, and the reason a title could never have fixed this. Every
+    // observable the run summary already had is IDENTICAL across the two:
+    // same outcome, so same exit code, so same step conclusion, under one
+    // static step name. If this pair ever stops being `confirmed`/`confirmed`
+    // the assertion below is measuring two things that were always different.
+    expect(a.outcome, "the served reading stopped being green").toBe("confirmed");
+    expect(b.outcome, "the pending reading stopped being green — this pair is no longer the defect")
+      .toBe("confirmed");
+
+    // ...and the observable that now differs.
+    expect(a.label).toBe("REGISTRY SERVES");
+    expect(b.label).toBe("PROPAGATION PENDING");
+    expect(postflightAnnotation(a)).not.toBe(postflightAnnotation(b));
+    expect(postflightAnnotation(a)).toContain("::notice title=postflight — REGISTRY SERVES::");
+    expect(postflightAnnotation(b)).toContain("::notice title=postflight — PROPAGATION PENDING::");
+  });
+
+  test("every reading the guard can take names itself, and no two share a name", () => {
+    // Without this, a later branch could be added with a label copied from
+    // the one above it and the pair would be indistinguishable again — the
+    // same defect, one reading further along.
+    const absent = reading({ versions: ["0.8.2"], latest: "0.8.2" });
+    const presentReading = reading({ versions: ["0.8.2", "0.8.3"], latest: "0.8.3" });
+    const cases: Array<[PostflightLabel, PostflightDecision]> = [
+      ["REGISTRY SERVES", postflightDecision("rungate", "0.8.3", presentReading, RECEIPT)],
+      ["PROPAGATION PENDING", postflightDecision("rungate", "0.8.3", absent, RECEIPT)],
+      ["NO RECEIPT", postflightDecision("rungate", "0.8.3", absent,
+        { version: null, propagationWarned: false, bytes: 128 })],
+      ["RECEIPT VERSION MISMATCH", postflightDecision("rungate", "0.8.3", absent,
+        { version: "0.8.2", propagationWarned: true, bytes: 128 })],
+      ["RECEIPT WITHOUT LAG NOTICE", postflightDecision("rungate", "0.8.3", absent,
+        { version: "0.8.3", propagationWarned: false, bytes: 128 })],
+      ["VERSION ABSENT", postflightDecision("rungate", "0.8.3", absent, null)],
+    ];
+    for (const [expected, decision] of cases) {
+      expect(decision.label, `the ${expected} branch is labelled ${decision.label}`).toBe(expected);
+    }
+    expect(new Set(cases.map(([, d]) => d.label)).size, "two readings share a label").toBe(cases.length);
+
+    // The severity is derived from `outcome` and from nothing else, so the
+    // `warning`-for-pending question the issue left open stays open.
+    for (const [, d] of cases) {
+      expect(postflightAnnotation(d).startsWith(d.outcome === "confirmed" ? "::notice " : "::error "),
+        `${d.label} is annotated at the wrong severity`).toBe(true);
+    }
+  });
+
+  test("a registry-supplied string cannot forge a second workflow command", () => {
+    // The messages embed `dist-tags.latest`, which is whatever the packument
+    // says. GitHub parses `::command::` one per LINE, and `::stop-commands::`
+    // on a line of its own switches annotation processing off for everything
+    // after it — so an unescaped newline here turns a stopped release into
+    // one indistinguishable from a clean run. Measured on the AI-review
+    // reader at `22c9da89`; `escapeAnnotation` is imported rather than
+    // rewritten for exactly this reason.
+    const hostile = reading({ versions: [], latest: "0.0.0\n::stop-commands::deadbeef" });
+    const line = postflightAnnotation(postflightDecision("rungate", "0.8.3", hostile, null));
+    expect(line.split("\n").length, "the annotation spans more than one line").toBe(1);
+    expect(line).toContain("%0A::stop-commands::deadbeef");
+
+    // And the ordinary confirmed message already carries a newline of its
+    // own — the `postflight note:` for a lagging dist-tag — so this is not a
+    // hypothetical input shape.
+    const lagging = reading({ versions: ["0.8.2", "0.8.3"], latest: "0.8.2" });
+    const ordinary = postflightDecision("rungate", "0.8.3", lagging, RECEIPT);
+    expect(ordinary.message, "the fixture no longer produces a multi-line message")
+      .toContain("\npostflight note:");
+    expect(postflightAnnotation(ordinary).split("\n").length).toBe(1);
+  });
+
+  test("the SCRIPT prints the verdict, and the two green runs print different ones", () => {
+    // Through the process, on stdout, which is the channel the runner parses
+    // annotations from. The unit cases above cannot see a decision the script
+    // computes and never emits.
+    const log = (body: string): string => {
+      const dir = mkdtempSync(join(tmpdir(), "rungate-relant-"));
+      scratch.push(dir);
+      const path = join(dir, "publish.log");
+      writeFileSync(path, body);
+      return path;
+    };
+    const receiptLog = log(
+      "npm notice Your package is being processed and may take a few minutes to become available.\n" +
+        "+ rungate@0.8.3",
+    );
+    const args = (packument: unknown) => [
+      "--phase", "postflight",
+      "--root", fakeRoot("0.8.3"),
+      "--budget-ms", "0",
+      "--registry", fakeRegistry(packument),
+      "--publish-log", receiptLog,
+    ];
+
+    const servedRun = run(SCRIPT, args({
+      versions: { "0.8.2": {}, "0.8.3": {} }, "dist-tags": { latest: "0.8.3" },
+    }));
+    const pendingRun = run(SCRIPT, args({
+      versions: { "0.8.2": {} }, "dist-tags": { latest: "0.8.2" },
+    }));
+
+    // Same exit code, as on the real v0.8.3 run. That is the control: the
+    // thing a reader of the check list sees has not changed and cannot.
+    expect(servedRun.code, servedRun.out).toBe(0);
+    expect(pendingRun.code, pendingRun.out).toBe(0);
+
+    const annotation = (out: string) =>
+      out.split("\n").find(l => l.startsWith("::notice title=postflight"));
+    expect(annotation(servedRun.out), servedRun.out)
+      .toContain("::notice title=postflight — REGISTRY SERVES::");
+    expect(annotation(pendingRun.out), pendingRun.out)
+      .toContain("::notice title=postflight — PROPAGATION PENDING::");
+    expect(annotation(servedRun.out)).not.toBe(annotation(pendingRun.out));
+  }, 180_000);
+
+  test("a stopped run annotates too, so a missing annotation means the step never decided", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rungate-relant-"));
+    scratch.push(dir);
+    const path = join(dir, "publish.log");
+    writeFileSync(path, "npm error code E403\nnpm error 403 Forbidden");
+    const real = run(SCRIPT, [
+      "--phase", "postflight",
+      "--root", fakeRoot("0.8.3"),
+      "--budget-ms", "0",
+      "--registry", fakeRegistry({ versions: { "0.8.2": {} }, "dist-tags": { latest: "0.8.2" } }),
+      "--publish-log", path,
+    ]);
+    expect(real.code, "a publish that never happened was not refused").toBe(1);
+    expect(real.out, real.out).toContain("::error title=postflight — NO RECEIPT::");
+  }, 180_000);
 });
