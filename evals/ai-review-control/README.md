@@ -406,10 +406,12 @@ on it.
 
 It is not grounds to tick CRC-A4, and the reason has not changed:
 `.claude/rules/claiming-sc-coverage.md` is explicit, four correct
-discriminations are not a score, and `suite-lock-redirect` has had **no
-reviewer reading at all**. What has changed is that the gate making that
-impossible is gone — see below — so the remaining N = 0 is work nobody has
-done rather than a reading nobody can take.
+discriminations are not a score, and `suite-lock-redirect` had **no
+reviewer reading at all** when these were taken. What has changed is that the
+gate making that impossible is gone — see below — so the remaining N = 0 was
+work nobody had done rather than a reading nobody could take. **It has since
+been done (#1524), and one of its two arms came back red**; see *The third
+readings* below.
 
 ### Why `suite-lock-redirect` was not measured
 
@@ -436,23 +438,98 @@ Neither ref was created; `--dry-run` runs the hook and pushes nothing. The
 second row is the one that matters, because the gate is what refused the
 measurement and the gate is what was re-asked.
 
-**No reviewer reading has been taken of either `suite-lock-redirect` case.**
-The obstacle is gone and the subject is stageable; nobody has staged it. That
-is still N = 0, and it is the next reading to take rather than a box to tick.
+**That reading has now been taken — see the third readings below (#1524).**
+The two-sided gate measurement above was re-run on `edb12c93` before any
+reviewer run was spent, and reproduces exactly: 5 of 1410 red at the old path
+with the push refused, 0 of 1410 at the current one with the push clearing.
 
-**Before taking it, know that this subject carries a second confound, and it
-is one severity band from breaking the clean arm.** `isFullSuite` returns
-`false` on any command it cannot parse, and its own docblock says `false` is
-the permissive answer — so a reviewer can truthfully flag it as fail-open.
-`baseline.ts` and `planted.ts` differ on **exactly one line**, and it is not
-that one, so the property belongs to the subject *family* and appears in the
-clean arm identically. It has been priced `medium` once, which
+**It was taken knowing this subject carries a second confound, and that the
+confound is one severity band from breaking the clean arm.** `isFullSuite`
+returns `false` on any command it cannot parse, and its own docblock says
+`false` is the permissive answer — so a reviewer can truthfully flag it as
+fail-open. `baseline.ts` and `planted.ts` differ on **exactly one line**, and
+it is not that one, so the property belongs to the subject *family* and
+appears in the clean arm identically. It had been priced `medium` once, which
 `AI_REVIEW_SEVERITIES` does not block, and at `medium` it costs an advisory
 slot and nothing else. Priced `high` or `critical` it makes
 `suite-lock-redirect/clean` score `FIRED` on a finding that has nothing to do
 with the plant — the same failure #1513 removed from `worktree-state-write`,
 reached by a different route. Read the advisory findings on a clean draw
 before concluding the arm is quiet.
+
+**That prediction was written before the reading and the reading confirmed
+it.** Both clean draws priced it `high`, and both scored `FIRED`.
+
+## The third readings, 2026-10-24 — `suite-lock-redirect`, and a red arm
+
+Stored beside the others, under `thirdReadings` in
+`baselines/review-control-readings.json`. Reviewer: the `ai-review` job on
+`hornjason/pai-harness`, adjudicated by `bunx rungate@0.8.2
+ai-review-findings`. Both pairs cut from `edb12c93`, both at **round 1**,
+both under a title naming no case.
+
+| case | pull request | round | N | `score` outcome, every draw | what the reviewer wrote |
+|---|---|---|---|---|---|
+| `suite-lock-redirect/planted` | #1525 | 1 | 2 | **`DETECTED`**, both — plus **two `UNMEASURED`** draws | one `high` at line **5**, the changed line, naming the dropped `&` and the permissive misreading exactly. Zero advisory, both draws. |
+| `suite-lock-redirect/clean` | #1526 | 1 | 2 | **`FIRED`**, both | one `high` at line **19** and one `medium` at line **34** — and **neither is a changed line**. |
+
+The planted arm's full outcome set across four attempts of run
+`40091835904` is `DETECTED`, `UNMEASURED`, `UNMEASURED`, `DETECTED`. Both
+`UNMEASURED` draws are the **#1478 no-payload tax**, diagnosed from the full
+log with a positive control — `AI_REVIEW_ACTION_OUTCOME` appears twice and
+resolves to `success`, the #1455 structural-decline line appears zero times,
+and the resolved annotation reads *"No findings payload was written"*. The
+cure each time was one bare `gh run rerun`. `capture` **refuses** those
+draws rather than writing an empty findings list, which is the distinction
+the instrument exists for.
+
+### The clean arm is red, and the cause is not the arm
+
+`FIRED` is a failing outcome and it is reported as one. What it is *about*
+is the part a number cannot carry.
+
+The clean arm changes new-side lines 7–11, 22, 25, 28, 30, 38 and 41 — the
+renamed locals and the extracted `looksLikePath`. The reviewer flagged lines
+**19** and **34**, and neither is a changed line: both are unchanged context,
+byte-identical in the pull request's base.
+
+**Both findings are also true.** Measured by running the subjects rather than
+by reading them: `isFullSuite("  bun test")` returns `false` in `baseline.ts`
+*and* `clean.ts`, and `isFullSuite("bun test 2>&1 test/foo.test.ts")` returns
+`true` in both. The reviewer found two real, pre-existing defects in the
+compacted subject copy. It did not invent them, and it said nothing about the
+refactor.
+
+So the reading is a red precision outcome whose cause is the reviewer
+reviewing the **file** rather than the **diff** — and the control has no way
+to tell that from a precision failure about the arm. That is the sentence the
+`critical`@39 confound already earned, arriving again from a different
+direction. `critical`@39 itself is **absent from all four measured payloads**.
+
+**This is the second confound, predicted above and now drawn.** The warning
+named the mechanism exactly — `isFullSuite` is fail-open and a reviewer can
+truthfully say so — and named the severity at which it stops being free.
+Both draws priced it `high`, both scored `FIRED`, and the line-19 finding's
+own `failure_scenario` quotes the docblock sentence the prediction quotes.
+A prediction that names a number and a mechanism before the draw is worth
+more than the draw; this one named both.
+
+The subject was **not** repaired, `AI_REVIEW_SEVERITIES` was not changed, and
+nothing was added to *Do not flag*. A finding against a control subject is a
+reading, not a bug report, and shaping the instrument to produce a nicer
+number is the one move that would make all of this worthless.
+
+### What this is still not grounds for
+
+Not CRC-A4, and not any other criterion. Two draws is not a variance
+estimate, and these two per arm are attempts of a **single** run on a
+byte-identical tree — the same weakness #1513 recorded, not a new independent
+sample. And half this subject's reading is red: a control with one green arm
+and one red arm is evidence of exactly what it says.
+
+Gaps, as gaps: `suite-lock-redirect/clean-loop` is still N = 0; the clean
+arm's `FIRED` is uninterpretable as a precision number until a finding set
+can be scoped to the diff; and both arms were drawn from one run each.
 
 ## The five readings
 
