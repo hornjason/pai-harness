@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 
 /**
  * #713 — the PRODUCT-classified hooks, migrated from `~/.pai/hooks` into this
@@ -457,10 +457,21 @@ describe("#713 DocHygiene: stamps through lib/frontmatter, add-only", () => {
     expect(patterns.length, "SKIP_PATTERNS was read as empty, so the premise check asserts nothing")
       .toBeGreaterThan(1);
     expect(patterns, "the `/tmp/` entry the original comment named is gone").toContain("/tmp/");
+    // This named `.claude/worktrees/` until #1432 removed it. The slot is
+    // for a second real member, so the read cannot look healthy on one
+    // entry; `.claude/agents/` takes it because the nested-class control
+    // below depends on that entry specifically still being there.
     expect(
       patterns,
-      "`.claude/worktrees/` left the list — the premise check may now be measuring nothing",
-    ).toContain(".claude/worktrees/");
+      "`.claude/agents/` left the list — the premise check may now be measuring nothing",
+    ).toContain(".claude/agents/");
+    // The removal itself, asserted where the list is read. A re-added prefix
+    // puts every agent session back in the blind spot #1432 measured, and
+    // nothing else in this file would go red for it.
+    expect(
+      patterns,
+      "`.claude/worktrees/` is back — see the SKIP_PATTERNS comment and #1432",
+    ).not.toContain(".claude/worktrees/");
   });
 
   test("WITNESS: a doc with no frontmatter gets the three inferable fields", () => {
@@ -526,6 +537,61 @@ describe("#713 DocHygiene: stamps through lib/frontmatter, add-only", () => {
       expect(out, "the body must survive the stamp").toContain("body");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // AC-3 (#1432). The prefix left `SKIP_PATTERNS`, so this is the witness
+  // that it is gone and the hook reaches the place agent sessions work.
+  //
+  // The two paths below differ by the prefix and nothing else — same hook,
+  // same payload, same bytes — which is the comparison that measured the
+  // blind spot in the first place (stamped NO against stamped YES).
+  test("#1432 WITNESS: a doc inside a `.claude/worktrees/` checkout is stamped", () => {
+    const base = unskippedScratch("dh-wt");
+    try {
+      const dir = join(base, ".claude", "worktrees", "rg-1432", "docs");
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, "GUIDE.md");
+      writeFileSync(path, "# My Doc\n\nbody\n");
+      // The premise. Without this the case is green on a path that never
+      // carried the prefix, which is the assertion-holds-vacuously shape.
+      expect(path, "the fixture must actually sit under the prefix").toContain(
+        ".claude/worktrees/",
+      );
+      runHook("DocHygiene.hook.ts", JSON.stringify({ tool_name: "Write", tool_input: { file_path: path } }));
+      const out = readFileSync(path, "utf-8");
+      for (const key of ["doc-type:", "status:", "updated:"]) expect(out).toContain(key);
+      expect(out, "the body must survive the stamp").toContain("body");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  // The negative control for the case above, and the thing that makes
+  // removing the prefix a NARROW change. Every remaining entry is a substring
+  // test, so a content class nested inside a worktree checkout is still
+  // skipped by its own entry — `.claude/agents/` and
+  // `.claude/rules/mutations/` do not depend on the prefix to fire. Asserted
+  // rather than reasoned about: if a later edit converts those entries to
+  // anchored or root-relative matches, removing the prefix silently starts
+  // stamping an agent brief, and nothing else in the tree would notice.
+  test("#1432 CONTROL: the nested content classes stay skipped inside a worktree", () => {
+    const base = unskippedScratch("dh-wt-nested");
+    try {
+      for (const nested of [
+        join(".claude", "agents", "marcus.md"),
+        join(".claude", "rules", "mutations", "a-record.md"),
+      ]) {
+        const path = join(base, ".claude", "worktrees", "rg-1432", nested);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, "# A Doc\n\nbody\n");
+        runHook("DocHygiene.hook.ts", JSON.stringify({ tool_name: "Write", tool_input: { file_path: path } }));
+        expect(readFileSync(path, "utf-8"), `${nested} was stamped — its own skip entry stopped firing`).toBe(
+          "# A Doc\n\nbody\n",
+        );
+      }
+    } finally {
+      rmSync(base, { recursive: true, force: true });
     }
   });
 
