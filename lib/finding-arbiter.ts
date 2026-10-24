@@ -825,6 +825,21 @@ export type ArbiterRefusal =
    * this names a clause in a command that has not run yet.
    */
   | "SAME_CLASS_IN_RUN"
+  /**
+   * The run has already filed its allowance of issues (#1595, scope item 4).
+   *
+   * **The only refusal here that requires no reasoning to apply, which is
+   * why it is the one that holds.** The declared-reason check it stands
+   * beside is a per-finding judgement, and a per-finding judgement drifts:
+   * applied to the three issues filed on 2026-10-24 all three cleared it on
+   * individually sound arguments, which is not a result a bar produces. A
+   * count has no clause to argue into.
+   *
+   * So it takes no argument and no label. `arbiter-override` waives a claim
+   * about a FINDING; this is an accounting of a RUN, and there is nothing
+   * about the finding for a waiver to address.
+   */
+  | "OVER_CAP"
   /** Something could not be evaluated. Fails; never skips. */
   | "UNMEASURED";
 

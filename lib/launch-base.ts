@@ -108,8 +108,15 @@ export type LaunchBaseReading =
    */
   | { reading: "UNMEASURED"; cwd: string; projectRoot: string; refusal: string };
 
-/** `git -C <dir> rev-parse --show-toplevel`, or `null`. */
-function toplevel(dir: string): string | null {
+/**
+ * `git -C <dir> rev-parse --show-toplevel`, or `null`.
+ *
+ * Exported since #1595 so the filing chokepoint identifies the RUN a filing
+ * came from through this binding rather than a second `rev-parse` of its
+ * own. Two spellings of "which checkout is this" would be two deciders for
+ * one question, and the cap's whole content is a count over that answer.
+ */
+export function toplevel(dir: string): string | null {
   if (typeof dir !== "string" || !dir.trim()) return null;
   const got = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
     timeout: 10_000,

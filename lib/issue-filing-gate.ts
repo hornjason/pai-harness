@@ -97,7 +97,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 
 import { githubSlugFromRemoteUrl, resolveRepoSlug } from "./branch-cleanup";
 import {
@@ -108,7 +108,7 @@ import {
   TRUSTED_ASSOCIATIONS,
   type OpenIssuePage,
 } from "./github";
-import { branchOf } from "./launch-base";
+import { branchOf, toplevel } from "./launch-base";
 import {
   duplicateCollisions,
   symptomHash,
@@ -179,7 +179,166 @@ export function namedClaim(text: string): number | null {
 }
 
 /**
+ * How many issues one run may file. **The gate (#1595, scope item 4).**
+ *
+ * ## Why a count, and not the declaration below it
+ *
+ * The declared-reason check in this file is a per-finding judgement, and the
+ * research #1595 was built on predicted exactly how that ends: *"a bar an
+ * agent applies by asking 'does this block a goal criterion?' re-decides 100
+ * times a day and will drift."* Measured on 2026-10-24, against the three
+ * issues filed that day by the author of the bar: **all three cleared it**,
+ * each on an individually sound argument, through the clause *it makes a
+ * green check lie* — which in a repository whose subject is checks that lie
+ * admits any true finding. Three for three is not a result a bar produces.
+ *
+ * A count has no clause to argue into. It is the only item on #1595's list
+ * that needs no reasoning to apply, and that is the whole of why it is the
+ * gate while the declaration is the record.
+ *
+ * ## The number, from two independent readings that converge
+ *
+ * - **Cloudflare, 131,246 reviews (Mar–Apr 2026): 1.2 findings per review,
+ *   deliberately low.** The only published per-unit number anywhere, and
+ *   `runIdFor` makes our unit the same unit — one checkout is one piece of
+ *   work. Floored to the integer below it, because what Cloudflare counts
+ *   is an inline COMMENT and what this counts is a tracker issue, which
+ *   costs an agent a whole context to close.
+ * - **This machine, 2026-10-24: 64 issues created in 24 hours across 284
+ *   registered worktrees — 0.23 filings per run per day.** A cap of 1 sits
+ *   4.4x above the mean, so it cannot bind on the ordinary run; it binds
+ *   only where a run files a SECOND, which is where the 1→N pathology that
+ *   #1595 measured actually lives.
+ *
+ * Tricorder's fourth criterion — a warning should occur *"with a small but
+ * noticeable frequency"* — is the same direction from a third source and is
+ * not a number, so it is not used as one.
+ *
+ * **Not configurable, on purpose.** A cap read from config is a cap an agent
+ * raises, and #1595 says in as many words that a cap nobody can defend is a
+ * cap someone raises. Changing it is an edit here, against the two readings
+ * above, which a reviewer can disagree with.
+ */
+export const FILINGS_PER_RUN = 1;
+
+/**
+ * How far back the cap counts.
+ *
+ * 24 hours, and the window is read off the instrument that measured the
+ * pathology rather than chosen: every number in #1595 is a per-day one —
+ * *"70–85% of everything closed each day"*, *"57 filed / 53 closed"* — and
+ * `~/.rungate/swarm-throughput.sh` names its column `churn24`. A run that
+ * has spent its allowance gets it back a day later, which is also what stops
+ * a long-lived checkout being permanently barred.
+ */
+export const RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Which RUN a filing belongs to — the checkout it was filed from.
+ *
+ * **Not the session, and the measurement is why.** `filingBatch` mints
+ * `${session}.${pid}`, and on the live ledger that resolves to **two**
+ * session values across 186 emitted rows while the pid changes on every
+ * hook invocation: one Claude Code session hosts every subagent, and each
+ * Bash call is its own process. So the key identifies a COMMAND and a
+ * SESSION and nothing in between, and a cap keyed on either is a cap
+ * shared by two hundred agents or a cap that resets every command.
+ *
+ * The checkout is the unit that is neither. It is one agent's piece of work
+ * from start to finish, it is the same unit Cloudflare's 1.2-per-review is
+ * measured over, and it is already in this gate's hand as `projectRoot`.
+ *
+ * Through `toplevel` from `lib/launch-base.ts`, so `/wt/x` and `/wt/x/lib`
+ * are one run and there is one binding for "which checkout is this".
+ *
+ * **A directory that is not a checkout is its own run, not `null`.** git is
+ * used to CANONICALISE the directory, not to decide whether there is one —
+ * the directory always exists, so a reading is always available. Returning
+ * `null` here was the first spelling and it is the worse one in both
+ * directions at once: every filing from outside a checkout on the whole
+ * machine would share one allowance with every legacy row written before
+ * this field existed, which is a permanent gag, and the fix for that gag
+ * would have been to exempt them, which is a bypass.
+ *
+ * What this does NOT defend against is an agent deliberately filing from a
+ * fresh directory each time. Neither does anything else here:
+ * `lib/issue-create-override.ts` declines to track `cd` across clauses, and
+ * this file's own header lists `curl`, the MCP tools and another machine as
+ * outside the chokepoint entirely. The cap governs the default, which is
+ * what the measurement is about.
+ */
+export function runIdFor(projectRoot: string): string {
+  return toplevel(projectRoot) ?? resolve(projectRoot);
+}
+
+/**
+ * How many filings this run has already landed inside the window.
+ *
+ * Exported so a test reads the same answer the gate acts on — two spellings
+ * of "has this run spent its allowance" would be the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * **`emitted` and nothing else.** A refused filing cost the tracker nothing,
+ * so counting it would cap a run out for having been stopped — a gate that
+ * punishes its own refusals, and the fastest way to make one that refuses
+ * everything. `markBlockedCommand` has already cleared `emitted` on the
+ * clean clauses of a blocked command by the time a row is written, so a
+ * command that filed nothing consumes nothing.
+ *
+ * A row whose `at` cannot be parsed is **counted**, not skipped. It is a row
+ * this writer appended; the alternative is a filing that escapes the count
+ * by carrying a timestamp nobody can read.
+ */
+export function emittedInRun(
+  rows: readonly FilingLedgerRow[],
+  run: string,
+  now: number,
+  window: number = RUN_WINDOW_MS,
+): number {
+  let n = 0;
+  for (const row of rows) {
+    if (!row.emitted) continue;
+    if ((row.run ?? null) !== run) continue;
+    const at = Date.parse(row.at);
+    if (Number.isFinite(at) && now - at > window) continue;
+    n += 1;
+  }
+  return n;
+}
+
+/** The refusal an agent reads when the run has spent its allowance. */
+export function overCapReason(run: string, already: number, target: CommentTarget): string {
+  return [
+    `this run has already filed ${already} issue(s) in the last ${RUN_WINDOW_MS / 3_600_000}h, and the cap is ` +
+      `${FILINGS_PER_RUN}. The overflow is a comment.`,
+    "",
+    `  ${commentTargetSentence(target)}`,
+    "",
+    `  run: ${run}`,
+    "",
+    "  There is no argument against this and no label that waives it. It is a count, not a",
+    "  judgement about your finding, which may well be a good one — the cap exists because a",
+    "  per-finding judgement drifts and a count does not. If several findings belong on the",
+    "  tracker, they are one issue naming every instance, not several.",
+  ].join("\n");
+}
+
+/**
  * The closed list of reasons a finding cannot be a comment (#1595).
+ *
+ * **THE RECORD, NOT THE GATE. `FILINGS_PER_RUN` above is the gate.** This
+ * check was written as the bar and it is not one: applied on 2026-10-24 to
+ * the three issues filed that day, all three cleared it on individually
+ * sound arguments, because *it makes a green check lie* admits any true
+ * finding in a repository about checks that lie. It stays because a
+ * declaration is cheap to read, cheap to audit, and is the column that makes
+ * a per-class not-useful rate computable later. It stops nothing on its own.
+ *
+ * **DO NOT ADD A FOURTH.** A clause added later to admit one good finding is
+ * how the leak comes back, and it will look reasonable at the time.
+ * `test/issue-filing-gate.test.ts` binds the size of this object for exactly
+ * that reason — growing it fails the suite, which is the only form of "do
+ * not" that survives the next agent who has a good reason.
  *
  * **A declaration, not a judgement.** `lib/finding-arbiter.ts`'s header has
  * said since it was written that `Disposition` defaults to `COMMENT` and that
@@ -566,6 +725,24 @@ export interface FilingLedgerRow {
    * split would be a decider with a spare.
    */
   exemption: CommentExemption | null;
+  /**
+   * Which run filed it — the checkout, from `runIdFor` (#1595).
+   *
+   * **The cap's denominator, and it had to be written down before it could
+   * be counted.** Nothing on this row could identify a run before: `key` is
+   * `${session}.${pid}`, and on the live ledger that is two session values
+   * across 186 emitted rows with the pid changing on every hook invocation.
+   * So the existing identity answers "which command" and "which session"
+   * and nothing in between, and the cap needs the unit between them.
+   *
+   * `null` on the rows `scripts/arbitrate-finding.ts` and
+   * `lib/ai-review-jury.ts` write — neither adjudicates a `gh issue create`
+   * from a checkout — and on a chokepoint filing from a directory that is
+   * not a git checkout. `emittedInRun` treats `null` as a run of its own
+   * rather than as an exemption, so filing from outside a checkout shares
+   * one allowance instead of escaping the count.
+   */
+  run: string | null;
 }
 
 /**
@@ -1642,6 +1819,29 @@ export async function filingGate(
   const siblings: Finding[] = [];
   const siblingTitles = new Map<string, string>();
 
+  // ── The cap (#1595, scope item 4) ──
+  //
+  // **The gate. Everything else in this file is a judgement and this is a
+  // count.** Resolved once per command, because the run is a property of
+  // the command's directory and a `rev-parse` per clause would be three
+  // spellings of one answer.
+  //
+  // `spent` carries the in-command emissions as well as the ledger's, so a
+  // three-clause command cannot file three issues under a cap of one by
+  // adjudicating every clause against a snapshot taken before any of them
+  // landed. That is the same shape as the sibling list above.
+  //
+  // An UNREADABLE ledger cannot be counted, and that case ALLOWS, loudly,
+  // through `unreadableLedgerNote` which is already pushed above. It is the
+  // one hole left in the cap and it is deliberate rather than overlooked:
+  // this file's standing policy is that a measurement apparatus must not
+  // block the thing it measures — `recordAdjudication` returns `false`
+  // rather than throwing for exactly this reason. A broken ledger is not an
+  // appeal; it is an instrument that stopped reporting, and the note says so.
+  const run = runIdFor(options.projectRoot);
+  const nowMs = Date.parse(at);
+  let spent = priorRows === null ? 0 : emittedInRun(priorRows, run, nowMs);
+
   for (const [index, attempt] of attempts.entries()) {
     const read1 = await adjudicateFiling(
       attempt,
@@ -1656,10 +1856,40 @@ export async function filingGate(
     // below is keyed off `read1` rather than `verdict` so the unreadable
     // tracker is still said out loud when that happens.
     const { finding } = filingFinding(attempt);
+    // **The cap is applied BEFORE the class check and before anything reads
+    // the tracker's answer, and it converts an UNMEASURED.** Every other
+    // UNMEASURED arm in this file allows, which is right for a reading about
+    // the environment — but if the cap sat behind them, a session with no
+    // `GITHUB_TOKEN` would have no cap at all, and this file's own header
+    // says a developer's credential usually is not in the environment. A
+    // gate that switches itself off in the configuration most agents run in
+    // is not a gate. The cap needs no tracker, so nothing about the tracker
+    // may excuse it.
+    //
+    // **The class check runs BEFORE the cap, and the ordering is forced.**
+    // At `FILINGS_PER_RUN = 1` a run's second clause is over the cap
+    // whatever it says, so a cap placed first makes `SAME_CLASS_IN_RUN`
+    // unreachable — a refusal nothing can ever emit, which is a check that
+    // cannot fail. Measured when the cap landed with the cap first: FG-133
+    // and FG-134 both went red and the class refusal was dead code.
+    //
+    // Nothing is weakened by the order, because BOTH refuse. What changes is
+    // which sentence the agent reads, and for two clauses of one class
+    // *"fold this into clause 1 and say every instance"* is strictly more
+    // actionable than *"post a comment"* — the same argument this file makes
+    // for reporting DUPLICATE ahead of NO_CLAIM.
     const sameClass =
       read1.outcome === "REFUSE" ? [] : duplicateCollisions(finding, siblings);
-    const verdict: FilingAdjudication =
-      sameClass.length === 0
+    const overCap =
+      read1.outcome !== "REFUSE" && sameClass.length === 0 && spent >= FILINGS_PER_RUN;
+    const verdict: FilingAdjudication = overCap
+      ? {
+          ...read1,
+          outcome: "REFUSE",
+          refusal: "OVER_CAP",
+          reason: overCapReason(run, spent, await targetFor(attempt.repo)),
+        }
+      : sameClass.length === 0
         ? read1
         : {
             ...read1,
@@ -1684,7 +1914,17 @@ export async function filingGate(
     // `FilingLedgerRow.refiledAfter` for the two live rows 37 seconds apart
     // that measured it. Nothing here is stricter: `prior` cannot cause a
     // refusal, only name one that already happened.
-    const overridden = labelled && (verdict.outcome === "REFUSE" || prior !== null);
+    // **`OVER_CAP` is not waivable, and that is the whole point of it**
+    // (#1595). The override waives a claim about a FINDING — this is a
+    // duplicate, this names no claim, this should have been a comment — and
+    // every one of those is an argument the filer can answer. The cap makes
+    // no claim about the finding at all, so there is nothing to answer, and
+    // a label that waived it would hand back exactly the per-filing
+    // judgement the cap exists to replace: a valid reason defeating the cap
+    // IS the bar that let three of three filings through on 2026-10-24.
+    const waivable = verdict.refusal !== "OVER_CAP";
+    const overridden =
+      labelled && waivable && (verdict.outcome === "REFUSE" || prior !== null);
     // **This clause's own reading, and nothing about the command.** The
     // command-level decision is not available yet — it needs every clause —
     // so `emitted` here is provisional and `markBlockedCommand` below applies
@@ -1718,13 +1958,24 @@ export async function filingGate(
       overridden,
       refiledAfter: prior?.at ?? null,
       exemption: verdict.exemption,
+      run,
     });
 
     // A cleared clause is what a later clause of this command is compared
-    // against. Pushed AFTER the row, so the clause never collides with
-    // itself — a self-collision would refuse every single-clause filing and
+    // against, and it is what the cap counts. Both are applied AFTER the row,
+    // so the clause never collides with itself and never caps itself out — a
+    // self-collision would refuse every single-clause filing in the tree and
     // read exactly like a gate that works.
+    //
+    // `spent` moves on `cleared` and not on `emitted`, and they differ for
+    // one row shape: a clean clause inside a command the hook goes on to
+    // BLOCK. `markBlockedCommand` clears `emitted` on those below, so the
+    // ledger never counts them and a re-run of that command gets its
+    // allowance back. Reading `cleared` here is still right, because within
+    // this command the clause is provisionally filing and a sibling must not
+    // be allowed to file under the same allowance.
     if (cleared) {
+      spent += 1;
       siblings.push({ ...finding, id: String(index) });
       siblingTitles.set(String(index), attempt.title);
     }

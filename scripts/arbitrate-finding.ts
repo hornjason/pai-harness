@@ -405,6 +405,10 @@ export function ledgerRow(finding: Finding, verdict: Verdict, at: string): Filin
     // so `disposition` already carries it and a second encoding here would be
     // a decider with a spare.
     exemption: null,
+    // #1595's cap counts filings per CHECKOUT, and this path adjudicates a
+    // candidate inside a review round rather than a `gh issue create` from
+    // one. `null` is the reading: there is no run to attribute it to.
+    run: null,
   };
 }
 

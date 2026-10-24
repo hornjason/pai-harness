@@ -543,6 +543,10 @@ export function juryLedgerRow(
     // declared one here — and not a declaration that was looked for and
     // missing. `emitted` and `refusal` already tell the two apart.
     exemption: null,
+    // #1595's cap counts filings per CHECKOUT, and this path adjudicates a
+    // candidate inside a review round rather than a `gh issue create` from
+    // one. `null` is the reading: there is no run to attribute it to.
+    run: null,
   };
 }
 
