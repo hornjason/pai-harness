@@ -66,6 +66,20 @@
       "to": 35,
       "namespace": "AR",
       "note": "CRC-B4 phase 2. test/finding-arbiter.test.ts holds AR-1..AR-20 on main; AR has no allocator, so this is the eyeballed-headroom method the rule names, declared before any id is consumed. Delete when the PR merges."
+    },
+    {
+      "owner": "rg/1536-arbiter-keys",
+      "from": 100,
+      "to": 119,
+      "namespace": "FG",
+      "note": "#1536 - the override must survive a re-drafted body. FG-90..99 is the highest declared block and FG-96 the highest id on main, so this sits above every declared block, which is what the allocator hands an owner who has none. Declared before any id is consumed. Delete when the PR merges."
+    },
+    {
+      "owner": "rg/1536-arbiter-keys",
+      "from": 36,
+      "to": 50,
+      "namespace": "AR",
+      "note": "#1536 - a bare integer is not a symptom key. AR-21..35 is the highest declared block and AR-26 the highest id on main, so this sits above every declared block. Declared before any id is consumed. Delete when the PR merges."
     }
   ]
 }
