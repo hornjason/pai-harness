@@ -1,7 +1,7 @@
 /**
  * bun-test-path-guard.test.ts — #1544
  *
- * Covers SC-2540, SC-2541, SC-2542, SC-2543, SC-2544, SC-2545 (HOOK-ARCHITECTURE-SPEC.md).
+ * Covers SC-2540, SC-2541, SC-2542, SC-2543, SC-2544, SC-2545, SC-2546 (HOOK-ARCHITECTURE-SPEC.md).
  *
  * `bun test <path>` treats a path argument that matches no file as a name
  * FILTER. On bun 1.3.14, measured in this tree:
@@ -355,6 +355,76 @@ describe("#1544 AC-7: paths resolve against the tree bun will run in", () => {
       rmSync(session.dir, { recursive: true, force: true });
       rmSync(target.dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-8 — a duplicate-fd redirect is self-contained. Second finding from the
+// AI review on PR #1562, verified against the regex before being accepted.
+//
+// `REDIRECT` consumed the NEXT token whenever its target group was empty, and
+// `2>&1` has an empty target group — the `&1` is matched by a non-capturing
+// `(?:&\d+)?` and thrown away. So the argument after `2>&1` was dropped from
+// the extraction entirely and never stat'd: an absent path in that position
+// was green while witnessing nothing. A bare `>` DOES consume the next token
+// and must keep doing so, which is why AC-8b exists.
+// ---------------------------------------------------------------------------
+
+describe("#1544 AC-8: a duplicate-fd redirect does not swallow the next path", () => {
+  test("AC-8a: an absent path after `2>&1` is still refused", () => {
+    const { dir, present } = scratchProject(1);
+    try {
+      const refusal = bunTestPathRefusal(`bun test ${present[0]} 2>&1 test/zz-absent.test.ts`, dir);
+      expect(refusal).not.toBeNull();
+      expect(refusal!.missing.map(m => m.argument)).toEqual(["test/zz-absent.test.ts"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-8a2: the extractor keeps the argument after `2>&1`", () => {
+    expect(suitePathArguments("bun test test/a.test.ts 2>&1 test/b.test.ts")).toEqual([
+      "test/a.test.ts",
+      "test/b.test.ts",
+    ]);
+  });
+
+  test("AC-8b: a bare `>` still consumes its target — that is a sink, not a path", () => {
+    // The control for the fix. Widening the redirect rule must not start
+    // treating a redirect target as a test path.
+    expect(suitePathArguments("bun test test/a.test.ts > out/report.txt")).toEqual(["test/a.test.ts"]);
+    const { dir, present } = scratchProject(1);
+    try {
+      expect(bunTestPathRefusal(`bun test ${present[0]} > out/report.txt`, dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-8d: `&>` is a redirect operator too, not a separator", () => {
+    // Same mechanism, the other spelling. Asserted rather than described, so
+    // that a later change to the splitter cannot quietly drop it again.
+    expect(suitePathArguments("bun test test/a.test.ts &> log test/b.test.ts")).toEqual([
+      "test/a.test.ts",
+      "test/b.test.ts",
+    ]);
+  });
+
+  test("AC-8e: a real `&&` chain still splits — the fix did not eat the separator", () => {
+    // The control for the splitter change. `&&` and a backgrounding `&` must
+    // keep ending a segment, or the concurrency guard's reading changes too.
+    expect(suitePathArguments("bun test test/a.test.ts && bun test test/b.test.ts")).toEqual([
+      "test/a.test.ts",
+      "test/b.test.ts",
+    ]);
+    expect(suitePathArguments("echo hi & bun test test/a.test.ts")).toEqual(["test/a.test.ts"]);
+  });
+
+  test("AC-8c: a redirect carrying its own target still consumes nothing extra", () => {
+    expect(suitePathArguments("bun test test/a.test.ts 2>/dev/null test/b.test.ts")).toEqual([
+      "test/a.test.ts",
+      "test/b.test.ts",
+    ]);
   });
 });
 

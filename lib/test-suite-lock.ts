@@ -404,8 +404,19 @@ const SHELL_DASH_C = /^(?:ba|z|k|)sh\s+-[a-z]*c\s+(['"])([\s\S]*)\1\s*$/;
 const SUITE_INVOCATION =
   /^(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?test(?![:\w-])/;
 
-/** A redirection operator, attached target or not: `>`, `2>`, `&>>`, `2>&1`, `2>/dev/null`. */
-const REDIRECT = /^(?:\d*|&)>>?(?:&\d+)?(.*)$/;
+/**
+ * A redirection operator, attached target or not: `>`, `2>`, `&>>`, `2>&1`,
+ * `2>/dev/null`.
+ *
+ * Group 1 is a duplicate-fd suffix (`&1`), group 2 the attached target. Both
+ * are captured because only a redirect with NEITHER consumes the following
+ * token: `>` takes the next word as its target, while `2>&1` is complete in
+ * itself. Group 1 used to be non-capturing, so `2>&1` presented as a redirect
+ * with an empty target and swallowed the argument after it — a test path in
+ * that position was dropped from the extraction and never checked. Found by
+ * the AI review on PR #1562 (#1544).
+ */
+const REDIRECT = /^(?:\d*|&)>>?(&\d+)?(.*)$/;
 
 /**
  * Split on command separators that are NOT inside quotes.
@@ -441,6 +452,17 @@ function splitTopLevel(command: string): string[] {
     if (c === "\\" && command[i + 1] === "\n") {
       cur += " ";
       i++;
+      continue;
+    }
+    // An `&` that belongs to a REDIRECT is not a separator: `2>&1` duplicates
+    // a descriptor and `&>log` redirects both streams. Splitting there ended
+    // the segment mid-operator and stranded everything after it in a segment
+    // with no suite invocation — so `bun test a.test.ts 2>&1 b.test.ts` lost
+    // `b.test.ts` from the extraction entirely and never checked it. Found by
+    // the AI review on PR #1562; the REDIRECT capture fix alone did not reach
+    // it, because the token never survived this splitter to be matched (#1544).
+    if (c === "&" && (command[i - 1] === ">" || command[i + 1] === ">")) {
+      cur += c;
       continue;
     }
     if (c === "\n" || c === ";" || c === "&" || c === "|") {
@@ -542,9 +564,11 @@ function suiteInvocationArguments(segment: string, depth = 0): string[][] {
 
     const redirect = t.match(REDIRECT);
     if (redirect) {
-      // `2>/dev/null` carries its target; a bare `>` consumes the next token.
-      // Either way the target is a sink, not a test path.
-      if (!redirect[1]) i++;
+      // `2>/dev/null` carries its target and `2>&1` duplicates a descriptor;
+      // only a bare `>` consumes the next token. Either way the target is a
+      // sink, not a test path.
+      const [, duplicateFd, attachedTarget] = redirect;
+      if (!duplicateFd && !attachedTarget) i++;
       continue;
     }
 
