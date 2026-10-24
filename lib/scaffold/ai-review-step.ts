@@ -7952,7 +7952,7 @@ function indented(lines: string[], indent: string): string {
  * Substitution this module is about.
  */
 export function buildDisarmScript(): string {
-/**
+  /**
    * What both notices say about how long this step's effect lasts.
    *
    * It is a POINT IN TIME and the notice has to say so. This step disarms
