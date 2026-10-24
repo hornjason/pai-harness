@@ -17,6 +17,7 @@ import {
   AI_REVIEW_LEDGER_UNREADABLE,
   AI_REVIEW_TRUNCATION_STATED,
   AI_REVIEW_TRUNCATION_UNKNOWN,
+  AI_REVIEW_TURNS_NOT_RECORDED,
   type LedgerReading,
 } from "../lib/ai-review-rounds";
 import {
@@ -34,6 +35,11 @@ function ledger(n: number, dropped = 0): LedgerReading {
     rounds: Array.from({ length: n }, (_, i) => ({
       round: i + 1,
       sha: `sha${i}`,
+      // #1380's two fields. These fixtures are about the round COUNT, so
+      // they carry the reading a pre-#1380 ledger produces: no merge commit
+      // recorded, and nobody having tried to read a turn count.
+      mergeSha: "",
+      turns: { status: AI_REVIEW_TURNS_NOT_RECORDED } as const,
       measured: true,
       keyable: true,
       findings: [],
@@ -49,6 +55,11 @@ function truncatedUnknown(n: number): LedgerReading {
     rounds: Array.from({ length: n }, (_, i) => ({
       round: i + 1,
       sha: `sha${i}`,
+      // #1380's two fields. These fixtures are about the round COUNT, so
+      // they carry the reading a pre-#1380 ledger produces: no merge commit
+      // recorded, and nobody having tried to read a turn count.
+      mergeSha: "",
+      turns: { status: AI_REVIEW_TURNS_NOT_RECORDED } as const,
       measured: true,
       keyable: true,
       findings: [],

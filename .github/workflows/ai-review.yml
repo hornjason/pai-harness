@@ -1,4 +1,4 @@
-# generated-sha: 7b12eec0ba5b8418
+# generated-sha: 6a838fa8ef0dc30e
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1848,6 +1848,7 @@ jobs:
           AI_REVIEW_ROUND_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-round.txt
           AI_REVIEW_LEDGER_PR: ${{ github.event.pull_request.number }}
           AI_REVIEW_LEDGER_SHA: ${{ github.event.pull_request.head.sha }}
+          AI_REVIEW_EXECUTION_FILE: ${{ steps.ai-review-action.outputs.execution_file }}
           AI_REVIEW_LEDGER_REPO: ${{ github.repository }}
           AI_REVIEW_LEDGER_API: ${{ github.api_url }}
           AI_REVIEW_LEDGER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2175,15 +2176,47 @@ jobs:
             fi
           fi
 
+          # The turn count, out of the action's own execution file (#1380).
+          #
+          # ALWAYS WRITTEN, as a number or as `null`, and never left off. That is
+          # what makes the key a three-state reading rather than two: no key is a
+          # round written before #1380, when nobody tried; `null` is this step
+          # trying and failing; a number is the count. `0` is never substituted —
+          # a run whose execution file never arrived and a run that spent no turns
+          # are different events, and the whole point of recording this is to tell
+          # a 51-turn round from an 83-turn one.
+          #
+          # The shape is checked INSIDE jq and anything else is an `error`, the
+          # same construction the findings read above uses, so there is one branch
+          # that means unreadable. A float, a string, a negative and an absent key
+          # all leave by it.
+          turns="null"
+          if [ -n "${AI_REVIEW_EXECUTION_FILE:-}" ] && [ -s "${AI_REVIEW_EXECUTION_FILE}" ]; then
+            if parsed_turns=$(jq -c 'if (.num_turns | type) == "number"
+                   and (.num_turns | floor) == .num_turns
+                   and .num_turns >= 0
+                 then .num_turns
+                 else error("num_turns is not a non-negative integer") end' \
+                "${AI_REVIEW_EXECUTION_FILE}" 2>/dev/null); then
+              turns="${parsed_turns}"
+            else
+              ledger_note "the action's execution file exists and states no readable 'num_turns', so this round's turn count is recorded as UNMEASURED rather than as a number. A review's turn count is the one candidate mechanism for a re-run flipping a verdict on an unchanged tree (#1380), and a guessed zero would be worse than no reading."
+            fi
+          else
+            ledger_note "the action's execution file is absent or empty, so this round's turn count is recorded as UNMEASURED. The round itself is still recorded (#1380)."
+          fi
+
           if ! entry=$(jq -nc \
             --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg sha "${AI_REVIEW_LEDGER_SHA:-}" \
+            --arg merge "${GITHUB_SHA:-}" \
             --arg run "${GITHUB_RUN_ID:-}" \
             --arg attempt "${GITHUB_RUN_ATTEMPT:-}" \
             --arg identity 'file+text+summary@v1' \
             --argjson round "${round}" \
+            --argjson turns "${turns}" \
             --argjson findings "${findings}" \
-            '{at:$at, sha:$sha, run:$run, attempt:$attempt, identity:$identity, round:$round, findings:$findings}'); then
+            '{at:$at, sha:$sha, merge:$merge, run:$run, attempt:$attempt, identity:$identity, round:$round, turns:$turns, findings:$findings}'); then
             ledger_note "this round's entry could not be assembled, so nothing was recorded."
             exit 0
           fi
