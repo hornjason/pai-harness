@@ -20,6 +20,16 @@
     "description": "Refuses a Bash command whose TOP LEVEL begins with or chains to `cd` — a top-level cd moves the SESSION's working directory, which worktree isolation resolves against, so it kills a peer agent's worktree creation hours later with no error naming the cause. Hard refusal, Jason's decision on #992, taken with the measured 32.7%-of-31,577 hit rate in hand; #1040 built the warn/block/off ladder and this takes `block` as the default, so RUNGATE_CD_GUARD=warn|off reverses it without a code change. Scoped to harnessed projects via lib/harness-project.ts. Project scope: ${CLAUDE_PROJECT_DIR} is the worktree, every worktree carries the committed .claude/settings.json, and worktree isolation is a harness concern. The parse is lib/top-level-cd.ts; read its WHAT THIS DOES NOT COVER block."
   },
   {
+    "name": "BunTestPathGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/BunTestPathGuard.hook.ts",
+    "enabled": true,
+    "deployToConsumers": true,
+    "scope": "project",
+    "matcher": "Bash",
+    "description": "Refuses a Bash command that hands `bun test` a path matching no file. Bun treats an unmatched path argument as a name FILTER and exits non-zero only when NOTHING matched, so `bun test <real> <absent>` exits 0 and prints a pass total — measured on bun 1.3.14, #1544. A typo'd path in a verification command is therefore byte-identical to a suite that ran and passed, which is the sixth shape in .claude/rules/checks-must-be-able-to-fail.md inside the instrument every agent verifies its own work with. Bound to the Bash tool rather than a wrapper because 49 of this tree's 55 `bun test` exec sites are inside test/ and the failure that produced the issue was a command an agent composed by hand; a spawn from inside a running process is the declared gap. Warn/block/off ladder via RUNGATE_BUN_TEST_PATH_GUARD, default block. Scoped to harnessed projects via lib/harness-project.ts. The decision is lib/bun-test-paths.ts; read its WHAT THIS DOES NOT COVER block."
+  },
+  {
     "name": "TestSuiteGuard",
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/TestSuiteGuard.hook.ts",
