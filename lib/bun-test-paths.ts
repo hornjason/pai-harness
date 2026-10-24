@@ -102,10 +102,16 @@ const UNRESOLVABLE_SEGMENT = /\$\(|`|\$\{/;
 const UNRESOLVABLE_ARGUMENT = /[*?\[\]$~]/;
 
 /**
- * A segment whose first command is `cd <target>`, optionally opening a
- * subshell. `( cd /x && bun test … )` and `cd /x && bun test …` both match.
+ * A segment whose first command is `cd <target>`, behind any number of
+ * opening subshells. `cd /x && …`, `( cd /x && … )` and `( ( cd /x && … ) )`
+ * all match.
+ *
+ * The repetition is not speculative. A single optional `(` lost the root on
+ * `( ( cd X && bun test a.test.ts ) )` and refused a correct command — found
+ * by a 16-row battery over subshell spellings, which is the only row of the
+ * sixteen that was wrong, and not one that would have been hand-written.
  */
-const LEADING_CD = /^\s*\(?\s*cd\s+(\S+)/;
+const LEADING_CD = /^\s*(?:\(\s*)*cd\s+(\S+)/;
 
 /**
  * Every directory `bun test` might run in: the tool call's cwd, plus every

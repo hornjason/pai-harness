@@ -1,7 +1,7 @@
 /**
  * bun-test-path-guard.test.ts — #1544
  *
- * Covers SC-2540, SC-2541, SC-2542, SC-2543, SC-2544, SC-2545, SC-2546 (HOOK-ARCHITECTURE-SPEC.md).
+ * Covers SC-2540, SC-2541, SC-2542, SC-2543, SC-2544, SC-2545, SC-2546, SC-2547 (HOOK-ARCHITECTURE-SPEC.md).
  *
  * `bun test <path>` treats a path argument that matches no file as a name
  * FILTER. On bun 1.3.14, measured in this tree:
@@ -332,6 +332,34 @@ describe("#1544 AC-7: paths resolve against the tree bun will run in", () => {
     }
   });
 
+  test("AC-7f: a NESTED subshell's cd target is still a candidate root", () => {
+    // Found by a 16-row battery over subshell spellings, not by hand: the
+    // leading-cd pattern allowed exactly one `(`, so `( ( cd X && … ) )` lost
+    // the root and refused a correct command. A false refusal — the loud
+    // direction — but it fires on a form people really type.
+    const session = scratchProject(0);
+    const target = scratchProject(1);
+    try {
+      const cmd = `( ( cd ${target.dir} && bun test ${target.present[0]} ) )`;
+      expect(bunTestPathRefusal(cmd, session.dir)).toBeNull();
+    } finally {
+      rmSync(session.dir, { recursive: true, force: true });
+      rmSync(target.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-7g: a typo inside a nested subshell is still refused", () => {
+    const session = scratchProject(0);
+    const target = scratchProject(1);
+    try {
+      const cmd = `( ( cd ${target.dir} && bun test test/zz-absent.test.ts ) )`;
+      expect(bunTestPathRefusal(cmd, session.dir)).not.toBeNull();
+    } finally {
+      rmSync(session.dir, { recursive: true, force: true });
+      rmSync(target.dir, { recursive: true, force: true });
+    }
+  });
+
   test("AC-7d: an unresolvable cd target skips the command rather than guessing", () => {
     const session = scratchProject(0);
     try {
@@ -425,6 +453,67 @@ describe("#1544 AC-8: a duplicate-fd redirect does not swallow the next path", (
       "test/a.test.ts",
       "test/b.test.ts",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-9 — the subshell battery, kept rather than run once.
+//
+// The AI review's first finding was that `splitTopLevel` does not track
+// parenthesis depth. `candidateRoots` answers that by widening the roots
+// instead of counting parens, and the only honest way to show it holds is to
+// enumerate the spellings and run them. 16 rows, both verdicts represented.
+//
+// Predicted 2 rows wrong before running it; 1 was (nested parens, AC-7f).
+// Recorded wrong — the third wrong prediction on this PR, and like the other
+// two the number changed something: it is not a row anybody hand-writes.
+//
+// Kept as a test rather than reported as a measurement because a sweep cannot
+// contain the input that walks around it later. This is the regression
+// control for anyone who edits the splitter or the roots.
+// ---------------------------------------------------------------------------
+
+describe("#1544 AC-9: subshell and nesting spellings, as a kept corpus", () => {
+  const CASES: { name: string; build: (t: string, p: string, s: string, absent: string) => string; want: "refuse" | "allow" }[] = [
+    { name: "mandated form, present", build: (t, p) => `( cd ${t} && bun test ${p} )`, want: "allow" },
+    { name: "mandated form, typo", build: (t, p, _s, a) => `( cd ${t} && bun test ${p} ${a} )`, want: "refuse" },
+    { name: "flat cd chain, present", build: (t, p) => `cd ${t} && bun test ${p}`, want: "allow" },
+    { name: "flat cd chain, typo", build: (t, _p, _s, a) => `cd ${t} && bun test ${a}`, want: "refuse" },
+    { name: "nested parens, present", build: (t, p) => `( ( cd ${t} && bun test ${p} ) )`, want: "allow" },
+    { name: "nested parens, typo", build: (t, _p, _s, a) => `( ( cd ${t} && bun test ${a} ) )`, want: "refuse" },
+    { name: "subshell then a bun test outside it", build: (t, p, s) => `( cd ${t} && bun test ${p} ) && bun test ${s}`, want: "allow" },
+    { name: "subshell then a typo outside it", build: (t, p, _s, a) => `( cd ${t} && bun test ${p} ) && bun test ${a}`, want: "refuse" },
+    { name: "pipe inside a command substitution", build: (_t, p, s) => `bun test ${s} $(echo ${p} | tr -d x)`, want: "allow" },
+    { name: "semicolon inside a quoted filter", build: (_t, _p, s) => `bun test ${s} -t "foo;bar"`, want: "allow" },
+    { name: "quoted semicolon plus a typo", build: (_t, _p, s, a) => `bun test ${s} -t "foo;bar" ${a}`, want: "refuse" },
+    { name: "&& in a subshell in a substitution", build: (t, p, s) => `bun test ${s} $( ( cd ${t} && echo ${p} ) )`, want: "allow" },
+    { name: "backgrounded subshell then bun test", build: (t, _p, s) => `( cd ${t} && echo hi ) & bun test ${s}`, want: "allow" },
+    { name: "backgrounded subshell then a typo", build: (t, _p, _s, a) => `( cd ${t} && echo hi ) & bun test ${a}`, want: "refuse" },
+    { name: "redirect inside a subshell, with a typo", build: (t, p, _s, a) => `( cd ${t} && bun test ${p} 2>&1 ${a} )`, want: "refuse" },
+    { name: "two subshells, typo in the second", build: (t, p, _s, a) => `( cd ${t} && bun test ${p} ) ; ( cd ${t} && bun test ${a} )`, want: "refuse" },
+  ];
+
+  test("AC-9: every spelling lands on the right verdict, and both verdicts occur", () => {
+    const session = scratchProject(1);
+    const target = scratchProject(1);
+    const absent = "test/zz-absent.test.ts";
+    try {
+      const wrong: string[] = [];
+      for (const c of CASES) {
+        const cmd = c.build(target.dir, target.present[0], session.present[0], absent);
+        const got = bunTestPathRefusal(cmd, session.dir) === null ? "allow" : "refuse";
+        if (got !== c.want) wrong.push(`${c.name}: want ${c.want}, got ${got}`);
+      }
+      expect(wrong).toEqual([]);
+
+      // A battery whose rows all want the same verdict cannot come back wrong
+      // about the other one. Assert the membership, not just the total.
+      expect(CASES.filter(c => c.want === "refuse").length).toBeGreaterThan(5);
+      expect(CASES.filter(c => c.want === "allow").length).toBeGreaterThan(5);
+    } finally {
+      rmSync(session.dir, { recursive: true, force: true });
+      rmSync(target.dir, { recursive: true, force: true });
+    }
   });
 });
 
