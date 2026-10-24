@@ -157,6 +157,22 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
     // check off in silence.
     usage: "rungate ai-review-findings <path-to-findings.json> [<path-to-changed-files.txt>]",
   },
+  // Registered for the same reason `ai-review-findings` is, one workflow
+  // over (#1488): the generated `ai-review-unmeasured.yml` runs in a
+  // consumer's repository, which has no copy of rungate's sources at any
+  // path the workflow could name. This registry is the path.
+  //
+  // No `projectRootFlag`: every argument is a flag and the script reads no
+  // project tree at all — it talks to the GitHub API about a repository it
+  // is told the name of, so an appended `--project-root <cwd>` would be
+  // refused by `parseArgs` as an unknown argument.
+  "record-ai-review-unmeasured": {
+    script: "scripts/record-ai-review-unmeasured.ts",
+    summary: "Record WHICH kind of unmeasured each unmeasured AI-review round was",
+    usage:
+      "rungate record-ai-review-unmeasured --repo <owner/name> " +
+      "[--head-sha <sha> | --pr <n> | --limit <n>] [--write]",
+  },
 };
 
 /** The commands the AGENTS.md generator may publish to a consumer. */

@@ -992,17 +992,20 @@ describe("#364 SC-832: the pipeline cannot report a release it did not make", ()
   });
 
   test("the scaffold does not own this file, so it survives a re-scaffold", () => {
-    // createCiWorkflows regenerates ci.yml, gates.yml and ai-review.yml BY
-    // NAME. If that ever becomes a directory-wide write, this file disappears
-    // and the release pipeline goes with it.
+    // createCiWorkflows regenerates ci.yml, gates.yml, ai-review.yml and
+    // ai-review-unmeasured.yml BY NAME. If that ever becomes a directory-wide
+    // write, this file disappears and the release pipeline goes with it.
     //
-    // #630 added the third entry. The tuple is asserted as a literal rather
-    // than by counting entries, because a count is satisfied by any three
-    // names — and the thing this guards against is the set growing into a
-    // directory, which a count cannot see.
+    // #630 added the third entry, #1488 the fourth. The tuple is asserted as
+    // a literal rather than by counting entries, because a count is satisfied
+    // by any four names — and the thing this guards against is the set
+    // growing into a directory, which a count cannot see. The fourth name is
+    // spelled rather than read from `AI_REVIEW_UNMEASURED_WORKFLOW_FILE` for
+    // the same reason the first three are: a name behind an import is a name
+    // this assertion cannot see.
     const steps = readFileSync(join(ROOT, "lib", "scaffold", "steps.ts"), "utf-8");
     expect(steps).toContain(
-      `[["ci.yml", ciYml], ["gates.yml", gatesYml], ["ai-review.yml", aiReviewYml]] as const`,
+      `[["ci.yml", ciYml], ["gates.yml", gatesYml], ["ai-review.yml", aiReviewYml], ["ai-review-unmeasured.yml", aiReviewUnmeasuredYml]] as const`,
     );
     expect(steps, "the scaffold writes release.yml — it is no longer caller-owned")
       .not.toContain("release.yml");
