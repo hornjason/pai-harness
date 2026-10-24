@@ -12,11 +12,12 @@
  * git rather than about a string comparison.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { execFileSync } from "child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { execFileSync, spawnSync } from "child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { type GitRunner, spawnGitRunner } from "../lib/hook-tree-currency";
 import {
   STALE_EXIT,
   WRONG_TREE,
@@ -24,6 +25,8 @@ import {
   defaultRef,
   provenanceBlock,
   provenanceReading,
+  sessionProvenance,
+  sessionProvenanceBlock,
 } from "../lib/report-provenance";
 
 const REPO_ROOT = realpathSync(join(import.meta.dir, ".."));
@@ -151,8 +154,15 @@ describe("#553: a report states the tree it measured", () => {
     const measured = git(root, ["rev-parse", "HEAD"]);
     commit(root, "export const a = 5;\n");
 
+    // `--hooks-dir ""` unbinds the #1341 half explicitly. Without it this
+    // case reads whatever `RUNGATE_HOOKS_DIR` happens to be on the machine
+    // running the suite, and the control below then goes red on a live tree
+    // nothing in this file created — a fixture describing the runner.
     const run = (args: string[]) =>
-      Bun.spawnSync(["bun", CLI, "--project", root, ...args], { stdout: "pipe", stderr: "pipe" });
+      Bun.spawnSync(["bun", CLI, "--project", root, "--hooks-dir", "", ...args], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
 
     const stale = run(["--measured", measured]);
     expect(stale.exitCode, "a stale report exited 0").toBe(STALE_EXIT);
@@ -233,8 +243,9 @@ describe("#1348: a reading names the directory it was taken in", () => {
   test("SC-2502: the CLI exits non-zero when it measured another tree", () => {
     const root = repo();
     const wt = worktree(root, "rg/cli-under-review");
+    // `--hooks-dir ""` for the reason SC-1929's `run` gives.
     const run = (project: string, args: string[]) =>
-      Bun.spawnSync(["bun", CLI, "--project", project, ...args], {
+      Bun.spawnSync(["bun", CLI, "--project", project, "--hooks-dir", "", ...args], {
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -254,5 +265,171 @@ describe("#1348: a reading names the directory it was taken in", () => {
     expect(decode(ok.stdout), "the control did not reach a currency verdict").toContain(
       "Currency: CURRENT",
     );
+  });
+});
+
+/**
+ * A checkout standing in for the live hooks tree: a clone, so it has a real
+ * `origin/main` to be aged against, with a `hooks/` subdirectory because
+ * `RUNGATE_HOOKS_DIR` names that subdirectory and not the repository root.
+ *
+ * Built out of real commits rather than a stubbed runner. The question under
+ * test is "how many commits on main is this checkout missing", which is a
+ * fact about git; a fixture that answered it with a string would be asserting
+ * the test's own arithmetic.
+ */
+function liveHookTree(behindBy: number, aheadBy = 0): { hooksDir: string; root: string } {
+  const upstream = repo();
+  mkdirSync(join(upstream, "hooks"), { recursive: true });
+  writeFileSync(join(upstream, "hooks", "X.hook.ts"), "export const x = 1;\n");
+  git(upstream, ["add", "-A"]);
+  git(upstream, ["commit", "-q", "-m", "hooks"]);
+
+  const clone = realpathSync(mkdtempSync(join(tmpdir(), "rg-1341-live-")));
+  roots.push(clone);
+  rmSync(clone, { recursive: true, force: true });
+  git(tmpdir(), ["clone", "-q", upstream, clone]);
+  git(clone, ["config", "user.email", "fixture@example.invalid"]);
+  git(clone, ["config", "user.name", "fixture"]);
+
+  for (let i = 0; i < behindBy; i++) commit(upstream, `export const up = ${i};\n`);
+  if (behindBy > 0) git(clone, ["fetch", "-q", "origin"]);
+  for (let i = 0; i < aheadBy; i++) commit(clone, `export const local = ${i};\n`);
+
+  return { hooksDir: join(clone, "hooks"), root: clone };
+}
+
+const BASE = "origin/main";
+const realGit: GitRunner = spawnGitRunner(spawnSync);
+
+describe("#1341: a session whose hooks are not main's cannot attribute a reading to main", () => {
+  test("#1341: a current working tree beside a behind hook tree is NOT current", () => {
+    // The whole defect, as one fixture. On 2026-10-24 the live hooks tree was
+    // 135 commits behind `origin/main` while every session's own checkout was
+    // clean and current, and the finding arbiter refused three filings using
+    // logic a merged PR had corrected seven minutes earlier. `provenanceReading`
+    // alone reports CURRENT for exactly that machine, because it measures the
+    // tree the session EDITS and never the tree the session EXECUTES.
+    const root = repo();
+    const { hooksDir } = liveHookTree(3);
+
+    const treeOnly = provenanceReading(root);
+    expect(treeOnly.current, "the fixture's own working tree was not current").toBe(true);
+
+    const p = sessionProvenance({ root, hooksDir, base: BASE, git: realGit });
+    expect(p.tree.current).toBe(true);
+    expect(p.hooks?.state).toBe("behind");
+    expect(p.hooks?.behind, "the count is the measurement, not the direction").toBe(3);
+    expect(
+      p.current,
+      "a session executing three-commit-old hooks reported a current provenance",
+    ).toBe(false);
+
+    const block = sessionProvenanceBlock(p);
+    expect(block, "the block does not name the hook tree's state").toContain("Hook tree: BEHIND 3");
+    expect(block, "the block does not say the reading is unattributable").toContain("UNMEASURED");
+    expect(block, "the block does not name the directory the hooks execute from").toContain(
+      hooksDir,
+    );
+  });
+
+  test("#1341: a hook tree holding every commit on main is current, and local commits do not change that", () => {
+    // The discriminating case, and the one that rejects the cheap test.
+    // `git merge-base --is-ancestor HEAD origin/main` exits 1 here — it reads
+    // "stale" for a checkout that is missing nothing — while the count this
+    // uses reads 0. Measured on this fixture below, so the rejection is a
+    // number in the suite rather than a sentence in a PR.
+    const { hooksDir, root } = liveHookTree(0, 1);
+
+    const ancestor = Bun.spawnSync(
+      ["git", "-C", root, "merge-base", "--is-ancestor", "HEAD", BASE],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(ancestor.exitCode, "--is-ancestor did not misreport this checkout").toBe(1);
+
+    const p = sessionProvenance({ root: repo(), hooksDir, base: BASE, git: realGit });
+    expect(p.hooks?.state, "a checkout missing nothing was called stale").toBe("current");
+    expect(p.hooks?.behind).toBe(0);
+    expect(p.current).toBe(true);
+    expect(sessionProvenanceBlock(p)).toContain("Hook tree: CURRENT");
+  });
+
+  test("#1341: a detached HEAD carries its own provenance — no recorded file is needed", () => {
+    // `/Users/jhorn/Projects/rg-hooks-live` is a worktree of the shared repo
+    // on a detached HEAD, and a detached HEAD already names a commit. A file
+    // recording "the SHA this was synced to" would be a second decider that
+    // can disagree with the checkout it describes.
+    const { hooksDir, root } = liveHookTree(2);
+    git(root, ["checkout", "-q", "--detach", "HEAD"]);
+
+    const p = sessionProvenance({ root: repo(), hooksDir, base: BASE, git: realGit });
+    expect(p.hooks?.state).toBe("behind");
+    expect(p.hooks?.behind).toBe(2);
+    expect(p.hooks?.headSha, "a detached HEAD produced no SHA to report").toMatch(/^[0-9a-f]{40}$/);
+    expect(p.current).toBe(false);
+  });
+
+  test("#1341: an unbound RUNGATE_HOOKS_DIR skips the reading, and never fails on it", () => {
+    // The env var is the binding. A machine that has not set it runs no hook
+    // out of a foreign tree, so there is nothing to age — and a check that
+    // refused here would refuse on every CI runner and in every consumer's
+    // checkout, which is how a refusal becomes a line everyone clicks past.
+    const root = repo();
+
+    for (const unbound of [null, "", "   "]) {
+      const p = sessionProvenance({ root, hooksDir: unbound, base: BASE, git: realGit });
+      expect(p.hooks, `${JSON.stringify(unbound)} was treated as a directory`).toBeNull();
+      expect(p.current, "an unset binding refused the session").toBe(true);
+      expect(sessionProvenanceBlock(p)).toContain("Hook tree: not bound");
+    }
+  });
+
+  test("#1341: a hook directory that is not a working tree is UNMEASURED, not current", () => {
+    // `unmeasured` never degrades to `current` — `lib/hook-tree-currency.ts`'s
+    // standing constraint, restated at this level because this is the layer
+    // that turns a reading into a verdict.
+    const loose = realpathSync(mkdtempSync(join(tmpdir(), "rg-1341-loose-")));
+    roots.push(loose);
+    mkdirSync(join(loose, "hooks"), { recursive: true });
+    writeFileSync(join(loose, "hooks", "X.hook.ts"), "export const x = 1;\n");
+
+    const p = sessionProvenance({
+      root: repo(),
+      hooksDir: join(loose, "hooks"),
+      base: BASE,
+      git: realGit,
+    });
+    expect(p.hooks?.state).toBe("unmeasured");
+    expect(p.current, "a directory nothing could relate to a commit read as current").toBe(false);
+    expect(sessionProvenanceBlock(p)).toContain("Hook tree: UNMEASURED");
+  });
+
+  test("#1341: the CLI exits non-zero on a behind hook tree, and the working tree alone cannot clear it", () => {
+    // The library can decide perfectly and every case above stays green if the
+    // script prints the block and exits 0 — SC-1929's lesson, re-run for the
+    // reading that did not exist when it was written.
+    const root = repo();
+    const behind = liveHookTree(4);
+    const fresh = liveHookTree(0);
+
+    const run = (hooksDir: string) =>
+      Bun.spawnSync(["bun", CLI, "--project", root, "--hooks-dir", hooksDir], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+    const refused = run(behind.hooksDir);
+    expect(refused.exitCode, "the CLI reported a stale hook tree and exited 0").toBe(STALE_EXIT);
+    expect(STALE_EXIT).not.toBe(0);
+    const out = decode(refused.stdout);
+    expect(out).toContain("Hook tree: BEHIND 4");
+    expect(out, "the refusal does not say the working tree itself is fine").toContain(
+      "Currency: CURRENT",
+    );
+
+    // CONTROL: the same CLI, the same working tree, a hook tree that is current.
+    const ok = run(fresh.hooksDir);
+    expect(ok.exitCode, "a session with current hooks was refused").toBe(0);
+    expect(decode(ok.stdout)).toContain("Hook tree: CURRENT");
   });
 });

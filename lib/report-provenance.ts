@@ -37,6 +37,7 @@
  */
 import { execFileSync } from "child_process";
 
+import { type DirectoryCurrency, type GitRunner, directoryCurrency } from "./hook-tree-currency";
 import { reviewIsCurrent } from "./security-verdict";
 
 /** The exit code of a stale or unmeasurable reading. One site, so it can be mutated. */
@@ -214,5 +215,157 @@ export function provenanceBlock(reading: ProvenanceReading): string {
       ? `Currency: CURRENT — ${reading.reason}`
       : `Currency: NOT CURRENT — ${reading.reason}`,
   ];
+  return lines.join("\n");
+}
+
+/**
+ * The OTHER tree a session is standing in, and the one nothing above can see
+ * (#1341).
+ *
+ * Everything to this point measures the checkout the session EDITS. A Claude
+ * Code hook registration names a directory through `RUNGATE_HOOKS_DIR`, and
+ * the code that executes out of it is on whatever commit the last hand
+ * fast-forward left. Those are two different trees and only one of them has
+ * ever been in the provenance block.
+ *
+ * ## The measured cost, 2026-10-24
+ *
+ * `/Users/jhorn/Projects/rg-hooks-live` sat at `7817f1df` while `origin/main`
+ * was at `2729ce62` — **135 commits behind**, measured with
+ * `git rev-list --count 7817f1df..2729ce62`. Every session's own checkout was
+ * clean and current, so `provenanceReading` reported CURRENT for all of them.
+ * In that window the finding arbiter refused three issue filings using
+ * duplicate-detection logic PR #1538 had corrected seven minutes earlier: two
+ * `DUPLICATE` verdicts on bare integers and one `DROPPED_CATEGORY/style` on
+ * `\btypo\b`. Three `arbiter-override` escalations were spent on a fixed bug,
+ * and the ledger rows record them as human overrides of real refusals.
+ *
+ * It had gone stale twice the day before. The gap is not an incident, it is
+ * the steady state: nothing advances that tree, so the interval between a fix
+ * merging and the behaviour changing is unbounded.
+ *
+ * ## Why the checkout's own SHA, and not a file recording one
+ *
+ * `rg-hooks-live` is a worktree on a detached HEAD, and a detached HEAD
+ * already names a commit — `git rev-parse HEAD` is the whole of the
+ * provenance. A `SYNCED_TO` file beside it would be a SECOND decider for one
+ * question, and the weaker one: it is correct only while nobody moves the
+ * checkout without rewriting it, so a hand fast-forward makes a current tree
+ * read as behind, and a hand-edited tree keeps reading as current. The
+ * checkout is right by construction. `.claude/rules/checks-must-be-able-to-fail.md`
+ * calls two deciders agreeing the shape no behavioural test can separate.
+ *
+ * ## Why the count, and not `merge-base --is-ancestor`
+ *
+ * This repository squash-merges, and the standing rule against `--is-ancestor`
+ * holds here for a reason the suite measures: on a hook tree that is **0
+ * commits behind and 1 ahead**, `--is-ancestor HEAD origin/main` exits 1 — it
+ * calls a checkout that is missing nothing stale — while
+ * `rev-list --count HEAD..origin/main` reads 0. A boolean also cannot carry
+ * the number, and the number is what tells a reader whether to care.
+ * `directoryCurrency` is imported rather than reimplemented, so there is one
+ * binding deciding what "behind" means.
+ *
+ * ## Why this is not a hook
+ *
+ * A currency check that ships through `${RUNGATE_HOOKS_DIR}` cannot bootstrap
+ * itself: the copy that is behind is exactly the copy without the reporting
+ * code. `scripts/report-provenance.ts` runs out of the session's own
+ * checkout, so it is reachable by a path that cannot be stale for the reason
+ * it reports.
+ *
+ * ## The binding is the env var, and an unset one SKIPS
+ *
+ * No path to any machine's hooks directory appears here. `hooksDir` is
+ * supplied by the caller from `RUNGATE_HOOKS_DIR`, and `null` or blank means
+ * no hook executes out of a foreign tree — nothing to age, so nothing to
+ * refuse. A check that refused on an unset binding would refuse on every CI
+ * runner and in every consumer's checkout, which is how a refusal becomes a
+ * line everyone clicks past.
+ */
+export interface SessionProvenance {
+  /** The tree the session edits. Exactly what `provenanceReading` returns. */
+  tree: ProvenanceReading;
+  /**
+   * The tree the session's hooks execute out of, or `null` when
+   * `RUNGATE_HOOKS_DIR` binds nothing.
+   *
+   * `null` is NOT `current`. It means the question does not arise, and the
+   * block says so in those words rather than printing a pass.
+   */
+  hooks: DirectoryCurrency | null;
+  /**
+   * False when EITHER reading refuses. A rate, a refusal count or a ledger
+   * row produced by this session is attributable to `base` only when both
+   * trees are.
+   */
+  current: boolean;
+}
+
+/**
+ * Both readings, and one verdict over them.
+ *
+ * `base` has no default, for the reason `lib/hook-tree-currency.ts` gives: a
+ * default here would be a second place deciding which branch a tree is
+ * measured against.
+ */
+export function sessionProvenance(input: {
+  root: string;
+  measured?: string;
+  ref?: string;
+  expectBranch?: string;
+  /** From `RUNGATE_HOOKS_DIR`. Never a literal path — see the header. */
+  hooksDir: string | null | undefined;
+  base: string;
+  git: GitRunner;
+}): SessionProvenance {
+  const tree = provenanceReading(input.root, input.measured, input.ref, input.expectBranch);
+
+  const dir = input.hooksDir?.trim();
+  const hooks = dir === undefined || dir === "" ? null : directoryCurrency(dir, input.base, input.git);
+
+  return {
+    tree,
+    hooks,
+    // `current` is the ONLY state that clears. `behind` and `unmeasured` both
+    // refuse, and they keep their own names in the block below — folding them
+    // together here would weaken the UNMEASURED refusal that
+    // `lib/hook-tree-currency.ts` exists to keep separate from a count.
+    current: tree.current && (hooks === null || hooks.state === "current"),
+  };
+}
+
+/**
+ * The block to paste at the top of a report, now carrying both trees.
+ *
+ * `provenanceBlock` is called rather than re-rendered: the four lines a
+ * reader already knows how to read must not drift from the ones this adds to.
+ */
+export function sessionProvenanceBlock(p: SessionProvenance): string {
+  const lines = [provenanceBlock(p.tree)];
+
+  if (p.hooks === null) {
+    lines.push(
+      "Hook tree: not bound — RUNGATE_HOOKS_DIR is unset, so no hook executes out of a " +
+        "directory this session could age.",
+    );
+    return lines.join("\n");
+  }
+
+  if (p.hooks.state === "current") {
+    lines.push(`Hook tree: CURRENT — ${p.hooks.detail}`);
+    return lines.join("\n");
+  }
+
+  // The state keeps its own word, and the consequence is spelled out rather
+  // than left to the reader: the failure this closes is a number reported as
+  // if it described main.
+  const tag = p.hooks.state === "behind" ? `BEHIND ${p.hooks.behind}` : "UNMEASURED";
+  lines.push(
+    `Hook tree: ${tag} — ${p.hooks.detail}`,
+    `  Any rate, refusal count or ledger row this session produces is UNMEASURED against ` +
+      `${p.hooks.base}: it describes the hook tree above, not ${p.hooks.base}. Say UNMEASURED ` +
+      `rather than reporting the number.`,
+  );
   return lines.join("\n");
 }

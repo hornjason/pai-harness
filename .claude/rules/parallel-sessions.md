@@ -194,7 +194,7 @@ because a laundered approval always looks accurate to the session relaying it.
 ## State the tree you measured, and re-read the tip before you send
 
 ```bash
-bun scripts/report-provenance.ts                        # paste the four lines it prints
+bun scripts/report-provenance.ts                        # paste the block it prints
 bun scripts/report-provenance.ts --expect-branch rg/N   # when the work is in a worktree
 ```
 
