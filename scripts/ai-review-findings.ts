@@ -66,10 +66,42 @@
  * here rather than refused, because the reader never learns a path it has
  * no gate for. `test/ai-review-findings-command.test.ts` holds this file
  * to supplying the gate when the variable is set.
+ *
+ * ## The second thing it supplies (CRC-N4, #1586)
+ *
+ * `aiReviewSuppressionGate` — the "no repeats" subtraction. Same reasoning
+ * as the jury, twice over: `lib/ai-review-suppression.ts` pulls
+ * `lib/ai-review-rounds.ts` behind it, which the batteries do not copy, and
+ * it reads the CHECKOUT, which a reader running from a scratch directory
+ * does not have.
+ *
+ * It takes TWO paths, and that is the part worth not collapsing. The carry
+ * file holds the carry step's own three-state reading and is written on
+ * every path; the snapshot holds the ledger's bytes and exists only on the
+ * READ path. An absent snapshot is therefore not "no prior findings" — the
+ * carry file says which. Unset either and the gate is `null`: a consumer on
+ * an older scaffold gets the pre-#1586 reading, not a silent "nothing was a
+ * repeat".
+ *
+ * **A blocking finding never reaches this gate.**
+ * `findingMustAlwaysBeReported` filters first, inside the reader, so no
+ * answer the gate could give can drop one. That is a structural exemption
+ * rather than a rule the gate is trusted with, and it is a declared
+ * deviation from CRC-N4 as written — see the deviations table in
+ * `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`.
  */
 import { aiReviewJuryGate } from "../lib/ai-review-jury";
+import {
+  aiReviewSuppressionGate,
+  checkoutLineText,
+  readOrNull,
+} from "../lib/ai-review-suppression";
 import { main } from "../lib/scaffold/ai-review-findings";
-import { AI_REVIEW_BALLOT_DIR_ENV } from "../lib/scaffold/ai-review-step";
+import {
+  AI_REVIEW_BALLOT_DIR_ENV,
+  AI_REVIEW_CARRY_PATH_VAR,
+  AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR,
+} from "../lib/scaffold/ai-review-step";
 
 const ballotDir = process.env[AI_REVIEW_BALLOT_DIR_ENV];
 const jury =
@@ -77,9 +109,20 @@ const jury =
     ? null
     : (blocking: readonly unknown[]) => aiReviewJuryGate(blocking, ballotDir);
 
+const carryPath = process.env[AI_REVIEW_CARRY_PATH_VAR];
+const snapshotPath = process.env[AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR];
+const suppress =
+  carryPath === undefined || carryPath === ""
+    ? null
+    : aiReviewSuppressionGate({
+        carry: readOrNull(carryPath),
+        snapshot: readOrNull(snapshotPath),
+        lineTextFor: checkoutLineText(process.cwd()),
+      });
+
 // One line, and `process.exit(main(` is load-bearing text: AC-4 in
 // `test/ai-review-findings-command.test.ts` reads it to prove this file
 // declares no exit code of its own. Wrapping the call across lines makes
 // that case red for a formatting reason, which is worth knowing before
 // reformatting it.
-process.exit(main(process.argv.slice(2), jury));
+process.exit(main(process.argv.slice(2), jury, suppress));

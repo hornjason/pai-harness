@@ -1752,6 +1752,75 @@ export const AI_REVIEW_CARRY_PATH_VAR = "AI_REVIEW_CARRY_PATH";
 /** The basename inside the findings directory. One spelling. */
 export const AI_REVIEW_CARRY_BASENAME = "ai-review-carried.txt";
 
+/**
+ * Where the carry step leaves the ledger comment's BODY, verbatim, for the
+ * adjudicator to re-read in TypeScript (CRC-N4, #1586).
+ *
+ * ## Why a snapshot and not a fetch at adjudication time
+ *
+ * The step order is `AI_REVIEW_CARRY_STEP_ID` → the reviewer →
+ * `AI_REVIEW_PERSIST_STEP_ID`, which upserts THIS round into the ledger
+ * comment → `AI_REVIEW_RUN_STEP_ID`, which adjudicates. An adjudicator
+ * that fetched the ledger itself would read a comment that already contains
+ * the payload it is deciding about, so every finding would match a "prior"
+ * key that is its own, and the suppression would empty the payload on every
+ * round while looking like it worked. The prior state has to be the one that
+ * existed BEFORE the reviewer ran, and the carry step is the only position
+ * that holds it.
+ *
+ * ## Why the raw body rather than the keys
+ *
+ * `carryKey` is not restated in jq. The carry script reaches the body and
+ * stops; `readLedger → priorFindings` forms every key in TypeScript, so
+ * there is ONE decider for what a finding's identity is. A second
+ * implementation in jq would be the #1568 shape again — two readers of the
+ * same bytes, disagreeing on a case neither author thought to name.
+ *
+ * ## Written on the READ path only, and that is not a conflation
+ *
+ * An absent snapshot does not mean "no prior findings": the state is read
+ * from `AI_REVIEW_CARRY_BASENAME`, which is written on EVERY path and is
+ * the single site that decides it. UNMEASURED and ABSENT both reach the
+ * adjudicator as "suppress nothing", but only one of them says the record
+ * could not be read, and the adjudicator reports which.
+ */
+export const AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR = "AI_REVIEW_LEDGER_SNAPSHOT_PATH";
+
+/** The basename inside the findings directory. One spelling. */
+export const AI_REVIEW_LEDGER_SNAPSHOT_BASENAME = "ai-review-ledger-snapshot.txt";
+
+/**
+ * The round the snapshot was taken BEFORE, handed to the carry step so the
+ * snapshot can carry its own provenance (#1586).
+ *
+ * ## What this exists to make falsifiable
+ *
+ * A snapshot taken at `AI_REVIEW_PERSIST_STEP_ID` instead of at the carry
+ * step is byte-shaped exactly like a correct one — it is the same comment,
+ * fetched the same way, by the same selector. The only thing that
+ * distinguishes them is that the later one already contains THIS round, so
+ * every finding in the payload matches a "prior" key that is its own and the
+ * adjudicator suppresses the entire round. That failure reports as a clean
+ * review on every round forever, which is the reading that looks most like
+ * success.
+ *
+ * So the snapshot states the round it precedes, and the reader refuses a
+ * snapshot containing a round at or past it. The refusal is UNMEASURED and
+ * suppresses nothing, so the wrong-ordering mutant fails toward reporting.
+ */
+export const AI_REVIEW_SNAPSHOT_ROUND_VAR = "AI_REVIEW_SNAPSHOT_ROUND";
+
+/**
+ * The snapshot's first line: `taken_before_round=<N>`. Everything after the
+ * first newline is the ledger comment's body, verbatim and unescaped.
+ *
+ * A single header line rather than a JSON envelope, because the body is
+ * arbitrary text that must survive byte-for-byte: `readLedger` is the one
+ * decider for what it means, and re-encoding it here would be a second
+ * format for that reader to disagree with.
+ */
+export const AI_REVIEW_SNAPSHOT_ROUND_KEY = "taken_before_round";
+
 /** The annotation title every carry warning is filed under. */
 export const AI_REVIEW_CARRY_TITLE = "AI review carry-forward";
 
@@ -4696,6 +4765,37 @@ if ! carried_count=\$(printf '%s' "\${carried}" | jq 'length'); then
 fi
 
 carry_state '${AI_REVIEW_CARRY_READ}'
+
+# The ledger's own bytes, for the adjudicator to key in TypeScript (#1586).
+#
+# HERE and not at adjudication time: the persist step upserts THIS round into
+# that same comment before the adjudicator runs, so a later fetch would read
+# the payload it is deciding about as its own prior and suppress all of it.
+#
+# ON THE READ PATH ONLY, and after the parse above succeeded. The state the
+# adjudicator gates on lives in the carry file, which \`carry_state\` writes on
+# every path — so an absent snapshot is never read as "no earlier findings",
+# it is read as whichever of the three states that one site recorded.
+#
+# A failed write is a WARNING and not a refusal: the carry itself succeeded
+# and the reviewer's copy is already on disk. The adjudicator seeing no
+# snapshot suppresses nothing, which is the direction this is allowed to be
+# wrong in — a repeat gets posted twice, rather than a live finding dropped.
+if [ -n "\${${AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR}:-}" ]; then
+  # The provenance line FIRST, then the body verbatim. The reader refuses a
+  # snapshot holding a round at or past this number, which is the only thing
+  # that tells a snapshot taken here from one taken after the persist step —
+  # they are otherwise the same comment fetched by the same selector, and the
+  # later one suppresses the whole round it is deciding about.
+  if ! {
+    printf '%s=%s\\n' '${AI_REVIEW_SNAPSHOT_ROUND_KEY}' "\${${AI_REVIEW_SNAPSHOT_ROUND_VAR}:-}"
+    printf '%s' "\${selected}" | jq -r '.body // ""'
+  } > "\${${AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR}}"; then
+    rm -f "\${${AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR}}"
+    carry_note "the ledger's own text could not be written for the adjudicator, so repeats will not be suppressed on this round. Every finding this round raises is reported, including any an earlier round already raised."
+  fi
+fi
+
 {
   printf 'carried_count=%s\\n' "\${carried_count}"
   printf 'unmeasured_rounds=%s\\n' "\${unmeasured_rounds}"
@@ -10152,6 +10252,15 @@ export function buildReviewRunStep(
     // Composed from the prepare step's output rather than spelled again, so
     // there is one declaration of where that directory is.
     `    ${AI_REVIEW_CARRY_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_CARRY_BASENAME}`,
+    // #1586. The same directory and the same composition rule. This step is
+    // the WRITER of the snapshot; the adjudicator step below names the same
+    // path from the same prepare-step output, so the two agree by
+    // construction rather than through an output this step might not reach.
+    `    ${AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_LEDGER_SNAPSHOT_BASENAME}`,
+    // The round this snapshot precedes, so it carries its own provenance.
+    // Unset is not fatal: the reader refuses an unreadable provenance the
+    // same way it refuses a stale one, by suppressing nothing.
+    `    ${AI_REVIEW_SNAPSHOT_ROUND_VAR}: \${{ steps.${AI_REVIEW_ROUNDS_STEP_ID}.outputs.${AI_REVIEW_ROUND_OUTPUT} }}`,
     `  run: |`,
     ...buildCarryScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
@@ -10300,6 +10409,18 @@ export function buildReviewRunStep(
     // when the writer did not reach it, the file is simply absent, which is
     // `CHANGED_FILES_UNREADABLE` and not a green check.
     `    ${AI_REVIEW_CHANGED_FILES_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_CHANGED_FILES_BASENAME}`,
+    // #1586, and restated here for #826's reason like the line above: a
+    // step's `env:` does not carry to a later step. The carry step WROTE the
+    // snapshot; these are the adjudicator's own copies, composed from the
+    // same prepare output so the reader cannot be pointed at a path the
+    // writer did not use.
+    //
+    // BOTH paths, and that is the point. The snapshot alone cannot say why
+    // it is absent, and an absent snapshot read as "no earlier findings" is
+    // the #1568 conflation arriving in the half that decides a required
+    // check. The carry file carries the state; this one carries the bytes.
+    `    ${AI_REVIEW_CARRY_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_CARRY_BASENAME}`,
+    `    ${AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_LEDGER_SNAPSHOT_BASENAME}`,
     `    ${AI_REVIEW_EXECUTION_FILE_VAR}: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outputs.execution_file }}`,
     // CRC-B1. The PATH, so the read-check can look for that exact string in
     // the transcript. #826 is why this is restated rather than inherited: a

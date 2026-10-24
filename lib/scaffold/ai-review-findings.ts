@@ -275,6 +275,12 @@ export const AI_REVIEW_FINDINGS_TITLE = "AI review findings";
  */
 export const AI_REVIEW_ADVISORY_TITLE = "AI review advisory findings";
 
+/** CRC-N4 (#1586). Repeats that were dropped, named rather than counted. */
+export const AI_REVIEW_SUPPRESSED_TITLE = "AI review repeats not reported again";
+
+/** CRC-N4 (#1586). The history could not be compared — not "no repeats". */
+export const AI_REVIEW_SUPPRESSED_UNMEASURED_TITLE = "AI review repeat check UNMEASURED";
+
 /**
  * A stable identity for one finding, so an answer can name it.
  *
@@ -749,6 +755,31 @@ export interface AiReviewFindingsReading {
    * already reduced.
    */
   findingTags: (Severity | null)[] | null;
+  /**
+   * Findings an earlier round already raised, DROPPED from this round's
+   * report (CRC-N4, #1586) — raw, named, in payload order.
+   *
+   * Never a count. "Three repeats were dropped" and "these three were
+   * dropped" differ exactly when somebody wants to know whether the drop was
+   * right, which is the only question anybody asks of a drop.
+   *
+   * `[]` means the reader ran and found no repeat. There is no `null`
+   * case — a run with no repeat reader simply suppresses nothing, and
+   * `suppressionUnmeasured` is what says the prior state could not be read.
+   */
+  suppressedReported: unknown[];
+  /** One line per entry in `suppressedReported`, in the same order. */
+  suppressionReasons: string[];
+  /**
+   * Why the prior state could not be established, or `null`.
+   *
+   * `null` with an empty `suppressedReported` is "the reader ran and nothing
+   * was a repeat". A sentence here is "nothing could be compared", and those
+   * are different facts — the second one means this round's report is a
+   * complete list that was never checked against the history, which is the
+   * distinction #1568 cost three rounds of #1569 to learn.
+   */
+  suppressionUnmeasured: string | null;
 }
 
 /**
@@ -887,6 +918,93 @@ function tagsForPayload(
   );
 }
 
+/**
+ * Findings that are reported on EVERY round, whatever an earlier round said.
+ *
+ * ## This is the whole of CRC-N4's safety, and it is named for what it protects
+ *
+ * The deployed reviewer prompt (`buildReviewPrompt`) tells the reviewer:
+ *
+ * > CHECK EACH CARRIED FINDING AGAINST THE CODE AND RE-REPORT THE ONES THAT
+ * > ARE STILL TRUE … A carried finding you silently leave out is a finding
+ * > that has stopped being reported, and that is how a live defect reaches a
+ * > green check.
+ *
+ * So on every round after the first, a live unresolved finding is **supposed**
+ * to be in the payload, and it is key-identical to the one the ledger
+ * recorded. Subtracting it is therefore not a de-duplication: it is the
+ * deletion of the one signal the gate has. MEASURED on the real functions
+ * before this was written — a round-1 blocking finding, re-reported on round 2
+ * exactly as instructed, run through `suppressRepeats` with the ledger's keys:
+ *
+ * ```
+ * kept: 0   suppressed: 1   severity of what survives: []
+ * ```
+ *
+ * `blocking.length === 0` → `blocked: false` → `CLEAN`, which is a green
+ * required check over a defect a previous round blocked on. That is
+ * SUCCESS.md claim 4 failing inside this repository's own merge gate.
+ *
+ * ## Unclassified is protected too, and that is the three-state reading
+ *
+ * `severityBlocks` answers `true`, `false`, or `null` for a severity the
+ * table does not declare. Only an explicit `false` — a severity this module
+ * knows and knows does not block — is ever offered for suppression. `null`
+ * is not "does not block"; it is "nobody classified this", and dropping it
+ * would let an unrecognised severity become the way round the exemption.
+ *
+ * ## Widening this is a decision about the merge gate
+ *
+ * Anything that makes this return `false` more often lets a repeat stop
+ * blocking. `test/ai-review-suppression.test.ts` mutates it to a constant
+ * `false` and asserts the verdict flips from BLOCKED to CLEAN — the count
+ * alone is not the assertion, because a count can stay right while the
+ * verdict moves, and the verdict is the thing that gates.
+ *
+ * Recorded as a declared deviation from `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`
+ * line 480, which says the adjudicator should drop any finding matching an
+ * earlier round's key. The prompt above is the newer artefact and the correct
+ * one; the deviations table carries the reasoning so a reader finds it there.
+ */
+export function findingMustAlwaysBeReported(finding: unknown): boolean {
+  if (finding === null || typeof finding !== "object" || Array.isArray(finding)) return true;
+  const severity = (finding as Record<string, unknown>)[AI_REVIEW_FINDING_FIELDS.severity];
+  return severityBlocks(severity) !== false;
+}
+
+/**
+ * The cross-round repeat reader, INJECTED exactly as `AiReviewJuryGate` is
+ * and for the same mechanical reason: three mutation batteries copy this
+ * module into a scratch directory carrying only `./ai-review-step`, and
+ * `lib/ai-review-suppression.ts` pulls `lib/ai-review-rounds.ts` behind it.
+ * A mutant that died on module resolution would report zero findings, which
+ * reads exactly like a guard behaving differently.
+ *
+ * **It never sees a blocking finding.** The caller filters with
+ * `findingMustAlwaysBeReported` before offering anything, so the exemption is
+ * structural rather than a rule the gate is trusted to follow.
+ *
+ * **Positional, like the ballot.** A map keyed by a finding's identity would
+ * be a SECOND derivation of that identity over a list already produced in
+ * order, and two findings sharing a key would share a verdict.
+ */
+export interface AiReviewSuppressionGate {
+  (candidates: readonly unknown[]): {
+    /**
+     * One entry per candidate, IN INPUT ORDER: the sentence saying an earlier
+     * round already raised it, or `null` to report it.
+     */
+    repeat: readonly (string | null)[];
+    /**
+     * Why the prior state could not be established, or `null` when it was.
+     * An unmeasured prior suppresses NOTHING — the direction this is allowed
+     * to be wrong in is toward reporting a repeat twice, never toward
+     * dropping something live.
+     */
+    unmeasured: string | null;
+  };
+}
+
 function unmeasured(
   reasons: AiReviewUnmeasuredReason[],
   detail: string[],
@@ -897,6 +1015,14 @@ function unmeasured(
     outcome: "UNMEASURED",
     blocked: null,
     reported,
+    // Empty rather than null, and that is not the usual three-state reading
+    // being skipped: `suppressionUnmeasured` is the field that says the
+    // prior state was not established, and on an UNMEASURED payload it is
+    // `readAiReviewFindings` that fills both from what `readPayload`
+    // appended. Nothing was dropped on any path that reaches here.
+    suppressedReported: [],
+    suppressionReasons: [],
+    suppressionUnmeasured: null,
     blockingReported: null,
     verdict: null,
     unmeasuredReasons: reasons,
@@ -982,24 +1108,39 @@ function withScope(
 export function readAiReviewFindings(
   raw: string | null,
   scope: AiReviewScopeReading = scopeNotSupplied(),
+  suppress: AiReviewSuppressionGate | null = null,
 ): AiReviewFindingsReading {
   const preExisting: unknown[] = [];
   // Appended to by `readPayload`, for the same reason `preExisting` is: the
   // entries belong to the reading its caller composes, and every early return
   // in there is a state in which the split had not happened yet.
   const dropped: string[] = [];
+  // #1586, by the same arrangement and for the same reason.
+  const suppressed: unknown[] = [];
+  const suppression: { reasons: string[]; unmeasured: string | null } = {
+    reasons: [],
+    unmeasured: null,
+  };
   const base = readPayload(
     raw,
     scope.status === "MEASURED" ? scope.files : undefined,
     preExisting,
     dropped,
+    suppress,
+    suppressed,
+    suppression,
   );
-  return withScope(
-    base,
-    scope,
-    scope.status === "MEASURED" ? preExisting : null,
-    scope.status === "MEASURED" ? dropped : null,
-  );
+  return {
+    ...withScope(
+      base,
+      scope,
+      scope.status === "MEASURED" ? preExisting : null,
+      scope.status === "MEASURED" ? dropped : null,
+    ),
+    suppressedReported: suppressed,
+    suppressionReasons: suppression.reasons,
+    suppressionUnmeasured: suppression.unmeasured,
+  };
 }
 
 /**
@@ -1017,6 +1158,9 @@ function readPayload(
   changedFiles: readonly string[] | undefined,
   preExisting: unknown[],
   dropped: string[],
+  suppress: AiReviewSuppressionGate | null,
+  suppressedOut: unknown[],
+  suppressionOut: { reasons: string[]; unmeasured: string | null },
 ): AiReviewFindingsReading {
   if (raw === null) {
     return unmeasured(["FINDINGS_FILE_ABSENT"], ["no findings payload was produced"]);
@@ -1109,7 +1253,65 @@ function readPayload(
   /** How many findings CRC-B7 demoted. See the `agreed` computation below. */
   let demoted = 0;
 
+  // ── CRC-N4, and the ONE site a repeat is dropped (#1586) ───────────────
+  //
+  // BEFORE the classification below, so a suppressed finding is absent from
+  // `reported`, from the annotation and from the ledger alike — "dropped
+  // everywhere or nowhere". A finding filtered out of one projection and
+  // left in another is two answers to one question.
+  //
+  // Only findings `findingMustAlwaysBeReported` declines to protect are ever
+  // OFFERED. The exemption is therefore structural: there is no argument the
+  // gate can return that drops a blocking finding, because a blocking
+  // finding is never in the list it is handed. See that predicate for the
+  // measurement that made this the design.
+  const offered: unknown[] = [];
+  const offeredAt: number[] = [];
   list.forEach((item, i) => {
+    if (!findingMustAlwaysBeReported(item)) {
+      offered.push(item);
+      offeredAt.push(i);
+    }
+  });
+  /** Per-index reason, or null to report. Positional, never keyed. */
+  const repeatOf: (string | null)[] = list.map(() => null);
+  let suppressionUnmeasured: string | null = null;
+  if (suppress !== null && offered.length > 0) {
+    try {
+      const verdict = suppress(offered);
+      suppressionUnmeasured = verdict.unmeasured;
+      // A gate that answered about a different number of findings than it
+      // was handed has lost the positional join, and a misaligned verdict
+      // suppresses the wrong finding. Refuse the whole reading rather than
+      // apply part of it.
+      if (verdict.repeat.length !== offered.length) {
+        suppressionUnmeasured =
+          `the repeat reader answered about ${verdict.repeat.length} finding(s) and was handed ` +
+          `${offered.length}, so no answer could be matched to a finding and nothing was ` +
+          `suppressed. Every finding this round raised is reported.`;
+      } else {
+        verdict.repeat.forEach((why, k) => {
+          if (typeof why === "string") repeatOf[offeredAt[k]!] = why;
+        });
+      }
+    } catch (e) {
+      // FAIL TOWARD REPORTING. A reader that threw has established nothing,
+      // and the cost of being wrong here is one advisory printed twice —
+      // against a live finding dropped, which is silent and permanent.
+      suppressionUnmeasured =
+        `the repeat reader threw and nothing was suppressed: ${(e as Error).message}. Every ` +
+        `finding this round raised is reported, including any an earlier round already raised.`;
+    }
+  }
+  // Appended rather than returned, for `preExisting`'s reason: these belong
+  // to the reading the caller composes, and every early return above is a
+  // state in which no suppression had happened yet.
+  suppressedOut.push(...list.filter((_, i) => repeatOf[i] !== null));
+  suppressionOut.reasons.push(...repeatOf.filter((r): r is string => r !== null));
+  suppressionOut.unmeasured = suppressionUnmeasured;
+  const kept = list.filter((_, i) => repeatOf[i] === null);
+
+  kept.forEach((item, i) => {
     if (item === null || typeof item !== "object" || Array.isArray(item)) {
       reasons.push("FINDING_NOT_AN_OBJECT");
       detail.push(`finding ${i} is not an object`);
@@ -1247,9 +1449,14 @@ function readPayload(
     }
   }
 
-  const tags = tagsForPayload(list, touched);
+  // Over `kept`, not over `list` (#1586). `findingTags` is parallel to
+  // `reported` by index, and `reported` is now the payload MINUS the repeats
+  // this round suppressed — tagging the unfiltered list would shift every tag
+  // by the number of findings dropped before it, so a `Nit` would be printed
+  // against an `Important`. The two have to be derived from one array.
+  const tags = tagsForPayload(kept, touched);
 
-  if (reasons.length > 0) return unmeasured(reasons, detail, list, tags);
+  if (reasons.length > 0) return unmeasured(reasons, detail, kept, tags);
 
   // The decision, and the only place it is made. `verdict` is compared to it
   // afterwards; it never contributes to it.
@@ -1272,11 +1479,17 @@ function readPayload(
   return {
     outcome,
     blocked,
-    reported: list,
+    reported: kept,
     blockingReported: blocking,
     verdict,
     unmeasuredReasons: [],
     detail,
+    // `readAiReviewFindings` owns these three, the way `withScope` owns the
+    // two below: `readPayload` appended them to the arrays it was handed,
+    // and a value here would be a second statement about the same input.
+    suppressedReported: [],
+    suppressionReasons: [],
+    suppressionUnmeasured: null,
     // Both of these are `withScope`'s to set, and it is the only site that
     // sets either. A value here would be a second statement about the same
     // input, and the two could disagree.
@@ -1426,6 +1639,7 @@ export function partitionChangedFiles(
 export function readAiReviewFindingsFile(
   path: string,
   scope: AiReviewScopeReading = scopeNotSupplied(),
+  suppress: AiReviewSuppressionGate | null = null,
 ): AiReviewFindingsReading {
   let raw: string;
   try {
@@ -1450,7 +1664,7 @@ export function readAiReviewFindingsFile(
       null,
     );
   }
-  return readAiReviewFindings(raw, scope);
+  return readAiReviewFindings(raw, scope, suppress);
 }
 
 /** The sentence a refusal prints, or `null` when there is nothing to refuse. */
@@ -1687,7 +1901,7 @@ export function argumentsBeyondTheContract(argv: readonly string[]): string[] {
  * outcome line and the scope line, because the generated step reads the
  * outcome line before it reads the exit code.
  */
-function readArgv(argv: string[]): AiReviewFindingsReading {
+function readArgv(argv: string[], suppress: AiReviewSuppressionGate | null): AiReviewFindingsReading {
   const extra = argumentsBeyondTheContract(argv);
   if (extra.length > 0) {
     // Scope is NOT read here. The argv is already known to be a shape this
@@ -1720,7 +1934,7 @@ function readArgv(argv: string[]): AiReviewFindingsReading {
         null,
         null,
       )
-    : readAiReviewFindingsFile(path, scope);
+    : readAiReviewFindingsFile(path, scope, suppress);
 }
 
 /**
@@ -1730,8 +1944,12 @@ function readArgv(argv: string[]): AiReviewFindingsReading {
  * Returns the exit code rather than calling `process.exit`, so a test can run
  * it in-process as well as spawn it.
  */
-export function main(argv: string[], jury: AiReviewJuryGate | null = null): number {
-  const reading = readArgv(argv);
+export function main(
+  argv: string[],
+  jury: AiReviewJuryGate | null = null,
+  suppress: AiReviewSuppressionGate | null = null,
+): number {
+  const reading = readArgv(argv, suppress);
 
   // CRC-B4, AFTER the reading and feeding nothing back into it.
   //
@@ -1843,6 +2061,42 @@ export function main(argv: string[], jury: AiReviewJuryGate | null = null): numb
   const advisory = advisoryNotice(reading);
   if (advisory !== null) {
     console.log(`::notice title=${AI_REVIEW_ADVISORY_TITLE}::${escapeAnnotation(advisory)}`);
+  }
+
+  // CRC-N4's reading, on its own title (#1586). A `::notice`, because a
+  // repeat that was dropped is the mechanism working and nothing about it
+  // is a problem with the pull request.
+  //
+  // It NAMES them. A count cannot be argued with and cannot be audited: the
+  // only question anybody asks of a suppression is whether it was right,
+  // and that question needs the finding. These are advisory by construction
+  // — `findingMustAlwaysBeReported` never offers a blocking finding — so
+  // this annotation is the entire record that they existed.
+  if (reading.suppressedReported.length > 0) {
+    console.log(
+      `::notice title=${AI_REVIEW_SUPPRESSED_TITLE}::${escapeAnnotation(
+        `${reading.suppressedReported.length} advisory finding(s) were raised on an earlier ` +
+          `round of this pull request and are not reported again: ` +
+          `${reading.suppressionReasons.join("; ")}. A BLOCKING finding is never suppressed, ` +
+          `on any round, at any key — it is re-reported and it blocks exactly as it did the ` +
+          `first time.`,
+      )}`,
+    );
+  }
+
+  // A `::warning`, and the state is NAMED, for `AI_REVIEW_JURY_UNMEASURED`'s
+  // reason. An unreadable history that printed nothing would make "no
+  // repeats were found" and "the history could not be compared" the same
+  // observation, which is #1568 arriving one subsystem over.
+  if (reading.suppressionUnmeasured !== null) {
+    console.log(
+      `::warning title=${AI_REVIEW_SUPPRESSED_UNMEASURED_TITLE}::${escapeAnnotation(
+        `What earlier rounds of this pull request raised could not be established: ` +
+          `${reading.suppressionUnmeasured}. Nothing was suppressed, so this round's report ` +
+          `is complete and was simply never compared against the history. No finding's ` +
+          `status changed either way.`,
+      )}`,
+    );
   }
 
   // The quorum's own reading, on its own title, and emitted whatever the
