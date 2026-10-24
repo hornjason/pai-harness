@@ -51,7 +51,10 @@ import {
   AI_REVIEW_UNMEASURED_LOG_UNREADABLE,
   AI_REVIEW_UNMEASURED_NO_PAYLOAD,
 } from "../lib/ai-review-unmeasured.ts";
-import { AI_REVIEW_LEDGER_COMMENT_MARKER } from "../lib/ai-review-rounds.ts";
+import {
+  AI_REVIEW_LEDGER_BOT_LOGIN_NAME,
+  AI_REVIEW_LEDGER_COMMENT_MARKER,
+} from "../lib/ai-review-rounds.ts";
 import { CLI_COMMANDS } from "../lib/cli-commands.ts";
 import {
   AI_REVIEW_UNMEASURED_COMMAND,
@@ -205,9 +208,19 @@ function runWorkflowStep(rig: Rig = {}): Run {
     if (log !== null) writeFileSync(logPath, log);
     const rounds = rig.rounds ?? [unmeasuredRound()];
     if (!rig.noLedger) {
+      // The AUTHOR travels with the comment, because the recorder's `-q`
+      // asks for it and `selectLedgerComment` reads it (#1412). A fixture
+      // carrying only `{id, body}` describes a `gh` invocation this script
+      // no longer makes, and the selection would correctly refuse it —
+      // which would be the rig failing, not the step.
       writeFileSync(
         commentsPath,
-        `${JSON.stringify({ id: COMMENT_ID, body: ledgerBody(rounds) })}\n`,
+        `${JSON.stringify({
+          id: COMMENT_ID,
+          body: ledgerBody(rounds),
+          login: AI_REVIEW_LEDGER_BOT_LOGIN_NAME,
+          type: "Bot",
+        })}\n`,
       );
     } else {
       writeFileSync(commentsPath, "");
