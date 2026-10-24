@@ -20,6 +20,14 @@
  * assertion.
  */
 
+import {
+  parseTsModule,
+  walkNodes,
+  calleeRoot,
+  rootProperty,
+  type AstNode,
+} from "./ts-ast";
+
 /** One `test(...)` in a gate suite, with the body a brace matcher found. */
 export interface GateCheck {
   /** The first argument to `test(...)`, as written. */
@@ -219,135 +227,480 @@ export interface WarnReturnPath {
  * allowed to be wrong in is toward NOT naming: an intervening `expect` at any
  * depth disqualifies a candidate, even one a branch could skip. A missed check
  * costs an entry nobody wrote; a false one costs the list its credibility.
- */
-const WARN_CALL = /^console\s*\.\s*warn\s*\(/;
-const EXPECT_CALL = /^expect\s*(?:<[^>()]*>)?\s*\(/;
-const RETURN_KEYWORD = /^return\b/;
-const IF_KEYWORD = /^if\b/;
-/**
- * The keywords that open a branch excluding the one before it.
  *
- * Brace depth alone only notices exclusivity when the branches are braced and
- * the depth dips between them. `if (a) expect(p); else console.warn(x);` puts
- * both at the same depth with nothing closing in between, and so does a
- * `switch`, so the assertion was credited to a path that can never run it.
- * PR #1539's review caught that.
+ * ## Why this is an AST and not a token scan (#1555)
+ *
+ * The question "does a path out of this `console.warn` leave the check without
+ * asserting" is a **reachability analysis**. Until #1555 it was a forward token
+ * scan over the check body that tracked brace depth, paired `else` to `if` by
+ * remembering head positions per depth, and carried a running minimum depth
+ * between tokens to notice a block closing. That is a parser, written badly,
+ * and it was wrong five times across four revisions of #1539 — three of them
+ * found one at a time by an AI reviewer handing back one side of the shape per
+ * round, and one of those three a regression a previous round's own fix had
+ * introduced.
+ *
+ * #1555 enumerated every way a path out of a warn can terminate — twelve
+ * shapes — and measured the merged scan against all of them. **Three were
+ * wrong**, not the two the issue predicted: `try { warn; return } finally
+ * { expect }`, a warn inside a callback with an `expect` after it, and a
+ * `throw` after the warn. Each is a direct question about the tree:
+ * `ThrowStatement`, `TryStatement.finalizer`, a closure as a node boundary,
+ * `IfStatement.alternate`, `SwitchCase`. The scan had to approximate all of
+ * them from brace depth, and shape 7 (warn OUTSIDE a closure, right) beside
+ * shape 12 (warn INSIDE one, wrong) is what that looks like: brace depth
+ * getting the right answer for the wrong reason.
+ *
+ * The parser is `acorn`, through `lib/ts-ast.ts`, which is this repository's
+ * existing binding for "a detector that must not be fooled by its own
+ * fixtures" (#968) and the one five other `lib/` modules already use. #1555
+ * recommended TypeScript's own parser on the grounds that it is a declared
+ * dependency; it is declared as a **devDependency**, and `lib/` is published
+ * (`files[]` in package.json), so a published module importing it would be
+ * broken in every consumer's install. `acorn` is a runtime dependency.
+ *
+ * The consequence of that choice, which the code below has to carry:
+ * `parseTsModule` transpiles the types off before parsing, and
+ * `Bun.Transpiler` drops comments and blank lines — so **node positions index
+ * the transpiled text and cannot be converted to a line in the original**.
+ * `warnLine` is therefore resolved by ordinal against the original body, and
+ * the counts are required to agree rather than assumed to (`warnOffsets`).
  */
-const BRANCH_SPLIT = /^(?:else|case|default)\b/;
 
-type PathToken = {
-  kind: "expect" | "warn" | "return";
-  at: number;
-  depth: number;
-  /**
-   * The shallowest depth reached between the previous token and this one.
-   *
-   * Without it a forward scan can only compare each token's own depth against
-   * the warn's, which cannot see a block closing and re-opening in between —
-   * so a `return` inside a LATER, unrelated branch reads as the warn's own
-   * path leaving the check. PR #1539's review caught exactly that.
-   */
-  minBefore: number;
-};
+/** The decision for one path out of a warn, and what it is allowed to be. */
+interface PathFlow {
+  /** An `expect` MAY execute along this path. Disqualifies the candidate. */
+  expect: boolean;
+  /** Control may reach the end of the construct normally. */
+  fall: boolean;
+  /** Control may execute a `return` — a normal exit from the function. */
+  ret: boolean;
+  /** Control may `break` out of the enclosing loop or switch. */
+  brk: boolean;
+  /** Control may `continue` the enclosing loop. */
+  cont: boolean;
+}
+
+const LOOPS = new Set([
+  "ForStatement",
+  "ForInStatement",
+  "ForOfStatement",
+  "WhileStatement",
+  "DoWhileStatement",
+]);
+
+const FUNCTIONS = new Set([
+  "ArrowFunctionExpression",
+  "FunctionExpression",
+  "FunctionDeclaration",
+]);
+
+function isNodeLike(value: unknown): value is AstNode {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as AstNode).type === "string" &&
+    typeof (value as AstNode).start === "number"
+  );
+}
 
 /**
- * Bracket-depth-aware token scan over a check body, skipping strings and
- * comments the way `matchingParen` does.
+ * `expect(...)` in any spelling, including `expect<T>(...)` (the type argument
+ * is gone by the time acorn sees it) and `expect(x).toBe(y)`.
  *
- * `assertDepth` is the shallowest depth at which an `expect` has been seen
- * whose enclosing block has not since closed — i.e. an assertion that runs on
- * every path reaching the current position. It resets when depth falls below
- * it, because that is the block closing.
+ * `calleeRoot` is what makes this one question rather than a list of
+ * spellings: it follows member and call chains to the identifier at the root,
+ * so `s.expect(...)` resolves to `s` and is correctly NOT an assertion — the
+ * boundary the old regex had to hand-check with a character class.
  */
-function pathTokens(body: string): { tokens: PathToken[]; assertDepthAt: Map<number, number | null> } {
-  const tokens: PathToken[] = [];
-  const assertDepthAt = new Map<number, number | null>();
-  let depth = 0;
-  let assertDepth: number | null = null;
-  /** Where the assertion that set `assertDepth` sits, so an `else` can tell
-   *  whether it lives in the branch being superseded. */
-  let assertAt = -1;
-  /** The most recent `if`/`switch` head seen at each depth. */
-  const branchHeadAt = new Map<number, number>();
-  let minSinceToken = 0;
-  const push = (kind: PathToken["kind"], at: number) => {
-    tokens.push({ kind, at, depth, minBefore: Math.min(minSinceToken, depth) });
-    minSinceToken = depth;
-  };
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i]!;
-    const next = body[i + 1];
-    if (c === "/" && next === "/") {
-      const nl = body.indexOf("\n", i);
-      i = nl === -1 ? body.length : nl;
-      continue;
-    }
-    if (c === "/" && next === "*") {
-      const close = body.indexOf("*/", i + 2);
-      i = close === -1 ? body.length : close + 1;
-      continue;
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      const quote = c;
-      i++;
-      for (; i < body.length; i++) {
-        if (body[i] === "\\") { i++; continue; }
-        if (body[i] === quote) break;
-        if (quote === "`" && body[i] === "$" && body[i + 1] === "{") {
-          let d = 1;
-          i += 2;
-          for (; i < body.length && d > 0; i++) {
-            if (body[i] === "{") d++;
-            else if (body[i] === "}") d--;
-          }
-          i--;
-        }
-      }
-      continue;
-    }
-    if (c === "(" || c === "[" || c === "{") { depth++; continue; }
-    if (c === ")" || c === "]" || c === "}") {
-      depth--;
-      if (depth < minSinceToken) minSinceToken = depth;
-      if (assertDepth !== null && depth < assertDepth) { assertDepth = null; assertAt = -1; }
-      continue;
-    }
-    // Only start a keyword match at an identifier boundary, so `s.expect(`
-    // and `myreturn` are not read as the bare forms.
-    if (!/[A-Za-z_$]/.test(c)) continue;
-    if (i > 0 && /[\w$.]/.test(body[i - 1]!)) continue;
-    const rest = body.slice(i, i + 200);
-    if (IF_KEYWORD.test(rest) || /^switch\b/.test(rest)) {
-      branchHeadAt.set(depth, i);
-      continue;
-    }
-    if (BRANCH_SPLIT.test(rest)) {
-      // This opens a branch excluding the one before it. An assertion is
-      // superseded only if it lives INSIDE that preceding branch — i.e. after
-      // the `if`/`switch` head this pairs with. An `expect` written before the
-      // head runs on every path, including this one, so it still counts.
-      // An `else` sits at its `if`'s own depth; a `case` sits one level INSIDE
-      // its `switch`'s braces. Take whichever head is nearer — that is the
-      // construct this branch belongs to.
-      const head = Math.max(branchHeadAt.get(depth) ?? -1, branchHeadAt.get(depth - 1) ?? -1);
-      if (assertDepth !== null && head >= 0 && assertAt > head) {
-        assertDepth = null;
-        assertAt = -1;
-      }
-      continue;
-    }
-    if (EXPECT_CALL.test(rest)) {
-      push("expect", i);
-      if (assertDepth === null || depth < assertDepth) assertAt = i;
-      assertDepth = assertDepth === null ? depth : Math.min(assertDepth, depth);
-    } else if (WARN_CALL.test(rest)) {
-      push("warn", i);
-      assertDepthAt.set(i, assertDepth);
-    } else if (RETURN_KEYWORD.test(rest)) {
-      push("return", i);
-    }
+function isExpectCall(node: AstNode): boolean {
+  return node.type === "CallExpression" && calleeRoot(node.callee) === "expect";
+}
+
+/** `console.warn(...)`. */
+function isWarnCall(node: AstNode): boolean {
+  return (
+    node.type === "CallExpression" &&
+    calleeRoot(node.callee) === "console" &&
+    rootProperty(node.callee) === "warn"
+  );
+}
+
+/**
+ * Does an `expect` appear anywhere under this node, INCLUDING inside nested
+ * functions?
+ *
+ * Including them is deliberate and is the allowed direction. A callback passed
+ * to `forEach` runs synchronously and its assertion does execute; a callback
+ * stored and never called does not, and counting it costs a check nobody
+ * names. Per the rule above, that is the direction to be wrong in.
+ */
+function hasExpectIn(node: unknown): boolean {
+  if (!isNodeLike(node)) return false;
+  for (const n of walkNodes(node)) if (isExpectCall(n)) return true;
+  return false;
+}
+
+/** Execute `statements` from `from` to the end of the list. */
+function seqFlow(statements: AstNode[], from: number): PathFlow {
+  const flow: PathFlow = { expect: false, fall: true, ret: false, brk: false, cont: false };
+  for (let i = from; i < statements.length; i++) {
+    if (!flow.fall) break;
+    const s = stmtFlow(statements[i]!);
+    flow.expect ||= s.expect;
+    flow.ret ||= s.ret;
+    flow.brk ||= s.brk;
+    flow.cont ||= s.cont;
+    flow.fall = s.fall;
   }
-  return { tokens, assertDepthAt };
+  return flow;
+}
+
+/** Enter one statement. */
+function stmtFlow(node: AstNode): PathFlow {
+  const base = (over: Partial<PathFlow>): PathFlow => ({
+    expect: false,
+    fall: true,
+    ret: false,
+    brk: false,
+    cont: false,
+    ...over,
+  });
+  switch (node.type) {
+    case "ReturnStatement":
+      return base({ expect: hasExpectIn(node.argument), fall: false, ret: true });
+    // A `throw` is not an exit this detector cares about: the check FAILS on
+    // that path, so it is not a swallowed refusal. `ret` stays false, which is
+    // the whole of shape 3.
+    case "ThrowStatement":
+      return base({ expect: hasExpectIn(node.argument), fall: false });
+    case "BreakStatement":
+      return base({ fall: false, brk: true });
+    case "ContinueStatement":
+      return base({ fall: false, cont: true });
+    case "BlockStatement":
+      return seqFlow((node.body ?? []) as AstNode[], 0);
+    case "IfStatement": {
+      const c = stmtFlow(node.consequent as AstNode);
+      const a = isNodeLike(node.alternate) ? stmtFlow(node.alternate) : base({});
+      return {
+        expect: hasExpectIn(node.test) || c.expect || a.expect,
+        fall: c.fall || a.fall,
+        ret: c.ret || a.ret,
+        brk: c.brk || a.brk,
+        cont: c.cont || a.cont,
+      };
+    }
+    case "ForStatement":
+    case "ForInStatement":
+    case "ForOfStatement":
+    case "WhileStatement":
+    case "DoWhileStatement": {
+      const b = stmtFlow(node.body as AstNode);
+      // `break` and `continue` are absorbed by the loop rather than leaving
+      // the check — shapes 4 and 5. The loop may also run zero times, so it
+      // always falls through.
+      return base({
+        expect:
+          b.expect ||
+          hasExpectIn(node.test) ||
+          hasExpectIn(node.init) ||
+          hasExpectIn(node.update) ||
+          hasExpectIn(node.right),
+        ret: b.ret,
+      });
+    }
+    case "SwitchStatement": {
+      const flow = base({ expect: hasExpectIn(node.discriminant) });
+      for (const c of (node.cases ?? []) as AstNode[]) {
+        const cf = seqFlow((c.consequent ?? []) as AstNode[], 0);
+        flow.expect ||= cf.expect;
+        flow.ret ||= cf.ret;
+        flow.cont ||= cf.cont;
+      }
+      return flow;
+    }
+    case "TryStatement": {
+      const t = stmtFlow(node.block as AstNode);
+      const handler = node.handler as AstNode | undefined;
+      const h = isNodeLike(handler?.body) ? stmtFlow(handler.body as AstNode) : null;
+      const fin = isNodeLike(node.finalizer) ? stmtFlow(node.finalizer) : null;
+      const flow: PathFlow = {
+        expect: t.expect || !!h?.expect || !!fin?.expect,
+        fall: t.fall || !!h?.fall,
+        ret: t.ret || !!h?.ret,
+        brk: t.brk || !!h?.brk,
+        cont: t.cont || !!h?.cont,
+      };
+      // A finalizer that does not fall through replaces every completion of
+      // the block it guards.
+      if (fin && !fin.fall) {
+        flow.fall = false;
+        flow.ret = fin.ret;
+        flow.brk = fin.brk;
+        flow.cont = fin.cont;
+      }
+      return flow;
+    }
+    case "LabeledStatement": {
+      const b = stmtFlow(node.body as AstNode);
+      return { ...b, fall: b.fall || b.brk, brk: false };
+    }
+    // A function DECLARATION is not executed where it is written.
+    case "FunctionDeclaration":
+    case "ClassDeclaration":
+    case "EmptyStatement":
+      return base({});
+    default:
+      return base({ expect: hasExpectIn(node) });
+  }
+}
+
+/** `acc`, then `rest` — `rest` only runs if `acc` can fall into it. */
+function chain(acc: PathFlow, rest: PathFlow): PathFlow {
+  if (!acc.fall) return acc;
+  return {
+    expect: acc.expect || rest.expect,
+    fall: rest.fall,
+    ret: acc.ret || rest.ret,
+    brk: acc.brk || rest.brk,
+    cont: acc.cont || rest.cont,
+  };
+}
+
+/**
+ * Walk OUT from the warn to the check's own boundary, accumulating what the
+ * path meets on the way.
+ *
+ * Returns whether an `expect` is reachable, and whether a NORMAL exit from the
+ * check is reachable. A `throw` is neither — it reaches no `expect` and no
+ * normal exit, so it is not a finding.
+ */
+function forwardFromWarn(
+  warn: AstNode,
+  callback: AstNode,
+  parentOf: Map<AstNode, AstNode>,
+): { expect: boolean; normalExit: boolean } {
+  // An `expect` sharing the warn's own STATEMENT — `a ? console.warn(x) :
+  // expect(y)`, or an `expect` further along a comma or logical chain. The
+  // walk below starts at statement granularity and would step straight past
+  // it, so it is taken first. Counting an assertion that a branch could skip
+  // is the direction this is allowed to be wrong in.
+  let stmt: AstNode = warn;
+  for (;;) {
+    const up = parentOf.get(stmt);
+    if (!up || /Statement$|Declaration$/.test(stmt.type)) break;
+    stmt = up;
+  }
+
+  let acc: PathFlow = {
+    expect: hasExpectIn(stmt),
+    fall: true,
+    ret: false,
+    brk: false,
+    cont: false,
+  };
+  let child: AstNode = warn;
+  let parent = parentOf.get(child);
+  while (parent) {
+    if (parent === callback) break;
+    switch (parent.type) {
+      case "BlockStatement":
+      case "Program": {
+        const body = (parent.body ?? []) as AstNode[];
+        const idx = body.indexOf(child);
+        if (idx >= 0) acc = chain(acc, seqFlow(body, idx + 1));
+        break;
+      }
+      case "SwitchCase": {
+        const body = (parent.consequent ?? []) as AstNode[];
+        const idx = body.indexOf(child);
+        if (idx >= 0) acc = chain(acc, seqFlow(body, idx + 1));
+        break;
+      }
+      case "SwitchStatement": {
+        // Falling out of a case runs the cases below it; `break` leaves the
+        // switch. Either way the path continues after the switch.
+        const cases = (parent.cases ?? []) as AstNode[];
+        const idx = cases.indexOf(child);
+        if (idx >= 0 && acc.fall) {
+          for (let i = idx + 1; i < cases.length; i++) {
+            const cf = seqFlow((cases[i]!.consequent ?? []) as AstNode[], 0);
+            acc.expect ||= cf.expect;
+            acc.ret ||= cf.ret;
+          }
+        }
+        acc.fall = acc.fall || acc.brk;
+        acc.brk = false;
+        break;
+      }
+      case "TryStatement": {
+        // The finalizer runs on EVERY exit from the block it guards —
+        // including the `return`. Shape 11.
+        if (child === parent.block || child === parent.handler) {
+          const finalizer = asNode(parent.finalizer);
+          if (finalizer) {
+            const f = stmtFlow(finalizer);
+            if (acc.fall || acc.ret || acc.brk || acc.cont) acc.expect ||= f.expect;
+            if (!f.fall) {
+              acc.fall = false;
+              acc.ret = f.ret;
+              acc.brk = f.brk;
+              acc.cont = f.cont;
+            }
+          }
+        }
+        break;
+      }
+      case "LabeledStatement":
+        acc.fall = acc.fall || acc.brk;
+        acc.brk = false;
+        break;
+      default: {
+        if (LOOPS.has(parent.type) && child === parent.body) {
+          // Both `continue` and falling off the end of the body re-enter it,
+          // so anything the body asserts is reachable; `break` and the loop
+          // finishing both continue after it. Shapes 4 and 5.
+          if (acc.fall || acc.cont) {
+            acc.expect ||=
+              hasExpectIn(parent.body) ||
+              hasExpectIn(parent.test) ||
+              hasExpectIn(parent.update);
+          }
+          acc.fall = acc.fall || acc.cont || acc.brk;
+          acc.brk = false;
+          acc.cont = false;
+        } else if (FUNCTIONS.has(parent.type)) {
+          // A nested closure is a node boundary, not a brace depth. Its
+          // `return` exits the CLOSURE and resumes the caller, so the path
+          // carries on at the call site rather than leaving the check.
+          // Shape 12 — and shape 7 is the same rule seen from outside.
+          acc.fall = acc.fall || acc.ret;
+          acc.ret = false;
+          acc.brk = false;
+          acc.cont = false;
+        }
+        break;
+      }
+    }
+    child = parent;
+    parent = parentOf.get(parent);
+  }
+  return { expect: acc.expect, normalExit: acc.fall || acc.ret };
+}
+
+function asNode(value: unknown): AstNode | null {
+  return isNodeLike(value) ? value : null;
+}
+
+/**
+ * Does an assertion run on EVERY path that reaches this warn?
+ *
+ * Dominance, not "an `expect` appears earlier in the text". The two differ on
+ * exactly the shape PR #1539's third review round was about: in
+ * `if (a) expect(p); else console.warn(x);` the assertion is earlier and can
+ * never have run on the path that reaches the warn. The AST answers it by
+ * construction — only a PRECEDING SIBLING in an enclosing statement list can
+ * dominate, and `IfStatement.alternate` is not a sibling of its consequent.
+ */
+function assertionDominates(
+  warn: AstNode,
+  callback: AstNode,
+  parentOf: Map<AstNode, AstNode>,
+): boolean {
+  let child: AstNode = warn;
+  let parent = parentOf.get(child);
+  while (parent) {
+    if (parent.type === "BlockStatement" || parent.type === "Program") {
+      const body = (parent.body ?? []) as AstNode[];
+      const idx = body.indexOf(child);
+      for (let i = 0; i < idx; i++) if (alwaysAsserts(body[i]!)) return true;
+    }
+    if (parent.type === "SwitchCase") {
+      const body = (parent.consequent ?? []) as AstNode[];
+      const idx = body.indexOf(child);
+      for (let i = 0; i < idx; i++) if (alwaysAsserts(body[i]!)) return true;
+    }
+    if (parent === callback) break;
+    child = parent;
+    parent = parentOf.get(parent);
+  }
+  return false;
+}
+
+/** Does entering this statement guarantee an `expect` runs? */
+function alwaysAsserts(node: AstNode): boolean {
+  switch (node.type) {
+    case "BlockStatement":
+      return ((node.body ?? []) as AstNode[]).some(alwaysAsserts);
+    case "IfStatement":
+      return (
+        isNodeLike(node.alternate) &&
+        alwaysAsserts(node.consequent as AstNode) &&
+        alwaysAsserts(node.alternate)
+      );
+    case "TryStatement": {
+      if (isNodeLike(node.finalizer) && alwaysAsserts(node.finalizer)) return true;
+      const handler = node.handler as AstNode | undefined;
+      const blockAsserts = alwaysAsserts(node.block as AstNode);
+      if (!blockAsserts) return false;
+      return !handler || alwaysAsserts(handler.body as AstNode);
+    }
+    case "LabeledStatement":
+    case "DoWhileStatement":
+      return alwaysAsserts(node.body as AstNode);
+    case "SwitchStatement": {
+      const cases = (node.cases ?? []) as AstNode[];
+      if (!cases.some(c => !isNodeLike(c.test))) return false;
+      return cases.every(c => ((c.consequent ?? []) as AstNode[]).some(alwaysAsserts));
+    }
+    // A loop may run zero times, and a declaration is not executed here.
+    case "ForStatement":
+    case "ForInStatement":
+    case "ForOfStatement":
+    case "WhileStatement":
+    case "FunctionDeclaration":
+    case "ClassDeclaration":
+      return false;
+    default:
+      return hasExpectIn(node);
+  }
+}
+
+/** Every `test(...)` callback in a parsed module, in source order. */
+function testCallbacks(tree: AstNode): { name: string; callback: AstNode }[] {
+  const out: { name: string; callback: AstNode; at: number }[] = [];
+  for (const node of walkNodes(tree)) {
+    if (node.type !== "CallExpression") continue;
+    const callee = node.callee as AstNode | undefined;
+    // `test(...)` exactly, matching what `gateChecks` enumerates — not
+    // `test.each`, not `describe`.
+    if (callee?.type !== "Identifier" || callee.name !== "test") continue;
+    const args = (node.arguments ?? []) as AstNode[];
+    const first = args[0];
+    if (first?.type !== "Literal" || typeof first.value !== "string") continue;
+    const callback = args.find(a => FUNCTIONS.has(a.type));
+    if (!callback) continue;
+    out.push({ name: first.value, callback, at: node.start });
+  }
+  out.sort((a, b) => a.at - b.at);
+  return out.map(({ name, callback }) => ({ name, callback }));
+}
+
+/**
+ * The offsets of each real `console.warn(` in an original check body.
+ *
+ * Node positions index the TRANSPILED text (see the module note above), so a
+ * warn's line in the original file cannot be read off its node. It is resolved
+ * by ordinal instead — and the two counts are REQUIRED to agree rather than
+ * assumed to. A `console.warn(` inside a comment or a string literal would
+ * make the text count exceed the AST count, and silently reporting the wrong
+ * line is the kind of quiet wrongness this whole module exists to stop.
+ */
+function warnOffsets(body: string): number[] {
+  const out: number[] = [];
+  for (const m of body.matchAll(/console\s*\.\s*warn\s*\(/g)) out.push(m.index);
+  return out;
 }
 
 /**
@@ -355,55 +708,89 @@ function pathTokens(body: string): { tokens: PathToken[]; assertDepthAt: Map<num
  *
  * Two conditions, and both are about the PATH rather than the body:
  *
- * - nothing has asserted on the way to the warn — no `expect` whose enclosing
- *   block still contains it;
- * - nothing asserts after it either — the path reaches a `return` at or above
- *   the warn's own depth, or runs out of check, without meeting an `expect`.
+ * - no assertion DOMINATES the warn — nothing that runs on every path to it;
+ * - from the warn, no `expect` is reachable before the check is left by a
+ *   normal exit (a `return`, or running off the end of the body).
  *
- * Both halves of the second condition are implemented, and the second half is
- * the `else { console.warn(...) }` shape that gets past the body-level
- * predicate as well: the sibling branch's `expect` makes the body assert.
+ * A path that can only leave by `throw` is not a finding: the check fails on
+ * it, so it is not a swallowed refusal.
  *
- * Falling out of an `if` into an assertion below is NOT a finding: once the
- * warn's own enclosing block closes, the path has merged back into the main
- * flow and reaches whatever that flow asserts. A `return` belonging to a
- * later, unrelated branch is that flow's, not this warn's.
+ * Throws rather than returning `[]` when the source cannot be parsed, or when
+ * the tree disagrees with `gateChecks` about what the checks are. A parser
+ * that stopped parsing and a file that is clean otherwise produce the same
+ * empty list, which is the first shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
  */
 export function unassertedWarnPaths(source: string): WarnReturnPath[] {
-  const out: WarnReturnPath[] = [];
-  for (const check of gateChecks(source)) {
-    if (check.name === STANDALONE_STUB_NAME) continue;
-    const { tokens, assertDepthAt } = pathTokens(check.body);
-    for (let t = 0; t < tokens.length; t++) {
-      const warn = tokens[t]!;
-      if (warn.kind !== "warn") continue;
-      if (assertDepthAt.get(warn.at) !== null) continue;
-      // The warn leaves the check only if it reaches a `return` while still
-      // inside its OWN enclosing block. Once the running minimum drops below
-      // the warn's depth that block has closed, the path has merged back into
-      // the main flow, and every `return` and `expect` after that belongs to
-      // the flow rather than to this warn.
-      // Running out of tokens IS the path leaving: nothing asserts after the
-      // warn, so it reaches the end of the check unasserted. That is the
-      // `else { console.warn(...) }` shape, which gets past both halves of
-      // the audit — the sibling branch's `expect` makes the body assert, and
-      // there is no `return` for this scan to stop on.
-      let leaves = true;
-      let runningMin = warn.depth;
-      for (let u = t + 1; u < tokens.length; u++) {
-        const after = tokens[u]!;
-        runningMin = Math.min(runningMin, after.minBefore);
-        if (runningMin < warn.depth) { leaves = false; break; }
-        if (after.kind === "expect") { leaves = false; break; }
-        if (after.kind === "return" && after.depth <= warn.depth) break;
+  const checks = gateChecks(source);
+  // No early return on an empty check list. A source that failed to parse
+  // yields no checks for the brace matcher either, so short-circuiting here
+  // would convert every unparseable file into a clean one — the fail-open in
+  // `.claude/rules/checks-must-be-able-to-fail.md`. An empty source parses,
+  // agrees with the tree at zero, and returns [] through the normal path.
+  const parsed = parseTsModule(source);
+  if (!parsed) {
+    throw new Error(
+      "unassertedWarnPaths: UNMEASURED — the source did not transpile or did not parse, so " +
+        "no reachability reading was taken. This is not an empty list of findings.",
+    );
+  }
+
+  // `gateChecks` stays the single enumerator of what a check IS, and the tree
+  // is a lookup rather than a second opinion. Two enumerators that disagreed
+  // would silently drop a check from the join — so they are required to agree
+  // here instead, by name and in order.
+  const fromTree = testCallbacks(parsed.tree);
+  const treeNames = fromTree.map(c => c.name).join("\n");
+  const checkNames = checks.map(c => c.name).join("\n");
+  if (treeNames !== checkNames) {
+    throw new Error(
+      `unassertedWarnPaths: UNMEASURED — the parsed tree sees ${fromTree.length} checks and ` +
+        `gateChecks sees ${checks.length}, or they are in a different order. One of the two is ` +
+        "reading less than the file.",
+    );
+  }
+
+  const parentOf = new Map<AstNode, AstNode>();
+  for (const node of walkNodes(parsed.tree)) {
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) {
+        for (const child of value) if (isNodeLike(child)) parentOf.set(child, node);
+      } else if (isNodeLike(value)) {
+        parentOf.set(value, node);
       }
-      if (!leaves) continue;
+    }
+  }
+
+  const out: WarnReturnPath[] = [];
+  for (let i = 0; i < checks.length; i++) {
+    const check = checks[i]!;
+    if (check.name === STANDALONE_STUB_NAME) continue;
+    const { callback } = fromTree[i]!;
+
+    const warns = [...walkNodes(callback)].filter(isWarnCall).sort((a, b) => a.start - b.start);
+    const offsets = warnOffsets(check.body);
+    if (warns.length !== offsets.length) {
+      throw new Error(
+        `unassertedWarnPaths: UNMEASURED — "${check.name}" has ${warns.length} console.warn ` +
+          `calls in the tree and ${offsets.length} in its source text, so a finding's line ` +
+          "cannot be resolved by ordinal. A `console.warn(` in a comment or a string would do " +
+          "this; reporting the wrong line silently would be worse.",
+      );
+    }
+
+    for (let w = 0; w < warns.length; w++) {
+      const warn = warns[w]!;
+      if (assertionDominates(warn, callback, parentOf)) continue;
+      const after = forwardFromWarn(warn, callback, parentOf);
+      if (after.expect || !after.normalExit) continue;
       out.push({
         check: check.name,
         line: check.line,
         // The body starts partway through the `test(` line, so the warn's line
         // is the check's line plus the newlines before it inside the body.
-        warnLine: check.line + (check.body.slice(0, warn.at).match(/\n/g) || []).length,
+        warnLine:
+          check.line + (check.body.slice(0, offsets[w]!).match(/\n/g) || []).length,
       });
     }
   }

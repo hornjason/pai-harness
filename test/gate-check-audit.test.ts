@@ -438,6 +438,374 @@ describe("SC-2520, SC-2521: the audit's unit is the path, not the check body", (
   });
 });
 
+// ── SC-2520, SC-2521 (#1555) ────────────────────────────────────────────────
+
+/**
+ * Every way a path out of a `console.warn` can terminate, one case per shape.
+ *
+ * #1555. The three defects PR #1539's review found were handed back one per
+ * round, and the fix for round 1 introduced the defect round 2 found. That is
+ * what patching a reachability analysis one symptom at a time looks like, so
+ * this is the enumeration instead: twelve shapes, each asserting its own
+ * direction, run against the predicate after every change rather than at the
+ * end.
+ *
+ * **Seven of the twelve must NOT flag.** A predicate that flags everything
+ * passes every positive case ever written, so the negative half is the half
+ * that does the work.
+ *
+ * Measured against the token scan that merged in #1539 (`2729ce62`), THREE
+ * were wrong, not the two #1555 predicted: 3, 11 and 12. #1555's own shape-3
+ * case read correct because it was written with an assertion after the
+ * `try`/`throw` block, so it answered `–` whether or not the `throw` was
+ * there — the seventh shape in `.claude/rules/checks-must-be-able-to-fail.md`,
+ * a case green by construction. `NEGATIVE_CONTROLS` below is what keeps that
+ * from happening again: each is the same fixture with the one feature under
+ * test removed, and each must FLAG.
+ */
+interface PathShape {
+  n: number;
+  shape: string;
+  /** What the predicate must answer. */
+  flags: boolean;
+  source: string;
+}
+
+const PATH_SHAPES: PathShape[] = [
+  {
+    n: 1,
+    shape: "explicit `return` in the warn's block",
+    flags: true,
+    source: [
+      `test("s1: warns and returns on its named condition", () => {`,
+      `  const v = sf("thing");`,
+      `  if (!v) {`,
+      `    console.warn("WARN: thing missing");`,
+      `    return;`,
+      `  }`,
+      `  expect(v.type, "m").toBe(true);`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 2,
+    shape: "falls off the end of the body",
+    flags: true,
+    source: [
+      `test("s2: asserts on one branch, warns on the other", () => {`,
+      `  if (a) {`,
+      `    expect(p, "m").toBe(true);`,
+      `  } else {`,
+      `    console.warn("WARN: nothing to check");`,
+      `  }`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 3,
+    shape: "`throw` after the warn",
+    flags: false,
+    source: [
+      `test("s3: warns, then throws", () => {`,
+      `  if (!a) {`,
+      `    console.warn("WARN: context for the failure below");`,
+      `    throw new Error("a is missing");`,
+      `  }`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 4,
+    shape: "`break` inside a loop",
+    flags: false,
+    source: [
+      `test("s4: warns and breaks out of the loop", () => {`,
+      `  for (const x of xs) {`,
+      `    if (!x.ok) {`,
+      `      console.warn("WARN: one is bad");`,
+      `      break;`,
+      `    }`,
+      `  }`,
+      `  expect(xs.length, "m").toBeGreaterThan(0);`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 5,
+    shape: "`continue` inside a loop",
+    flags: false,
+    source: [
+      `test("s5: warns and continues", () => {`,
+      `  for (const x of xs) {`,
+      `    if (!x.ok) {`,
+      `      console.warn("WARN: skipping one");`,
+      `      continue;`,
+      `    }`,
+      `    seen.push(x);`,
+      `  }`,
+      `  expect(seen.length, "m").toBeGreaterThan(0);`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 6,
+    shape: "`expect` reachable after the warn",
+    flags: false,
+    source: [
+      `test("s6: warns then carries on", () => {`,
+      `  if (!a) { console.warn("WARN: odd"); }`,
+      `  expect(y, "m").toBe(true);`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 7,
+    shape: "`return` in a nested closure, warn outside",
+    flags: false,
+    source: [
+      `test("s7: warns, then a closure returns", () => {`,
+      `  console.warn("WARN: odd");`,
+      `  items.forEach(i => { if (!i.ok) return; seen.push(i); });`,
+      `  expect(seen.length, "m").toBeGreaterThan(0);`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 8,
+    shape: "sibling branch's `return`",
+    flags: false,
+    source: [
+      `test("s8: warns, then merges back into the main flow", () => {`,
+      `  if (!a) {`,
+      `    console.warn("WARN: odd");`,
+      `  }`,
+      `  if (b) return;`,
+      `  expect(y, "m").toBe(true);`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 9,
+    shape: "braceless exclusive `else`",
+    flags: true,
+    source: [
+      `test("s9: braceless else", () => {`,
+      `  if (a) expect(p, "m").toBe(true);`,
+      `  else console.warn("WARN: nothing to check");`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 10,
+    shape: "assertion before the `if`, warn in its `else`",
+    flags: false,
+    source: [
+      `test("s10: asserts, then branches", () => {`,
+      `  expect(p, "m").toBe(true);`,
+      `  if (a) { q(); } else { console.warn("WARN: y"); }`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 11,
+    shape: "`try { warn; return } finally { expect }`",
+    flags: false,
+    source: [
+      `test("s11: warns and returns inside a try with an asserting finally", () => {`,
+      `  try {`,
+      `    console.warn("WARN: odd");`,
+      `    return;`,
+      `  } finally {`,
+      `    expect(cleanup(), "m").toBe(true);`,
+      `  }`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 12,
+    shape: "warn inside a callback, `expect` after it",
+    flags: false,
+    source: [
+      `test("s12: warns inside a callback", () => {`,
+      `  items.forEach(i => {`,
+      `    if (!i.ok) {`,
+      `      console.warn("WARN: one is bad");`,
+      `      return;`,
+      `    }`,
+      `    seen.push(i);`,
+      `  });`,
+      `  expect(seen.length, "m").toBeGreaterThan(0);`,
+      `});`,
+    ].join("\n"),
+  },
+];
+
+/**
+ * For each NOT-FLAG shape whose answer the merged token scan got wrong, the
+ * same fixture with the one feature under test removed.
+ *
+ * Every one must FLAG. Without these the three cases are satisfied by a
+ * predicate that happens to answer `–` for an unrelated reason, which is
+ * exactly how #1555's own shape-3 reading came to be wrong.
+ */
+const NEGATIVE_CONTROLS: { n: number; removed: string; source: string }[] = [
+  {
+    n: 3,
+    removed: "the `throw`",
+    source: [
+      `test("s3-control: warns, no throw", () => {`,
+      `  if (!a) {`,
+      `    console.warn("WARN: context for the failure below");`,
+      `  }`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 11,
+    removed: "the asserting `finally`",
+    source: [
+      `test("s11-control: warns and returns inside a try with no finally", () => {`,
+      `  try {`,
+      `    console.warn("WARN: odd");`,
+      `    return;`,
+      `  } catch (e) {`,
+      `    rethrow(e);`,
+      `  }`,
+      `});`,
+    ].join("\n"),
+  },
+  {
+    n: 12,
+    removed: "the `expect` after the callback",
+    source: [
+      `test("s12-control: warns inside a callback, nothing after it", () => {`,
+      `  items.forEach(i => {`,
+      `    if (!i.ok) {`,
+      `      console.warn("WARN: one is bad");`,
+      `      return;`,
+      `    }`,
+      `    seen.push(i);`,
+      `  });`,
+      `});`,
+    ].join("\n"),
+  },
+];
+
+describe("SC-2520, SC-2521 (#1555): every way a warn path can terminate", () => {
+  for (const s of PATH_SHAPES) {
+    test(`shape ${s.n} — ${s.shape} — ${s.flags ? "FLAG" : "not flagged"}`, () => {
+      // Parsed as exactly one check first. A fixture that did not parse would
+      // answer `–` for every shape and pass seven of the twelve for free.
+      expect(gateChecks(s.source).length, "the fixture did not parse as one check").toBe(1);
+      expect(
+        unassertedWarnPaths(s.source).length,
+        s.flags
+          ? `shape ${s.n} leaves the check with nothing asserted and is not being named`
+          : `shape ${s.n} is a false finding — the path does reach an assertion, or it ` +
+            "cannot leave the check without failing",
+      ).toBe(s.flags ? 1 : 0);
+    });
+  }
+
+  test("nine of the twelve must NOT flag, or the battery proves nothing", () => {
+    // A predicate that flags everything satisfies every positive case. This
+    // pins the balance so the negative half cannot be quietly dropped.
+    //
+    // NINE, not the seven #1555's acceptance text says. Its own table has
+    // three FLAG rows — 1, 2 and 9 — so the prose count disagrees with the
+    // table beside it. The table is the specification and the count is a
+    // miscount; recorded here rather than silently resolved, because a
+    // battery that quietly adopts the smaller number is a battery two cases
+    // short.
+    expect(PATH_SHAPES.filter(s => !s.flags).length).toBe(9);
+    expect(PATH_SHAPES.filter(s => s.flags).length).toBe(3);
+    expect(PATH_SHAPES.length).toBe(12);
+  });
+
+  for (const c of NEGATIVE_CONTROLS) {
+    test(`shape ${c.n}'s control — with ${c.removed} removed it DOES flag`, () => {
+      expect(
+        unassertedWarnPaths(c.source).length,
+        `shape ${c.n} answers "not flagged" for a reason other than ${c.removed}, so the ` +
+          "case is green by construction and would not notice losing it",
+      ).toBe(1);
+    });
+  }
+
+  test("a source that does not parse is a refusal, not an empty finding list", () => {
+    // The first shape in `.claude/rules/checks-must-be-able-to-fail.md`. A
+    // parse failure that returned [] reads exactly like a clean file, and the
+    // whole audit would go quietly green.
+    const broken = `test("a: unbalanced", () => { if (a { console.warn("x"); });`;
+    expect(() => unassertedWarnPaths(broken)).toThrow(/UNMEASURED/);
+  });
+
+  test("the re-measured population of the real gate suite, named", () => {
+    // #1555 asked for the population to be re-measured after the predicate
+    // changed, and for any movement to be NAMED rather than reported as a
+    // delta. Written as an assertion instead of prose so the next change to
+    // either side has to come past it.
+    //
+    // The CHECK population did not move: body-level 3 and path-level 5 here,
+    // the same five names, identical to what the token scan read. That is
+    // zero spread across five implementations of this predicate — v1..v4 and
+    // this one — which is the result, not a non-result.
+    //
+    // The PATH population did move, by one, and it is the same single path on
+    // every tree measured: the INNER warn of `spec-decision-compliance`, the
+    // one inside the triple-nested loop. The token scan could not see it
+    // because its running-minimum rule — added in PR #1539's round 1 to stop
+    // a sibling branch's `return` closing a warn's path — treats the warn's
+    // block closing as the path having "merged back into the main flow and
+    // reached whatever that flow asserts". Here the main flow asserts
+    // nothing, so merging back is not coverage. An under-report, which is the
+    // safe direction, and invisible in the check population because the same
+    // check is already named through its second warn.
+    const body = checksWithoutAssertions(gateSource).map(c => c.name).sort();
+    const path = checksThatCannotFail(gateSource).map(c => c.name).sort();
+    expect(body.length, "the body-level reading moved").toBe(3);
+    expect(
+      path,
+      "the path-level population of gates/workflow.test.ts moved. That is news, not a " +
+        "number to adjust: say which checks entered or left and why. A check that LEFT " +
+        "should have gained a real assertion — delete its WARN_TIER_CHECKS entry in the " +
+        "same commit. A check that ENTERED needs an entry with a reason, or an assertion.",
+    ).toEqual(Object.keys(WARN_TIER_CHECKS).sort());
+
+    const paths = unassertedWarnPaths(gateSource);
+    const perCheck = new Map<string, number>();
+    for (const p of paths) perCheck.set(p.check, (perCheck.get(p.check) ?? 0) + 1);
+    expect(
+      perCheck.get("spec-decision-compliance: AC language aligns with spec decisions"),
+      "spec-decision-compliance has TWO unasserted warn paths, not one — the inner warn " +
+        "inside the nested loops as well as the trailing summary warn. The token scan saw " +
+        "only the second. If this is 1 again the running-minimum blind spot is back.",
+    ).toBe(2);
+    expect(paths.length, "the path-level reading of the whole suite moved").toBe(8);
+  });
+
+  test("the warn's own line is reported, not the check's", () => {
+    // The report has to point at the PATH. Node positions index the
+    // transpiled text, where comments and blank lines are gone, so this is
+    // the case that holds the ordinal mapping back onto the original honest.
+    const src = [
+      `test("a: two branches, one warns", () => {`,
+      `  // a comment, which the transpiler drops`,
+      ``,
+      `  if (!v) {`,
+      `    console.warn("WARN: missing");`,
+      `    return;`,
+      `  }`,
+      `  expect(v, "m").toBe(true);`,
+      `});`,
+    ].join("\n");
+    const paths = unassertedWarnPaths(src);
+    expect(paths.length).toBe(1);
+    expect(paths[0]!.warnLine, "the warn is on line 5 of the original source").toBe(5);
+    expect(paths[0]!.line, "and the check opens on line 1").toBe(1);
+  });
+});
+
 // ── SC-1469 ─────────────────────────────────────────────────────────────────
 
 describe("SC-1469: a container that answers is not a rebuild that happened", () => {
