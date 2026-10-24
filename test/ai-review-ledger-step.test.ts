@@ -40,9 +40,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
+  AI_REVIEW_EXECUTION_FILE_VAR,
   AI_REVIEW_FINDINGS_PATH_VAR,
   AI_REVIEW_GIT_ISOLATED,
   AI_REVIEW_LEDGER_API_VAR,
+  AI_REVIEW_LEDGER_MERGE_FIELD,
+  AI_REVIEW_LEDGER_TURNS_FIELD,
   AI_REVIEW_LEDGER_IDENTITY_V1,
   AI_REVIEW_LEDGER_BOT_LOGIN,
   AI_REVIEW_LEDGER_MARKER,
@@ -74,7 +77,11 @@ import {
   AI_REVIEW_LEDGER_TRUNCATED_KEY,
   AI_REVIEW_TRUNCATION_STATED,
   AI_REVIEW_TRUNCATION_UNKNOWN,
+  AI_REVIEW_TURNS_NOT_RECORDED,
+  AI_REVIEW_TURNS_READ,
+  AI_REVIEW_TURNS_UNREADABLE,
   readLedger,
+  readRoundTurns,
 } from "../lib/ai-review-rounds";
 import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
 
@@ -150,6 +157,17 @@ interface Rig {
   listStderr?: string;
   /** The findings payload on disk. `undefined` plants no file at all. */
   payload?: unknown;
+  /**
+   * The action's execution file on disk, which is where `num_turns` comes
+   * from (#1380). `undefined` plants no file and leaves
+   * `AI_REVIEW_EXECUTION_FILE` pointing at a path that does not exist —
+   * which is the live state on every run where the action never produced
+   * one, and is the state the UNMEASURED branch exists for.
+   *
+   * A string is written verbatim, for the cases about bytes that are not
+   * JSON at all.
+   */
+  execution?: unknown;
   /**
    * The round number, placed into the round file's REAL three-line format.
    * Pass `rawRound` instead to write arbitrary bytes.
@@ -266,6 +284,18 @@ function runPersist(rig: Rig = {}) {
         typeof rig.payload === "string" ? rig.payload : JSON.stringify(rig.payload),
       );
     }
+    // #1380. The action's execution file. The PATH is always bound, whether
+    // or not a file is planted: that is what the generated step does, and
+    // the absent-file branch is only reachable through a bound path naming
+    // nothing.
+    const executionPath = join(dir, "execution.json");
+    if (rig.execution !== undefined) {
+      writeFileSync(
+        executionPath,
+        typeof rig.execution === "string" ? rig.execution : JSON.stringify(rig.execution),
+      );
+    }
+
     // THE REAL FORMAT, three lines, as `buildRoundsScript` writes it. The
     // first version of this rig wrote a bare "2", and that single number is
     // why the battery could not see a defect worth a MEDIUM: a scrape of
@@ -327,7 +357,15 @@ function runPersist(rig: Rig = {}) {
         STUB_WRITE_RESPONSE: JSON.stringify({ id: 5, body: "run-9 ok" }),
         GITHUB_RUN_ID: "run-9",
         GITHUB_RUN_ATTEMPT: "1",
+        // #1380. The commit the reviewer READ, which the runner sets and
+        // which is the merge commit on a `pull_request` event. Deliberately
+        // NOT equal to `AI_REVIEW_LEDGER_SHA` below: the two fields have one
+        // source each, and a fixture that gave them the same string could
+        // not tell a recorder reading the right one from a recorder reading
+        // the other twice.
+        GITHUB_SHA: "mergecommit0",
         [AI_REVIEW_FINDINGS_PATH_VAR]: findingsPath,
+        [AI_REVIEW_EXECUTION_FILE_VAR]: executionPath,
         [AI_REVIEW_ROUND_PATH_VAR]: roundPath,
         [AI_REVIEW_LEDGER_PR_VAR]: "77",
         [AI_REVIEW_LEDGER_SHA_VAR]: "deadbeef",
@@ -2355,5 +2393,372 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds![0].findings[0].text).toBe("alpha");
     expect(r.sentRaw).not.toContain("I-AM-THE-DASHDASH-FILE");
+  });
+});
+
+/**
+ * Covers AC-T1..AC-T8 (#1380): forward capture of the turn count and of the
+ * commit the reviewer actually read.
+ *
+ * #1380 is filed as a record, and its one actionable line is that history
+ * cannot settle whether a re-run on an unchanged tree flips the verdict: at
+ * the pre-#1198 26% payload rate, n=20 readable same-tree pairs needs ~290
+ * re-runs and 28 exist. The three pairs that WERE readable all flipped, the
+ * strongest being merge commit `99d50fc` at round 5 both times — BLOCKED
+ * then CLEAN, 51 turns against 52, against a cap of 80.
+ *
+ * So two fields, and the second is the one that looks redundant.
+ *
+ *  - `turns` is the only candidate mechanism anyone has for that flip, and
+ *    it is a three-state reading rather than a number: no key is a round
+ *    written before this, `null` is a round that tried and could not read
+ *    one, and a number is the count. `0` is never substituted for any of it.
+ *  - `merge` is the commit `actions/checkout` put in the tree, which on a
+ *    `pull_request` event is head merged into the base AS IT STOOD. `sha`
+ *    is the pull request's head, and the base moves without the head moving
+ *    — so two rounds sharing `sha` are not two rounds over one tree, and
+ *    the same-tree pair this whole capture exists for cannot be formed from
+ *    the field the ledger already had.
+ *
+ * NO VERDICT FIELD, and that is a refusal rather than an omission — AC-T8.
+ */
+describe("AC-T1 (#1380): a readable num_turns is recorded, and the reader reads it back", () => {
+  test("AC-T1: `num_turns: 51` records 51, and `readRoundTurns` says READ", () => {
+    const r = runPersist({ list: [], payload: { findings: [] }, execution: { num_turns: 51 } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD]).toBe(51);
+    // Through the real reader, never off the raw object. The step and the
+    // reader are two modules that may not import each other, so the only
+    // honest place an agreement about this key can be asserted is here.
+    expect(readRoundTurns(r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD])).toEqual({
+      status: AI_REVIEW_TURNS_READ,
+      turns: 51,
+    });
+  });
+
+  test("AC-T1: zero turns is a READ zero, and says so through the reader", () => {
+    const r = runPersist({ list: [], payload: { findings: [] }, execution: { num_turns: 0 } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(readRoundTurns(r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD])).toEqual({
+      status: AI_REVIEW_TURNS_READ,
+      turns: 0,
+    });
+  });
+});
+
+/**
+ * The UNMEASURED half. Every row records `null` and SAYS so, and none
+ * records a number — `.claude/rules/config-access.md`'s *Silent Default
+ * Substitution*, applied to a field whose entire purpose is to be compared
+ * against a cap of 80.
+ */
+const TURN_SHAPES: { name: string; execution: unknown }[] = [
+  { name: "no execution file at all", execution: undefined },
+  { name: "an empty execution file", execution: "" },
+  { name: "bytes that are not JSON", execution: "not json at all" },
+  { name: "a document with no num_turns key", execution: { subtype: "success" } },
+  { name: "num_turns as a string", execution: { num_turns: "51" } },
+  { name: "num_turns as a float", execution: { num_turns: 51.5 } },
+  { name: "a negative num_turns", execution: { num_turns: -1 } },
+  { name: "num_turns explicitly null", execution: { num_turns: null } },
+  { name: "num_turns as an object", execution: { num_turns: { n: 51 } } },
+];
+
+describe("AC-T2 (#1380): an unreadable turn count is UNMEASURED, never a number", () => {
+  for (const shape of TURN_SHAPES) {
+    test(`AC-T2: ${shape.name} records null, not 0, and says so`, () => {
+      const r = runPersist({ list: [], payload: { findings: [] }, execution: shape.execution });
+      expect(r.status, r.stderr).toBe(0);
+      const recorded = r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD];
+      expect(recorded, "a guessed number was recorded for a count nobody read").toBeNull();
+      expect(readRoundTurns(recorded)).toEqual({ status: AI_REVIEW_TURNS_UNREADABLE });
+      expect(r.stdout, "the step recorded UNMEASURED and said nothing about it").toContain(
+        "UNMEASURED",
+      );
+    });
+  }
+
+  // The round itself survives. A recorder that dropped a round because it
+  // could not read one FIELD of it would lose the history the cap depends
+  // on — and the findings are the part that carries forward.
+  test("AC-T2: the round is still recorded, with its findings, when turns cannot be read", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "one\ntwo\nthree\nfour\n" },
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds).toHaveLength(1);
+    expect(r.rounds![0].findings).toHaveLength(1);
+    expect(r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD]).toBeNull();
+  });
+});
+
+/**
+ * THREE STATES, in one ledger, through the real reader.
+ *
+ * A pre-#1380 round carries no key; a round this step wrote carries `null`
+ * when it could not read one. "Nobody tried" and "I tried and failed" are
+ * different facts, and a reader that collapsed them would date every
+ * unreadable round to before this shipped.
+ */
+describe("AC-T3 (#1380): absent, null and a number are three readings and not two", () => {
+  test("AC-T3: a legacy round and a this-run unreadable round do not read alike", () => {
+    // A round as the step wrote them BEFORE #1380: no `turns`, no `merge`.
+    // `at` and `run` are not decoration — the shaping jq refuses a prior
+    // ledger whose entries lack them, so a fixture without both is not a
+    // legacy ledger, it is an unreadable one.
+    const legacy = {
+      at: "t0",
+      run: "run-1",
+      attempt: "1",
+      round: 1,
+      sha: "old",
+      identity: AI_REVIEW_LEDGER_IDENTITY_V1,
+      findings: [],
+    };
+    const r = runPersist({
+      list: [botComment(3, windowBody([legacy]))],
+      payload: { findings: [] },
+      // No execution file: this round tried to read a count and could not.
+    });
+    expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0);
+
+    const reading = readLedger(JSON.parse(r.sentRaw ?? '{"body":""}').body);
+    expect(reading.status, `${r.stdout}\n${r.stderr}\n${r.argv.join(" ")}`).toBe(
+      AI_REVIEW_LEDGER_READ,
+    );
+    if (reading.status !== AI_REVIEW_LEDGER_READ) throw new Error("the ledger did not read");
+    expect(reading.rounds).toHaveLength(2);
+
+    expect(reading.rounds[0].turns).toEqual({ status: AI_REVIEW_TURNS_NOT_RECORDED });
+    expect(reading.rounds[1].turns).toEqual({ status: AI_REVIEW_TURNS_UNREADABLE });
+    expect(
+      reading.rounds[0].turns,
+      "a round nobody asked about reads the same as one that was asked and could not answer",
+    ).not.toEqual(reading.rounds[1].turns);
+  });
+
+  // Neither non-READ arm carries a number, so there is no field to reach
+  // for without narrowing the status first. The construction
+  // `LedgerTruncation` uses, and the reason a `?? 0` has nowhere to land.
+  test("AC-T3: neither unknown reading carries a count field at all", () => {
+    for (const raw of [undefined, null, "51", 51.5, -1]) {
+      expect(Object.hasOwn(readRoundTurns(raw), "turns"), `${String(raw)} carried a count`).toBe(
+        false,
+      );
+    }
+  });
+});
+
+/**
+ * The merge commit, and the pair that isolates it.
+ *
+ * Each field has one source. A fixture handing them the same string could
+ * not tell a recorder reading `GITHUB_SHA` from one reading the head sha
+ * twice, so the rig gives them different values and the second case varies
+ * exactly one of them.
+ */
+describe("AC-T4 (#1380): the commit reviewed is recorded, and it is not the head sha", () => {
+  test("AC-T4: `merge` is GITHUB_SHA and `sha` is the pull request head", () => {
+    const r = runPersist({ list: [], payload: { findings: [] } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].sha).toBe("deadbeef");
+    expect(r.rounds![0][AI_REVIEW_LEDGER_MERGE_FIELD]).toBe("mergecommit0");
+  });
+
+  // VARY ONE READING. The base moving under a fixed head is the live case —
+  // a new merge commit, the same `sha` — and it is exactly where a ledger
+  // recording only `sha` reports two rounds over one tree when they are two.
+  test("AC-T4: the base moving under a fixed head moves `merge` and not `sha`", () => {
+    const first = runPersist({ list: [], payload: { findings: [] } });
+    const second = runPersist({
+      list: [],
+      payload: { findings: [] },
+      env: { GITHUB_SHA: "mergecommit1" },
+    });
+    expect(first.rounds![0].sha).toBe(second.rounds![0].sha);
+    expect(first.rounds![0][AI_REVIEW_LEDGER_MERGE_FIELD]).not.toBe(
+      second.rounds![0][AI_REVIEW_LEDGER_MERGE_FIELD],
+    );
+  });
+
+  test("AC-T4: the reader surfaces it as `mergeSha`, apart from `sha`", () => {
+    const r = runPersist({ list: [], payload: { findings: [] } });
+    const reading = readLedger(JSON.parse(r.sentRaw!).body);
+    if (reading.status !== AI_REVIEW_LEDGER_READ) throw new Error("the ledger did not read");
+    expect(reading.rounds[0].sha).toBe("deadbeef");
+    expect(reading.rounds[0].mergeSha).toBe("mergecommit0");
+  });
+
+  test("AC-T4: a pre-#1380 round reports no merge commit rather than a wrong one", () => {
+    const reading = readLedger(
+      ledgerBody({ [AI_REVIEW_LEDGER_ROUNDS_KEY]: [{ round: 1, sha: "head-only", findings: [] }] }),
+    );
+    if (reading.status !== AI_REVIEW_LEDGER_READ) throw new Error("the ledger did not read");
+    expect(reading.rounds[0].sha).toBe("head-only");
+    expect(reading.rounds[0].mergeSha).toBe("");
+  });
+});
+
+/**
+ * THE MUTANTS. Three, and the third is the one every other case here is
+ * blind to.
+ *
+ * Each rewrites `buildPersistScript()`'s own text and runs the identical
+ * rig, and each asserts the REAL script first — a case that only watched
+ * the mutant would pass over a recorder that refuses everything.
+ */
+function mutatePersist(from: string, to: string): string {
+  const src = buildPersistScript();
+  const n = src.split(from).length - 1;
+  // A mutation that was never applied reads exactly like a guard that held.
+  if (n !== 1) throw new Error(`the mutation anchor appears ${n} times, expected 1: ${from}`);
+  return src.split(from).join(to);
+}
+
+describe("AC-T5 (#1380): the recorder's three mutants", () => {
+  test("AC-T5: the MUTANT defaulting turns to 0 turns an unread count into a real one", () => {
+    const rig = { list: [] as unknown[], payload: { findings: [] } };
+    expect(runPersist(rig).rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD]).toBeNull();
+
+    const mutant = runPersist({ ...rig, script: mutatePersist('turns="null"', 'turns="0"') });
+    expect(mutant.status, mutant.stderr).toBe(0);
+    expect(mutant.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD]).toBe(0);
+    // The damage, named: the reader cannot tell it from AC-T1's genuine
+    // zero-turn round, because as far as the ledger says it IS that round.
+    expect(readRoundTurns(mutant.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD])).toEqual({
+      status: AI_REVIEW_TURNS_READ,
+      turns: 0,
+    });
+  });
+
+  test("AC-T5: the MUTANT dropping `merge` backdates the round to before #1380", () => {
+    const rig = { list: [] as unknown[], payload: { findings: [] } };
+    expect(runPersist(rig).rounds![0][AI_REVIEW_LEDGER_MERGE_FIELD]).toBe("mergecommit0");
+
+    const mutant = runPersist({
+      ...rig,
+      script: mutatePersist(`${AI_REVIEW_LEDGER_MERGE_FIELD}:$merge, `, ""),
+    });
+    expect(mutant.status, mutant.stderr).toBe(0);
+    expect(mutant.rounds![0][AI_REVIEW_LEDGER_MERGE_FIELD]).toBeUndefined();
+  });
+
+  /**
+   * The two-deciders mutant. Point `merge` at the head sha: every assertion
+   * about the field's PRESENCE still holds, every round still carries a
+   * commit-shaped string, and the ledger now records one fact twice — so
+   * the same-tree pair it exists to form is formed from the wrong commit
+   * and nothing downstream can tell. Only a rig whose two commits DIFFER
+   * can see it, which is why `GITHUB_SHA` is not `deadbeef`.
+   */
+  test("AC-T5: the MUTANT reading the head sha twice is caught by the differing pair", () => {
+    const rig = { list: [] as unknown[], payload: { findings: [] } };
+    const real = runPersist(rig);
+    expect(real.rounds![0][AI_REVIEW_LEDGER_MERGE_FIELD]).not.toBe(real.rounds![0].sha);
+
+    const mutant = runPersist({
+      ...rig,
+      script: mutatePersist(
+        `--arg merge "\${GITHUB_SHA:-}"`,
+        `--arg merge "\${${AI_REVIEW_LEDGER_SHA_VAR}:-}"`,
+      ),
+    });
+    expect(mutant.status, mutant.stderr).toBe(0);
+    expect(mutant.rounds![0][AI_REVIEW_LEDGER_MERGE_FIELD]).toBe(mutant.rounds![0].sha);
+  });
+});
+
+/**
+ * What the two fields COST, measured rather than assumed.
+ *
+ * The ledger is a 12-round window against GitHub's 65,536-character comment
+ * body limit, serialised compactly, and every field added to a round is
+ * paid twelve times. A capture that pushed the window past the limit would
+ * begin losing the rounds it was added to describe, so the cost is measured
+ * as a DIFFERENCE here and the headroom asserted against the limit the API
+ * enforces rather than against a budget somebody guessed.
+ */
+describe("AC-T6 (#1380): the per-round cost, and the window that still fits", () => {
+  /** GitHub's hard limit on an issue-comment body. */
+  const COMMENT_LIMIT = 65_536;
+
+  test("AC-T6: a full 12-round window carrying both fields is inside the limit", () => {
+    const full = Array.from({ length: AI_REVIEW_LEDGER_MAX_ROUNDS }, (_, i) => ({
+      at: "2026-10-24T00:00:00Z",
+      sha: "a".repeat(40),
+      [AI_REVIEW_LEDGER_MERGE_FIELD]: "b".repeat(40),
+      run: "40123456789",
+      attempt: "1",
+      identity: AI_REVIEW_LEDGER_IDENTITY_V1,
+      round: i + 1,
+      [AI_REVIEW_LEDGER_TURNS_FIELD]: 51,
+      findings: [
+        {
+          severity: "high",
+          file: "lib/scaffold/ai-review-step.ts",
+          line: 1234,
+          summary: "a finding summary of roughly the length these actually are",
+          [AI_REVIEW_LEDGER_TEXT_FIELD]: "  const x = readSomething(root, options);",
+        },
+      ],
+    }));
+    const withFields = windowBody(full).length;
+
+    // The same window with #1380's two fields removed. A difference, not a
+    // guess: a per-round number nobody subtracted is a number nobody took.
+    const without = windowBody(
+      full.map((round) => {
+        const copy: Record<string, unknown> = { ...round };
+        delete copy[AI_REVIEW_LEDGER_MERGE_FIELD];
+        delete copy[AI_REVIEW_LEDGER_TURNS_FIELD];
+        return copy;
+      }),
+    ).length;
+
+    const perRound = (withFields - without) / AI_REVIEW_LEDGER_MAX_ROUNDS;
+    expect(perRound, `#1380 costs ${perRound} characters per round`).toBeLessThan(80);
+    expect(
+      withFields,
+      `a full window carrying both fields is ${withFields} of ${COMMENT_LIMIT} characters`,
+    ).toBeLessThan(COMMENT_LIMIT);
+  });
+});
+
+/**
+ * The refusal, asserted so it stays a decision rather than becoming a hole.
+ *
+ * #1380 asks for "verdict + num_turns + merge commit". Two of the three are
+ * above. The verdict is NOT recorded and must not be: this step runs BEFORE
+ * the adjudicator — the position `buildPersistScript` argues at length — so
+ * there is no verdict in scope to read, and one computed here would be a
+ * second decider answering `AI_REVIEW_SEVERITIES`' question about the same
+ * findings. Two readings that agree until the day they do not, both reading
+ * as covered.
+ *
+ * It is not lost. The verdict is a function of the `findings` array this
+ * step records and that one severity table, so a reader derives it rather
+ * than reading a second copy that can disagree.
+ */
+describe("AC-T8 (#1380): no verdict is recorded, and the recorder says why", () => {
+  test("AC-T8: the entry carries no verdict-shaped key", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "one\ntwo\nthree\nfour\n" },
+      payload: ONE_FINDING,
+      execution: { num_turns: 51 },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const keys = Object.keys(r.rounds![0]);
+    expect(keys).not.toContain("verdict");
+    expect(keys).not.toContain("outcome");
+    expect(keys).not.toContain("blocking");
+  });
+
+  test("AC-T8: the script states the position that makes a verdict here a second decider", () => {
+    const src = buildPersistScript();
+    expect(src).toContain("It records findings and NEVER a verdict");
+    expect(src).toContain("A verdict computed here would be a second decider");
   });
 });
