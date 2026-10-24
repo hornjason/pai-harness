@@ -24,6 +24,8 @@ import { join } from "path";
 import {
   gateChecks,
   checksWithoutAssertions,
+  checksThatCannotFail,
+  unassertedWarnPaths,
   standaloneStubs,
   environmentVerdictReads,
   WARN_TIER_CHECKS,
@@ -44,13 +46,20 @@ const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8"
 
 describe("SC-1466: every gate check without an assertion is named with a reason", () => {
   test("no check warns without being on the list", () => {
-    const unlisted = checksWithoutAssertions(gateSource)
+    // #1384 — reads `checksThatCannotFail`, not `checksWithoutAssertions`. The
+    // audit's unit used to be the check BODY and the defect's unit is the
+    // PATH: a check with one warn-return branch and one asserting branch
+    // contains an assertion, so the body-level predicate reported nothing
+    // while the check sat unable to fail on its own named condition.
+    const unlisted = checksThatCannotFail(gateSource)
       .filter(c => !(c.name in WARN_TIER_CHECKS))
       .map(c => `gates/workflow.test.ts:${c.line} ${c.name}`);
     expect(
       unlisted,
-      "a gate check has no assertion and no recorded reason — either write the " +
-        "assertion or add it to WARN_TIER_CHECKS in lib/gate-check-audit.ts with why",
+      "a gate check cannot fail on the condition it is named for — it has no assertion, " +
+        "or it warns and returns on that condition with nothing asserted on the path. " +
+        "Either write the assertion or add it to WARN_TIER_CHECKS in " +
+        "lib/gate-check-audit.ts with why",
     ).toEqual([]);
   });
 
@@ -58,7 +67,7 @@ describe("SC-1466: every gate check without an assertion is named with a reason"
     // The other direction. A ratchet that only fails upward lets the list
     // outlive the thing it describes, and then it is documentation of a state
     // the code left — which is how a reader ends up trusting it.
-    const names = new Set(checksWithoutAssertions(gateSource).map(c => c.name));
+    const names = new Set(checksThatCannotFail(gateSource).map(c => c.name));
     const stale = Object.keys(WARN_TIER_CHECKS).filter(n => !names.has(n));
     expect(stale, "these are listed as warn-tier but now assert — delete the entry").toEqual([]);
   });
@@ -187,6 +196,124 @@ describe("SC-1468: the parser reads every test in the file", () => {
     const parsed = gateChecks(src);
     expect(parsed.length).toBe(1);
     expect(parsed[0]!.hasAssertion).toBe(true);
+  });
+});
+
+// ── SC-2520, SC-2521 ────────────────────────────────────────────────────────
+
+describe("SC-2520, SC-2521: the audit's unit is the path, not the check body", () => {
+  // #1384. `before-state-captured` warns and returns on exactly the condition
+  // its name states, and its only `expect` sits on a DIFFERENT condition. The
+  // body contains an assertion, so `checksWithoutAssertions` — which asks
+  // whether an assertion appears ANYWHERE in the body — reports nothing.
+  //
+  // The audit's unit was the check body. The defect's unit is the path.
+  const PLANTED = [
+    `test("planted: warns and returns on its named condition", () => {`,
+    `  const v = sf("thing");`,
+    `  if (!v) {`,
+    `    if (tier === "LIGHT") return;`,
+    `    console.warn("WARN: planted: thing missing for STANDARD+ tier");`,
+    `    return;`,
+    `  }`,
+    `  expect(VALID.includes(v.type), "bad type").toBe(true);`,
+    `});`,
+  ].join("\n");
+
+  test("the body-level predicate is blind to a warn-return path", () => {
+    // THE MEASUREMENT, recorded rather than described. This is the state the
+    // audit was in before #1384 widened it, and it is kept as an assertion so
+    // the widening cannot be undone by quietly widening `hasAssertion`
+    // instead — which would make the planted case pass for the wrong reason
+    // and take every `.hasAssertion` consumer with it.
+    const parsed = gateChecks(PLANTED);
+    expect(parsed.length, "the planted shape did not parse as one check").toBe(1);
+    expect(parsed[0]!.hasAssertion, "the planted body does contain an assertion").toBe(true);
+    expect(checksWithoutAssertions(PLANTED).map(c => c.name)).toEqual([]);
+  });
+
+  test("the widened predicate names it", () => {
+    const named = checksThatCannotFail(PLANTED).map(c => c.name);
+    expect(
+      named,
+      "a check that warns and returns on its named condition is not being named",
+    ).toEqual(["planted: warns and returns on its named condition"]);
+
+    const paths = unassertedWarnPaths(PLANTED);
+    expect(paths.length).toBe(1);
+    // The line of the `console.warn`, not of the `test(` — the report has to
+    // point at the path, or the reader re-derives which branch was meant.
+    expect(paths[0]!.warnLine).toBe(5);
+  });
+
+  test("a warn that follows an assertion on the same path is not named", () => {
+    // The second warn inside the real `before-state-captured`. An assertion
+    // already ran on the path that reaches it, so the path can fail and the
+    // warning is an extra remark rather than a swallowed refusal. Naming this
+    // would make the predicate report most of the suite.
+    const src = [
+      `test("a: asserts first, then remarks", () => {`,
+      `  expect(x.type, "bad type").toBe(true);`,
+      `  if (x.type === "none") {`,
+      `    console.warn("WARN: consider capturing something better");`,
+      `  }`,
+      `});`,
+    ].join("\n");
+    expect(unassertedWarnPaths(src)).toEqual([]);
+    expect(checksThatCannotFail(src)).toEqual([]);
+  });
+
+  test("a warn that falls through INTO an assertion is not named", () => {
+    // No `return`, so the path continues into the assertion below it. The
+    // defect needs the path to leave the check, not merely to warn.
+    const src = [
+      `test("a: warns then carries on", () => {`,
+      `  if (!x) { console.warn("WARN: odd"); }`,
+      `  expect(y, "m").toBe(true);`,
+      `});`,
+    ].join("\n");
+    expect(unassertedWarnPaths(src)).toEqual([]);
+  });
+
+  test("a bare tier gate is not named", () => {
+    // THE OUTAGE CONTROL. `if (tier === "LIGHT") return;` opens most checks in
+    // the suite. It is deliberate scoping, not a swallowed refusal, and a
+    // predicate that flagged every early return would name the whole file and
+    // be switched off within a day. The detector is anchored on `console.warn`
+    // for exactly that reason, and this case holds the anchor in place.
+    const src = [
+      `test("a: scoped to non-LIGHT", () => {`,
+      `  if (tier === "LIGHT") return;`,
+      `  expect(y, "m").toBe(true);`,
+      `});`,
+    ].join("\n");
+    expect(unassertedWarnPaths(src)).toEqual([]);
+    expect(checksThatCannotFail(src)).toEqual([]);
+  });
+
+  test("a check with no assertion at all is still named, through the same door", () => {
+    // The widened predicate is a superset, not a replacement. A body with no
+    // assertion anywhere must keep being reported whether or not it warns.
+    const src = `test("a: only warns", () => { if (!x) return; console.warn("nope"); });`;
+    expect(checksWithoutAssertions(src).map(c => c.name)).toEqual(["a: only warns"]);
+    expect(checksThatCannotFail(src).map(c => c.name)).toEqual(["a: only warns"]);
+  });
+
+  test("the real gate suite's path-level list is a superset of its body-level list", () => {
+    const body = new Set(checksWithoutAssertions(gateSource).map(c => c.name));
+    const all = new Set(checksThatCannotFail(gateSource).map(c => c.name));
+    for (const name of body) expect(all, `${name} was dropped by the widening`).toContain(name);
+    // And the widening actually found something, or it is the old predicate
+    // wearing a new name.
+    expect(all.size, "the widened predicate found nothing the body-level one did not")
+      .toBeGreaterThan(body.size);
+  });
+
+  test("before-state-captured is the check #1384 was filed about", () => {
+    // Named rather than counted, so a future edit that re-hides it has to
+    // argue with the issue instead of with a list length.
+    const named = checksThatCannotFail(gateSource).map(c => c.name);
+    expect(named).toContain("before-state-captured: STANDARD+ must have beforeState in workflow-state");
   });
 });
 
