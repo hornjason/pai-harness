@@ -68,6 +68,24 @@ import { createCiWorkflows } from "../lib/scaffold/steps";
 const QUEUE_EVENT = "merge_group:";
 
 /**
+ * The event that makes a generated workflow capable of being a required
+ * check, and therefore capable of hanging a merge queue (#1488).
+ *
+ * A required status context is one that reports on a pull request, and a
+ * workflow reports on a pull request exactly when `pull_request` is one of
+ * its triggers. `ai-review-unmeasured.yml` is triggered by `workflow_run`
+ * and reports nothing to the pull request at all: nobody can make it
+ * required, so a queue cannot wait on it, and giving it `merge_group` would
+ * fire it with no `workflow_run` context to read.
+ *
+ * The population below is DERIVED from this rather than listed, and both
+ * halves of the split are then asserted BY NAME — so a workflow that
+ * quietly loses its `pull_request` trigger drops out of the queue cases and
+ * is named for it, rather than being excused by the derivation.
+ */
+const REQUIRABLE_EVENT = "pull_request:";
+
+/**
  * Generate into a throwaway tree and hand back the three workflow bodies.
  *
  * `shards` is written into the config rather than passed, because the ternary
@@ -124,6 +142,24 @@ function triggerBlock(yml: string): string {
   return end < 0 ? rest : rest.slice(0, end);
 }
 
+/**
+ * The generated workflows that report on a pull request, and the ones that
+ * do not — derived from the trigger each one declares.
+ *
+ * Returned as a pair rather than as a filter, because every case that reads
+ * the first list also has to say what it left out. A silently shrinking
+ * population is how `ai-review.yml` sat outside these cases until #867,
+ * having been excluded on purpose and wrongly.
+ */
+function splitByRequirability(files: Record<string, string>) {
+  const requirable: string[] = [];
+  const reportsNothing: string[] = [];
+  for (const name of Object.keys(files).sort()) {
+    (triggerBlock(files[name]).includes(REQUIRABLE_EVENT) ? requirable : reportsNothing).push(name);
+  }
+  return { requirable, reportsNothing };
+}
+
 describe("#765: a merge queue cannot hang on a check that never reports", () => {
   // The control. A slice that failed to find its section is an empty string,
   // and an empty string contains nothing — indistinguishable from a clean
@@ -133,7 +169,24 @@ describe("#765: a merge queue cannot hang on a check that never reports", () => 
     const sharded = generate(4);
     const plain = generate(1);
 
-    expect(Object.keys(sharded).sort()).toEqual(["ai-review.yml", "ci.yml", "gates.yml"]);
+    expect(Object.keys(sharded).sort()).toEqual([
+      "ai-review-unmeasured.yml",
+      "ai-review.yml",
+      "ci.yml",
+      "gates.yml",
+    ]);
+
+    // The split, stated by name in BOTH directions (#1488). The queue cases
+    // below run over `requirable` only, and a derivation that silently
+    // admitted or dropped a file would make them pass over the wrong set —
+    // so the derivation's own answer is pinned here.
+    const { requirable, reportsNothing } = splitByRequirability(sharded);
+    expect(requirable).toEqual(["ai-review.yml", "ci.yml", "gates.yml"]);
+    expect(
+      reportsNothing,
+      "a generated workflow stopped reporting on pull requests, so the queue cases below " +
+        "no longer cover it — say why here or give it back its pull_request trigger",
+    ).toEqual(["ai-review-unmeasured.yml"]);
 
     // The two bodies must actually differ, or this file is testing one thing
     // twice and the sharded/unsharded distinction is unmeasured.
@@ -163,10 +216,17 @@ describe("#765: a merge queue cannot hang on a check that never reports", () => 
   // the decision was wrong for the only reason that mattered — a consumer
   // makes `ai-review` required *because* it is the check that reads the code,
   // and a required context with no `merge_group` trigger hangs the queue.
-  test("EVERY generated workflow handles merge_group", () => {
+  //
+  // #1488 narrowed "every generated workflow" to "every one that can be
+  // required", and the narrowing is itself checked: the case above pins both
+  // sides of the split by name, and `test/ai-review-unmeasured-workflow.test.ts`
+  // AC-8 asserts the excluded one is triggered by `workflow_run` and by
+  // nothing a pull request raises. An exclusion nothing can falsify is how
+  // `ai-review.yml` stayed outside this case for the whole of its first year.
+  test("EVERY requirable generated workflow handles merge_group", () => {
     for (const shards of [4, 1]) {
       const files = generate(shards);
-      const names = Object.keys(files);
+      const names = splitByRequirability(files).requirable;
       expect(names.length, "nothing was generated — this case is vacuous").toBeGreaterThan(2);
       for (const name of names) {
         expect(
@@ -177,11 +237,12 @@ describe("#765: a merge queue cannot hang on a check that never reports", () => 
     }
   });
 
-  test("the trigger carries no branches: filter, in any generated workflow", () => {
+  test("the trigger carries no branches: filter, in any requirable generated workflow", () => {
     for (const shards of [4, 1]) {
       const files = generate(shards);
-      expect(Object.keys(files).length, "nothing was generated — this case is vacuous").toBeGreaterThan(2);
-      for (const name of Object.keys(files)) {
+      const names = splitByRequirability(files).requirable;
+      expect(names.length, "nothing was generated — this case is vacuous").toBeGreaterThan(2);
+      for (const name of names) {
         const block = triggerBlock(files[name]);
         const lines = block.split("\n");
         const at = lines.findIndex((l) => l.trim() === QUEUE_EVENT);

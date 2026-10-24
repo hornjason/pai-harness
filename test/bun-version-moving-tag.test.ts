@@ -52,10 +52,17 @@ import { toolchainParity } from "../scripts/contract-parity";
 /** The marker the generator writes when what it emits is not a pin. */
 const UNPINNED = "UNPINNED";
 
-/** The two files `createCiWorkflows` writes that install bun. */
+/** The files `createCiWorkflows` writes that install bun. */
 // #1013 added the third: `ai-review.yml` installs bun for the findings
 // adjudicator, and it resolves the version from the same single declaration.
-const GENERATED = ["ai-review.yml", "ci.yml", "gates.yml"] as const;
+// #1488 added the fourth for the same reason one workflow over — the
+// unmeasured classifier runs through `bunx` on `workflow_run: completed`.
+const GENERATED = [
+  "ai-review-unmeasured.yml",
+  "ai-review.yml",
+  "ci.yml",
+  "gates.yml",
+] as const;
 
 interface SetupBunStep {
   file: string;

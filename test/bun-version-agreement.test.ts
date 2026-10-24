@@ -56,11 +56,12 @@ import { createCiWorkflows } from "../lib/scaffold/steps";
 const REPO_ROOT = join(import.meta.dir, "..");
 /**
  * How many `setup-bun` steps `createCiWorkflows` emits: one in `ci.yml`, one
- * in `gates.yml`, and since #1013 one in `ai-review.yml`, which installs bun
- * for the findings adjudicator. Declared once, because three cases below
- * count them and three literals would drift apart.
+ * in `gates.yml`, since #1013 one in `ai-review.yml`, which installs bun for
+ * the findings adjudicator, and since #1488 one in `ai-review-unmeasured.yml`,
+ * which installs it for the unmeasured classifier. Declared once, because
+ * three cases below count them and three literals would drift apart.
  */
-const GENERATED_BUN_STEPS = 3;
+const GENERATED_BUN_STEPS = 4;
 
 const WORKFLOW_DIR = join(REPO_ROOT, ".github", "workflows");
 
@@ -143,7 +144,9 @@ describe("AC-2: no workflow under .github/workflows resolves Bun from a moving t
     // `action-pins` joined in #789, the weekly freshness check for the pins
     // this file is about; `suite-flake` joined in #323, which runs the suite
     // ten times on one tree and reads the series; `closing-references` joined
-    // in #1362, which runs the closing-reference audit this branch adds.
+    // in #1362, which runs the closing-reference audit this branch adds;
+    // `ai-review-unmeasured` joined in #1488, which runs the unmeasured
+    // classifier through `bunx` after the review job ends. That makes ten.
     //
     // The floor and the list are two different claims, deliberately:
     // the floor says the scan read SOMETHING, so no case below is satisfied
@@ -153,10 +156,11 @@ describe("AC-2: no workflow under .github/workflows resolves Bun from a moving t
     // meant to turn this red once.
     const steps = setupBunStepsUnder(WORKFLOW_DIR);
     expect(steps.length, "fewer setup-bun steps than this repo has workflows that install bun")
-      .toBeGreaterThanOrEqual(9);
+      .toBeGreaterThanOrEqual(10);
     const files = new Set(steps.map(s => s.file));
     expect([...files].sort()).toEqual([
       "action-pins.yml",
+      "ai-review-unmeasured.yml",
       "ai-review.yml",
       "ci.yml",
       "claude-review.yml",
