@@ -120,8 +120,16 @@ function toplevel(dir: string): string | null {
   return out === "" ? null : out;
 }
 
-/** `git -C <dir> rev-parse --abbrev-ref HEAD`, or `null`. */
-function branchOf(dir: string): string | null {
+/**
+ * `git -C <dir> rev-parse --abbrev-ref HEAD`, or `null`.
+ *
+ * Exported since #1595 so the filing chokepoint names the branch a comment
+ * should go on through this binding rather than a second `rev-parse` of its
+ * own. `HEAD` — a detached checkout — is a real answer here and is filtered
+ * by the caller that cares, because "which branch" and "is this a branch"
+ * are different questions and only one of them belongs in a git wrapper.
+ */
+export function branchOf(dir: string): string | null {
   const got = spawnSync("git", ["-C", dir, "rev-parse", "--abbrev-ref", "HEAD"], {
     timeout: 10_000,
     encoding: "utf-8",
