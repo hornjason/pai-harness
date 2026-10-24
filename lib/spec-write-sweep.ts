@@ -321,7 +321,23 @@ function firstArgumentFromAssignment(src: string, at: number): string {
 
 // ── The sweep ─────────────────────────────────────────────────────
 
-const SPEC_TARGET = /spec/i;
+/**
+ * What counts as a target naming a derived document.
+ *
+ * `adr` is in, and that is #1548's residue rather than scope creep. The
+ * decision `mayWrite` makes is about who PRODUCES a file, not about which
+ * directory it sits in — a generated ADR loses injected frontmatter at the
+ * next regeneration exactly as a generated spec does. #1548's cited shape is
+ * literally `addFrontmatterToAdrs`, an unguarded sibling of a guarded
+ * function in `lib/validators/spec-validators.ts`, and a `specs/`-only
+ * detector would not see the next one. Widening costs nothing measured: the
+ * real tree reads the same one site either way.
+ *
+ * Anchored at a token boundary rather than matched as a bare substring, so
+ * `quadrant` and `inspectPath` are not derived documents. `adrDir` and
+ * `specsDir` are, because the boundary is the character BEFORE the word.
+ */
+const SPEC_TARGET = /(?:^|[^A-Za-z0-9])(spec|adr)/i;
 
 function tsFiles(root: string, dir: string, out: string[]): void {
   const abs = join(root, dir);

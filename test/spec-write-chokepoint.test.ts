@@ -231,6 +231,53 @@ export function writeReport(root: string, json: string): void {
   });
 });
 
+describe("#1548: a second unguarded writer inside an already-compliant file", () => {
+  /**
+   * The shape #1548 was filed for, and the reason it is answered here rather
+   * than left open: `addFrontmatterToAdrs` was an unguarded sibling of a
+   * guarded function in `lib/validators/spec-validators.ts`, the file was on
+   * the old per-FILE list, and the sweep was green. A reviewer found it, and
+   * a reviewer is a sampled instrument.
+   *
+   * The unit here is the call site, so the file being compliant everywhere
+   * else buys the second writer nothing.
+   */
+  const MIXED = `
+import { writeFileSync } from "fs";
+import { join } from "path";
+import { writeSpec } from "./write-spec";
+
+export function stampSpecs(specsDir: string, body: string): void {
+  writeSpec(join(specsDir, "A.md"), body);
+}
+
+export function stampAdrs(adrDir: string, body: string): void {
+  const filePath = join(adrDir, "D.md");
+  writeFileSync(filePath, body);
+}
+`;
+
+  test("the unguarded sibling is named even though the file is otherwise compliant", () => {
+    const root = tempRoot("sibling");
+    plant(root, "lib/validators.ts", MIXED);
+    const found = specChokepointViolations(root, ["lib"]);
+    expect(found.map((s) => `${s.file}::${s.target}`)).toEqual(["lib/validators.ts::filePath"]);
+  });
+
+  test("an ADR path counts as a derived document, and `quadrant` does not", () => {
+    // `mayWrite` asks who PRODUCES a file, not which directory it is in. The
+    // boundary anchor is the other half: a bare /adr/i substring would make
+    // every `quadrantPath` a derived document.
+    const root = tempRoot("boundary");
+    plant(
+      root,
+      "lib/b.ts",
+      ["writeFileSync(quadrantPath, v);", "writeFileSync(inspectPath, v);"].join("\n"),
+    );
+    expect(specChokepointViolations(root, ["lib"])).toEqual([]);
+  });
+});
+
 describe("#1552: reverting a real migration reddens the check", () => {
   /**
    * What was broken to make the new case fail, on REAL source rather than a
