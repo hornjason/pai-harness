@@ -475,8 +475,36 @@ export function isFullSuiteCommand(command: string): boolean {
   return false;
 }
 
-function segmentIsFullSuite(segment: string, depth = 0): boolean {
-  if (depth > 3) return false;
+/**
+ * Is this argument demonstrably a PATH rather than a name filter? (#1544)
+ *
+ * Exported because two questions now read it and they are opposites: a
+ * path-shaped argument means a run is targeted rather than full
+ * (`isFullSuiteCommand`), and it means a path `lib/bun-test-paths.ts` must
+ * stat before bun turns it into a silent filter. A second copy of this
+ * predicate would survive any mutation of this one and both would read as
+ * covered (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ *
+ * Deliberately NOT every positional argument. Bun treats a bare word as a
+ * substring name filter and that is a legitimate thing to type, so refusing
+ * one because no file is named after it would fire on correct commands.
+ * The population this leaves uncovered is stated in `lib/bun-test-paths.ts`.
+ */
+export function looksLikeTestPath(arg: string): boolean {
+  return arg.includes("/") || /\.(test\.)?(ts|tsx|js|jsx)$/.test(arg);
+}
+
+/**
+ * The positional arguments of every suite invocation in this segment — one
+ * array per invocation, empty for the outer list when the segment is not one.
+ *
+ * Per-invocation rather than flattened, because the two consumers need
+ * different granularity and flattening would change `isFullSuiteCommand`:
+ * `bash -c "bun test a/b.ts; bun test"` contains a full suite, and a single
+ * concatenated argument list would report a path and hide it.
+ */
+function suiteInvocationArguments(segment: string, depth = 0): string[][] {
+  if (depth > 3) return [];
 
   let s = segment.trim();
 
@@ -493,13 +521,13 @@ function segmentIsFullSuite(segment: string, depth = 0): boolean {
   // `bash -c "bun test; echo done"` — recurse into the quoted body.
   const shellC = s.match(SHELL_DASH_C);
   if (shellC) {
-    return splitTopLevel(shellC[2]).some((inner) =>
-      segmentIsFullSuite(inner, depth + 1),
+    return splitTopLevel(shellC[2]).flatMap((inner) =>
+      suiteInvocationArguments(inner, depth + 1),
     );
   }
 
   const invocation = s.match(SUITE_INVOCATION);
-  if (!invocation) return false;
+  if (!invocation) return [];
 
   const rest = s.slice(invocation[0].length).trim();
   // `npm test -- test/foo.ts` passes args through the runner.
@@ -523,10 +551,46 @@ function segmentIsFullSuite(segment: string, depth = 0): boolean {
     args.push(t);
   }
 
-  const hasPath = args.some(
-    (a) => a.includes("/") || /\.(test\.)?(ts|tsx|js|jsx)$/.test(a),
+  return [args];
+}
+
+/** One top-level segment and the path-shaped arguments its suite invocations carry. */
+export interface SegmentPathArguments {
+  /** The segment text, so a caller can judge whether it is resolvable at all. */
+  segment: string;
+  paths: string[];
+}
+
+/**
+ * Every path-shaped `bun test` argument, grouped by the segment it came from.
+ *
+ * Grouped rather than flat because a caller that resolves these against the
+ * filesystem has to be able to skip a segment it cannot read — a command
+ * substitution spans several whitespace tokens, so `$(bun scripts/x.ts)`
+ * arrives as `$(bun` and `scripts/x.ts)` and a per-ARGUMENT check sees a
+ * perfectly ordinary-looking path in the second. That was a live false
+ * refusal, caught by this repo's own control case (#1544).
+ */
+export function suitePathArgumentsBySegment(command: string): SegmentPathArguments[] {
+  return splitTopLevel(command).map((segment) => ({
+    segment,
+    paths: suiteInvocationArguments(segment).flat().filter(looksLikeTestPath),
+  }));
+}
+
+/**
+ * Every path-shaped argument handed to a `bun test` anywhere in this command.
+ *
+ * The flat reading, for a caller that does not need to resolve anything.
+ */
+export function suitePathArguments(command: string): string[] {
+  return suitePathArgumentsBySegment(command).flatMap((s) => s.paths);
+}
+
+function segmentIsFullSuite(segment: string, depth = 0): boolean {
+  return suiteInvocationArguments(segment, depth).some(
+    (args) => !args.some(looksLikeTestPath),
   );
-  return !hasPath;
 }
 
 /**
