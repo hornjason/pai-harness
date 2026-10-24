@@ -59,7 +59,13 @@
  *  - **A destructured binding.** `const { p } = cfg` binds a property of a
  *    value this module does not evaluate.
  *  - **A declaration with no initialiser** that is never assigned.
+ *  - **A loop binding that reassigns an existing identifier** — `for (p of
+ *    paths) writeFileSync(p, …)`, where `p` is declared elsewhere. The write
+ *    is still found; only the VALUE is unread, so the site reads as
+ *    unresolved rather than as clean. `for (const p of …)` is a declaration
+ *    and is resolved normally.
  *
+
  * And one case is deliberately OVER-approximated rather than refused: a
  * binding that is REASSIGNED is read as the union of its initialiser and every
  * assigned expression. Over-reporting costs one classified line; under-
@@ -412,11 +418,21 @@ export function writeSitesIn(
   for (const node of walkNodes(tree)) {
     if (node.type !== "AssignmentExpression") continue;
     const left = node.left as AstNode | undefined;
-    if (left?.type !== "Identifier") continue;
-    const scope = scopeOf.get(node) ?? root;
-    const binding = lookup(scope, String(left.name), node.start);
     const right = node.right as AstNode | undefined;
-    if (binding && right) binding.assigned.push(js.slice(right.start, right.end));
+    if (!left || !right) continue;
+    // Every name the left-hand side binds, not just a bare `x = …`. A
+    // destructuring reassignment — `[p] = […]` or `({ p } = …)` — targets an
+    // already-declared identifier, and reading only `Identifier` dropped it
+    // silently, so the binding resolved to its initialiser alone. That is the
+    // permissive direction, inside the mechanism added to stop it (#1569).
+    //
+    // The whole right-hand side is attributed to each name rather than the
+    // element that actually reaches it: which property lands where needs
+    // evaluation, and over-attributing is the allowed direction.
+    for (const [name] of patternNames(left, false)) {
+      const binding = lookup(scopeOf.get(node) ?? root, name, node.start);
+      if (binding) binding.assigned.push(js.slice(right.start, right.end));
+    }
   }
 
   /** The primitive this callee denotes, or null. */

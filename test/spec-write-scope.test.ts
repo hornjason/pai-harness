@@ -175,6 +175,47 @@ describe("SC-1566-SCOPE: an identifier at a write site resolves by scope, not by
     ).toBe(false);
   });
 
+  test("shape 7b — a DESTRUCTURING reassignment counts as a reassignment", () => {
+    // AI-review finding on #1569, high. The tracker read only `x = …`, so a
+    // reassignment through a pattern was silently dropped and the identifier
+    // resolved to its initialiser alone — the permissive direction again, in
+    // the very mechanism added to stop it.
+    expect(
+      targets(`
+        let p = join(d, "report.json");
+        [p] = [join(d, "A-SPEC.md")];
+        writeFileSync(p, "x");
+      `),
+    ).toBe(true);
+
+    expect(
+      targets(`
+        let p = join(d, "report.json");
+        ({ p } = { p: join(d, "A-SPEC.md") });
+        writeFileSync(p, "x");
+      `),
+    ).toBe(true);
+
+    // NEGATIVE CONTROL for each: the same destructuring shape assigning a
+    // non-spec value must stay false, or the rows above would pass for a
+    // resolver that merely gave up and reported everything.
+    expect(
+      targets(`
+        let p = join(d, "first.json");
+        [p] = [join(d, "second.json")];
+        writeFileSync(p, "x");
+      `),
+    ).toBe(false);
+
+    expect(
+      targets(`
+        let p = join(d, "first.json");
+        ({ p } = { p: join(d, "second.json") });
+        writeFileSync(p, "x");
+      `),
+    ).toBe(false);
+  });
+
   test("shape 8 — a nested closure's parameter shadows an outer const", () => {
     expect(
       unresolved(`
