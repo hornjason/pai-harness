@@ -1610,6 +1610,70 @@ export const AI_REVIEW_INTENT_PATH_VAR = "AI_REVIEW_INTENT_PATH";
 export const AI_REVIEW_INTENT_BASENAME = "ai-review-intent.txt";
 
 /**
+ * #1356. The list of paths this pull request changed, delivered the way the
+ * round state and the intent are: a FILE in the findings directory, named by
+ * a variable.
+ *
+ * ## Why the adjudicator could not take this itself
+ *
+ * `lib/scaffold/ai-review-findings.ts` accepts the list and refuses to
+ * compute it, and `test/ai-review-finding-scope.test.ts` AC-10 holds it to
+ * that. It runs AFTER the review, from the payload's own directory, so a
+ * diff it took would be a diff the subject of the review had an opportunity
+ * to edit — the reviewer holds `Write` and the drift step exists because it
+ * uses it. Taking the diff here, before the reviewer runs, is the only
+ * position from which the answer is about the pull request.
+ *
+ * ## Why it is a FILE under `RUNNER_TEMP` and not a step output
+ *
+ * Same argument as `AI_REVIEW_FINDINGS_PATH_VAR`: anything in the branch can
+ * plant a file in `GITHUB_WORKSPACE`, and a planted changed-file list chooses
+ * which findings get demoted — the widest possible effect for the cheapest
+ * possible write. The findings directory is outside the checkout by
+ * construction, because the prepare step REFUSES the run when `RUNNER_TEMP`
+ * is unset.
+ *
+ * A step output would also truncate: `GITHUB_OUTPUT` is not a place to put a
+ * list of unbounded length, and a silently truncated changed-file list
+ * demotes every finding past the cut.
+ *
+ * ## The two-dot diff, and why not three
+ *
+ * The checkout is `fetch-depth: 1` and the restore step fetches the base at
+ * `--depth=1`, so **there is no merge base** and `base...HEAD` fails. The
+ * two-dot form needs none: on a `pull_request` the checkout is the MERGE
+ * ref, which already contains the base, so `diff <base> HEAD` is the pull
+ * request's own change set.
+ *
+ * If the base moved between the merge ref being built and this fetch, the
+ * set is WIDER than the pull request. That is the direction this is allowed
+ * to be wrong in — a wider set demotes fewer findings, and a finding that
+ * keeps blocking is a finding somebody reads.
+ */
+export const AI_REVIEW_CHANGED_FILES_PATH_VAR = "AI_REVIEW_CHANGED_FILES_PATH";
+
+/** The basename inside the findings directory. One spelling. */
+export const AI_REVIEW_CHANGED_FILES_BASENAME = "ai-review-changed-files.txt";
+
+export const AI_REVIEW_CHANGED_FILES_STEP_ID = "ai-review-changed-files";
+
+export const AI_REVIEW_CHANGED_FILES_STEP_NAME =
+  "Record the paths this pull request changed, from the restored tree";
+
+/**
+ * The annotation title for a list that could not be taken.
+ *
+ * A WARNING and not an error, and the step exits 0 either way. The refusal
+ * belongs to the adjudicator, which names the reading
+ * (`CHANGED_FILES_UNREADABLE`) and routes its exit through
+ * `AI_REVIEW_REQUIRED_EXIT` — the one constant a mutation zeroes. A second
+ * non-zero exit here would be a second decider for one fact, reachable by no
+ * mutation of the first, and its message would be about a `git diff` rather
+ * than about the review.
+ */
+export const AI_REVIEW_CHANGED_FILES_TITLE = "AI review changed-file list";
+
+/**
  * Whether an intent was supplied, as a STEP OUTPUT — not as a string inside
  * the file.
  *
@@ -4791,7 +4855,25 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
     # does not execute, and an unset variable there would make a clean
     # adjudication read as an empty string rather than as 0.
     adjudicated=0
-    adjudication=\$(cd "\$(dirname "\${${AI_REVIEW_FINDINGS_PATH_VAR}}")" && ${adjudicator} "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>&1) || adjudicated=\$?
+    #
+    # THE SECOND POSITIONAL IS #1356's changed-path list, and the ORDER is
+    # the contract: payload first, list second. A list passed first would be
+    # read as the payload and the run would adjudicate the wrong file.
+    #
+    # Safe to pass before the reading half is released, and that was measured
+    # rather than assumed: \`main\` at the \`v0.8.2\` tag reads \`argv[0]\` and
+    # nothing else, so a second positional is a no-op on the adjudicator npm
+    # serves today. A consumer gets the scope reading when it re-scaffolds
+    # onto a release that carries it — the generated step runs
+    # \`bunx ${AI_REVIEW_ADJUDICATOR_PACKAGE}@<generating version>\`, so the
+    # workflow and its adjudicator always come from the SAME release and
+    # cannot skew apart.
+    #
+    # It is quoted and unconditional. An empty value is \`NOT_SUPPLIED\` in
+    # the reader, which is exactly the state before this step existed — so a
+    # consumer whose prepare step did not reach its output keeps the reading
+    # it had rather than acquiring a refusal from this change.
+    adjudication=\$(cd "\$(dirname "\${${AI_REVIEW_FINDINGS_PATH_VAR}}")" && ${adjudicator} "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" "\${${AI_REVIEW_CHANGED_FILES_PATH_VAR}:-}" 2>&1) || adjudicated=\$?
     printf '%s\\n' "\${adjudication}"
 
     # DID IT RUN, asked before WHAT IT SAID. Without this line a registry that
@@ -6419,6 +6501,104 @@ read_tree() {
  * An absent or unreadable baseline is UNMEASURED and refuses. "The tree did
  * not change" and "nobody looked before" must not be the same answer.
  */
+/**
+ * #1356. Write the pull request's changed-path list, from the restored tree,
+ * before the reviewer runs.
+ *
+ * ## What it does when it cannot
+ *
+ * It writes NOTHING and exits 0. Both halves matter and both are asserted:
+ *
+ * - **Nothing, never an empty file.** `CHANGED_FILES_UNREADABLE` and
+ *   `CHANGED_FILES_EMPTY` are different facts with different fixes, and an
+ *   empty file destroys which one happened. Worse, the adjudicator reads an
+ *   empty list as a pull request that touches nothing, which makes every
+ *   blocking finding pre-existing and reports a GREEN check for a review
+ *   that found something. The `git diff` writes to a `.partial` beside the
+ *   destination and is `mv`'d into place only on success, so a diff that
+ *   dies half-way leaves no destination at all.
+ * - **Exit 0.** The refusal is the adjudicator's. It names the reading and
+ *   routes through `AI_REVIEW_REQUIRED_EXIT`, the one constant a mutation
+ *   zeroes. A non-zero exit here would be a second decider for one fact that
+ *   no mutation of the first can reach, and the message a reader would get
+ *   is about a `git diff` rather than about the review.
+ *
+ * The warning annotation is the loud half, and it names the state. An exit 0
+ * with no output is Silent Default Substitution
+ * (`.claude/rules/config-access.md`).
+ *
+ * ## `core.quotePath=false`
+ *
+ * `normaliseRepoPath` in the adjudicator REFUSES git's C-quoted form rather
+ * than guessing at the decoding, and an undecidable path keeps blocking. So
+ * without this every non-ASCII filename in a repository produces a finding
+ * that cannot be demoted, loudly, for a reason that is nobody's fault.
+ * `-z` is the other spelling and is the wrong one here: the reader splits on
+ * newlines.
+ */
+export function buildChangedFilesScript(): string {
+  const noPath =
+    `no destination was given for the changed-path list, so the AI review's ` +
+    `scope reading is UNMEASURED: every finding will be adjudicated without ` +
+    `checking whether it names a file this pull request touches.`;
+
+  const noBase =
+    `the base ref is empty, so the pull request's changed paths could not be ` +
+    `determined and the scope reading is UNMEASURED. The restore step publishes ` +
+    `this ref; an empty value here means that step did not reach its output.`;
+
+  const diffFailed =
+    `git diff against the base failed, so NO changed-path list was written — ` +
+    `deliberately, because an empty list reads as a pull request that changed ` +
+    `nothing and would mark every blocking finding pre-existing. The ` +
+    `adjudicator will report CHANGED_FILES_UNREADABLE.`;
+
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+set -uo pipefail
+
+${AI_REVIEW_ANNOTATION_ESCAPE}
+
+dest="\${${AI_REVIEW_CHANGED_FILES_PATH_VAR}:-}"
+if [ -z "\${dest}" ]; then
+  echo "::warning title=${AI_REVIEW_CHANGED_FILES_TITLE}::${noPath}" >&2
+  exit 0
+fi
+
+# Removed BEFORE anything else can fail. A list left over from an earlier
+# attempt would be read as this run's, and a re-run is the one case where a
+# stale file is reachable.
+rm -f "\${dest}" "\${dest}.partial"
+
+base="\${${AI_REVIEW_BASE_REMOTE_VAR}:-}"
+if [ -z "\${base}" ]; then
+  echo "::warning title=${AI_REVIEW_CHANGED_FILES_TITLE}::${noBase}" >&2
+  exit 0
+fi
+
+# TWO DOTS, not three. The checkout is \`fetch-depth: 1\` and the restore
+# step fetches the base at \`--depth=1\`, so there is no merge base and
+# \`base...HEAD\` fails on every runner. On a \`pull_request\` the checkout is
+# the MERGE ref, which already contains the base, so the two-dot form is the
+# pull request's own change set.
+#
+# Redirected to \`.partial\` and checked on its own line. \`x=$(...)\` would
+# DISCARD the exit code, and under the runner's \`bash -e\` an assignment
+# whose value is a failing substitution aborts the shell on that line — which
+# is how #1110 made every refusal downstream unreachable.
+if ${AI_REVIEW_GIT_ISOLATED} -c core.quotePath=false diff --name-only "\${base}" HEAD > "\${dest}.partial" 2> "\${dest}.err"; then
+  mv "\${dest}.partial" "\${dest}"
+  rm -f "\${dest}.err"
+  echo "ai-review changed paths: $(wc -l < "\${dest}" | tr -d ' ') from \${base}..HEAD"
+else
+  err=$(cat "\${dest}.err" 2>/dev/null || true)
+  rm -f "\${dest}.partial" "\${dest}.err"
+  echo "::warning title=${AI_REVIEW_CHANGED_FILES_TITLE}::${diffFailed} $(escape_annotation "\${err}")" >&2
+fi
+
+exit 0
+`;
+}
+
 export function buildBaselineScript(): string {
   const noTemp =
     `RUNNER_TEMP is not set, so there is nowhere outside the checkout to record ` +
@@ -8105,6 +8285,32 @@ export function buildReviewRunStep(
     ...buildRestoreScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
+  // #1356. AFTER the restore and BEFORE the reviewer, and both halves are
+  // the point rather than a convenience.
+  //
+  // After the restore, because the restored paths are the BASE's copies and
+  // the diff should describe the tree the reviewer is about to read. Before
+  // the reviewer, because the reviewer holds `Write` on the checkout — the
+  // drift step exists because it uses it — so a diff taken afterwards is a
+  // diff the subject of the review chose. `test/ai-review-changed-files-
+  // step.ts` CF-1 asserts both bounds against the generated job.
+  //
+  // It writes under `RUNNER_TEMP`, so it is outside the baseline's reading
+  // and the #836 ordering does not apply to it.
+  const changedFiles = [
+    `- name: ${AI_REVIEW_CHANGED_FILES_STEP_NAME}`,
+    `  id: ${AI_REVIEW_CHANGED_FILES_STEP_ID}`,
+    `  env:`,
+    `    ${AI_REVIEW_CHANGED_FILES_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_CHANGED_FILES_BASENAME}`,
+    // The ref the restore step resolved and published. Taken from the step
+    // output rather than re-derived from the event, so there is one decider
+    // for which commit the base is — the same reason the drift step reads it
+    // from here.
+    `    ${AI_REVIEW_BASE_REMOTE_VAR}: \${{ steps.${AI_REVIEW_RESTORE_STEP_ID}.outputs.${AI_REVIEW_BASE_REMOTE_OUTPUT} }}`,
+    `  run: |`,
+    ...buildChangedFilesScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
+
   // AFTER the auth step and BEFORE the reviewer. That order is the whole
   // fix: `google-github-actions/auth` writes its credentials file into
   // GITHUB_WORKSPACE, so the file is in the baseline and cancels, and the
@@ -8148,6 +8354,16 @@ export function buildReviewRunStep(
     // own echo of this step's environment on run 39518336224: three
     // variables, and the findings path not among them.
     `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
+    // #1356, and restated here for #826's reason rather than inherited: a
+    // step's `env:` does not carry to a later step. The changed-files STEP
+    // has its own copy of this binding; this is the adjudicator's.
+    //
+    // It names the prepare step's directory, NOT the changed-files step's
+    // output. The writer and the reader therefore agree by construction
+    // rather than by a step output the writer might not have reached — and
+    // when the writer did not reach it, the file is simply absent, which is
+    // `CHANGED_FILES_UNREADABLE` and not a green check.
+    `    ${AI_REVIEW_CHANGED_FILES_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_CHANGED_FILES_BASENAME}`,
     `    ${AI_REVIEW_EXECUTION_FILE_VAR}: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outputs.execution_file }}`,
     // CRC-B1. The PATH, so the read-check can look for that exact string in
     // the transcript. #826 is why this is restated rather than inherited: a
@@ -8233,6 +8449,7 @@ export function buildReviewRunStep(
     // drift reading.
     indented(setupBun, indent) +
     indented(rounds, indent) +
+    indented(changedFiles, indent) +
     indented(baseline, indent) +
     indented(review, indent) +
     indented(persist, indent) +
