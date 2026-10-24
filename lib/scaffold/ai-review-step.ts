@@ -583,6 +583,82 @@ export const AI_REVIEW_DISARM_TOKEN_VAR = "AI_REVIEW_DISARM_TOKEN";
 export const AI_REVIEW_DISARM_CLI = "gh";
 
 /**
+ * The prepare step's output carrying the ABSOLUTE path of
+ * `AI_REVIEW_DISARM_CLI` (#1428).
+ *
+ * ## The reading this replaces
+ *
+ * The disarm step resolved its own CLI with `command -v`, under the PATH it
+ * had inherited. The step immediately before it is the REVIEWER, which
+ * executes model-directed work and can write `GITHUB_PATH` — the runner
+ * prepends whatever a step writes there to PATH for every LATER step in the
+ * job. So the binary that disarms auto-merge on a waived review was resolved
+ * out of a search path the reviewed content had an opportunity to prepend
+ * to, and `GH_TOKEN` was exported into it. That is the control's own tool
+ * being chosen by the thing it controls.
+ *
+ * `AI_REVIEW_PREPARE_STEP_ID` runs second in the job, before the reviewer
+ * exists, and `GITHUB_PATH` cannot reach backwards. Resolving there and
+ * carrying the answer forward means PATH is not consulted at disarm time at
+ * all — the one env var the reviewer can use to redirect the resolution is
+ * no longer part of the resolution.
+ *
+ * ## What it does NOT close, named rather than left as an omission
+ *
+ * A reviewer that can WRITE the resolved path replaces the binary without
+ * changing which path resolves. On a GitHub-hosted runner `gh` is root-owned
+ * under `/usr/bin` and the job is not root; on a self-hosted runner whose
+ * CLI sits in a user-writable directory it is not covered, and this step
+ * cannot measure the difference. UNMEASURED, and said so here.
+ */
+export const AI_REVIEW_DISARM_CLI_OUTPUT = "cli";
+
+/** The env var the disarm step reads `AI_REVIEW_DISARM_CLI_OUTPUT` back through. */
+export const AI_REVIEW_DISARM_CLI_PATH_VAR = "AI_REVIEW_DISARM_CLI_PATH";
+
+/**
+ * What the prepare step writes when the CLI is NOT on the runner.
+ *
+ * `AI_REVIEW_AUTO_MERGE_ABSENT_TOKEN`'s argument, one step upstream: an
+ * EMPTY reading and a reading of ABSENCE are different facts, and folding
+ * them is how a broken wire becomes "this runner has no `gh`". So the
+ * producer never writes an empty value, and the disarm step refuses
+ * differently for each — empty means it was handed no reading at all, the
+ * token means a reading was taken and found nothing. `0`, `{}`, `null` and
+ * the empty string are indistinguishable from success; a token is not
+ * (`.claude/rules/config-access.md`).
+ */
+export const AI_REVIEW_CLI_ABSENT_TOKEN = "__absent__";
+
+/**
+ * The inherited configuration the disarm step destroys before it
+ * authenticates (#1428).
+ *
+ * Every name here changes WHICH endpoint `AI_REVIEW_DISARM_CLI` talks to or
+ * WHICH credential it presents, and every one of them is writable by a
+ * previous step through `GITHUB_ENV`. The reviewer is the previous step. A
+ * `GH_HOST` pointing at a host the attacker owns turns the read-back into an
+ * answer of their choosing, which is the verification half of this control
+ * reporting whatever it was told; `GH_CONFIG_DIR` does the same thing
+ * through `hosts.yml`; `GH_REPO` moves the default repository under a call
+ * that is otherwise explicit about one.
+ *
+ * None has a legitimate inherited value in this step — everything it needs
+ * arrives through its own `env:` block — so the set is destroyed rather
+ * than validated. `unset` on a variable that was never set is not an error
+ * under `set -u`, so there is no arm here that fires on a clean runner.
+ */
+export const AI_REVIEW_DISARM_NEUTRALISED_VARS: readonly string[] = [
+  "GH_HOST",
+  "GH_CONFIG_DIR",
+  "GH_REPO",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_PAGER",
+];
+
+/**
  * The JSON field that says whether auto-merge is armed, and the one the
  * acceptance rows on #1242 are written against.
  *
@@ -6054,6 +6130,26 @@ rm -f "\${path}"
 echo "ai-review findings path: \${path}"
 echo "path=\${path}" >> "\${GITHUB_OUTPUT}"
 echo "${AI_REVIEW_FINDINGS_DIR_OUTPUT}=\${dir}" >> "\${GITHUB_OUTPUT}"
+
+# #1428. The disarm step's CLI is resolved HERE and not there, because this
+# step runs before the reviewer and the reviewer can write \`GITHUB_PATH\`.
+# See \`AI_REVIEW_DISARM_CLI_OUTPUT\` for the whole argument.
+#
+# \`|| true\` inside the substitution, not after the assignment: the runner
+# supplies \`bash -e\`, so an assignment whose only word is a failing
+# \`$(...)\` aborts the step (#1110).
+#
+# A resolution that is not an ABSOLUTE path is recorded as absent rather
+# than carried forward. \`command -v\` echoes a shell builtin or a relative
+# PATH entry back unchanged, and neither is a thing a later step can
+# execute meaningfully; the conservative direction here is a refusal
+# downstream, not a path nobody resolved.
+cli=\$(command -v ${AI_REVIEW_DISARM_CLI} 2>/dev/null || true)
+case "\${cli}" in
+  /*) ;;
+  *) cli="${AI_REVIEW_CLI_ABSENT_TOKEN}" ;;
+esac
+echo "${AI_REVIEW_DISARM_CLI_OUTPUT}=\${cli}" >> "\${GITHUB_OUTPUT}"
 `;
 }
 
@@ -8333,10 +8429,29 @@ export function buildDisarmScript(): string {
     `a review nobody read (#1242).`;
 
   const noCli =
-    `The AI review was WAIVED and '${AI_REVIEW_DISARM_CLI}' is not on this ` +
-    `runner, so auto-merge cannot be disarmed. It is pre-installed on ` +
-    `GitHub-hosted runners; a self-hosted runner needs it installed. ` +
-    `Refusing rather than leaving a waived pull request armed (#1242).`;
+    `The AI review was WAIVED and '${AI_REVIEW_DISARM_CLI}' was not on this ` +
+    `runner when the '${AI_REVIEW_PREPARE_STEP_ID}' step looked for it, so ` +
+    `auto-merge cannot be disarmed. It is pre-installed on GitHub-hosted ` +
+    `runners; a self-hosted runner needs it installed. Refusing rather than ` +
+    `leaving a waived pull request armed (#1242).`;
+
+  const cliUnwired =
+    `The AI review was WAIVED and this step was handed NO reading of where ` +
+    `'${AI_REVIEW_DISARM_CLI}' is. A runner without the CLI is recorded as ` +
+    `'${AI_REVIEW_CLI_ABSENT_TOKEN}' by the '${AI_REVIEW_PREPARE_STEP_ID}' ` +
+    `step, so an empty value is not that reading — it is the ` +
+    `'${AI_REVIEW_DISARM_CLI_PATH_VAR}' wire being broken, or that step ` +
+    `never reaching its own output. Refusing rather than falling back to a ` +
+    `PATH lookup, which is the resolution #1428 removed: this step runs ` +
+    `after the reviewer, and the reviewer can prepend to PATH (#1428).`;
+
+  const cliGone =
+    `The AI review was WAIVED and the '${AI_REVIEW_DISARM_CLI}' the ` +
+    `'${AI_REVIEW_PREPARE_STEP_ID}' step resolved is no longer an ` +
+    `executable file, so auto-merge cannot be disarmed. Something removed ` +
+    `or replaced it between that step and this one. Refusing rather than ` +
+    `re-resolving from PATH, which is the lookup #1428 removed (#1428). ` +
+    `The path recorded was:`;
 
   const readFailed =
     `The AI review was WAIVED and this step could not read ` +
@@ -8357,7 +8472,7 @@ export function buildDisarmScript(): string {
     `code of a command that changed nothing (#1242). The field reads:`;
 
   const view =
-    `${AI_REVIEW_DISARM_CLI} pr view "\${${AI_REVIEW_DISARM_PR_VAR}}" ` +
+    `"\${cli}" pr view "\${${AI_REVIEW_DISARM_PR_VAR}}" ` +
     `--repo "\${${AI_REVIEW_DISARM_REPO_VAR}}" ` +
     `--json ${AI_REVIEW_AUTO_MERGE_FIELD} ` +
     `-q 'if .${AI_REVIEW_AUTO_MERGE_FIELD} == null then ` +
@@ -8396,8 +8511,35 @@ if [ -z "\${${AI_REVIEW_DISARM_REPO_VAR}:-}" ] || [ -z "\${${AI_REVIEW_DISARM_TO
   disarm_refuse "${noAuth}"
 fi
 
-if ! command -v ${AI_REVIEW_DISARM_CLI} >/dev/null 2>&1; then
+# #1428. DESTROY the inherited gh configuration before anything authenticates
+# or resolves. The step before this one is the reviewer, it runs
+# model-directed work, and anything it writes to \`GITHUB_ENV\` lands in this
+# step's environment. See \`AI_REVIEW_DISARM_NEUTRALISED_VARS\`.
+#
+# Before \`export GH_TOKEN\` deliberately: the token is the thing an attacker
+# would most like to see sent to a host of their choosing, so the host has to
+# stop being theirs first.
+unset ${AI_REVIEW_DISARM_NEUTRALISED_VARS.join(" ")}
+
+# The CLI, as the '${AI_REVIEW_PREPARE_STEP_ID}' step resolved it BEFORE the
+# reviewer ran. PATH is not consulted here — that is the whole of #1428, and
+# re-adding a \`command -v\` fallback below would restore the defect while
+# every case above it stayed green.
+#
+# Three readings, three outcomes, because an empty value and a reading of
+# absence are different facts.
+cli="\${${AI_REVIEW_DISARM_CLI_PATH_VAR}:-}"
+
+if [ -z "\${cli}" ]; then
+  disarm_refuse "${cliUnwired}"
+fi
+
+if [ "\${cli}" = "${AI_REVIEW_CLI_ABSENT_TOKEN}" ]; then
   disarm_refuse "${noCli}"
+fi
+
+if [ ! -x "\${cli}" ]; then
+  disarm_refuse "${cliGone} \${cli}"
 fi
 
 export GH_TOKEN="\${${AI_REVIEW_DISARM_TOKEN_VAR}}"
@@ -8433,7 +8575,7 @@ if [ "\${armed}" = "${AI_REVIEW_AUTO_MERGE_ABSENT_TOKEN}" ]; then
   exit 0
 fi
 
-if ! out=$(${AI_REVIEW_DISARM_CLI} pr merge "\${${AI_REVIEW_DISARM_PR_VAR}}" --repo "\${${AI_REVIEW_DISARM_REPO_VAR}}" --disable-auto 2>&1); then
+if ! out=$("\${cli}" pr merge "\${${AI_REVIEW_DISARM_PR_VAR}}" --repo "\${${AI_REVIEW_DISARM_REPO_VAR}}" --disable-auto 2>&1); then
   disarm_refuse "${disarmFailed} \${out}"
 fi
 
@@ -9668,6 +9810,11 @@ export function buildReviewRunStep(
     `    ${AI_REVIEW_DISARM_PR_VAR}: \${{ github.event.pull_request.number }}`,
     `    ${AI_REVIEW_DISARM_REPO_VAR}: \${{ github.repository }}`,
     `    ${AI_REVIEW_DISARM_TOKEN_VAR}: \${{ secrets.GITHUB_TOKEN }}`,
+    // #1428. The CLI this step drives, resolved by a step that ran BEFORE
+    // the reviewer. A `command -v` here would resolve it out of a PATH the
+    // reviewer can prepend to through `GITHUB_PATH` — see
+    // `AI_REVIEW_DISARM_CLI_OUTPUT`.
+    `    ${AI_REVIEW_DISARM_CLI_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_DISARM_CLI_OUTPUT} }}`,
     `  run: |`,
     ...buildDisarmScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];

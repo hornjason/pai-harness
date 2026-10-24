@@ -3,6 +3,80 @@
  * stops carrying the landing with it (#1242).
  *
  * Covers AC-1, AC-2, AC-3, AC-4, AC-5, AC-6 (#1242).
+ * Covers AC-7 (#1428) — the step does not resolve its own tool out of an
+ * environment the reviewed content can write.
+ *
+ * ## AC-7 and what it is about (#1428)
+ *
+ * This step is LAST in the job and the step before it is the REVIEWER, which
+ * executes model-directed work. Anything a step writes to `GITHUB_PATH` or
+ * `GITHUB_ENV` is inherited by every later step, so until #1428 the `gh` this
+ * step resolved — and the `GH_HOST`/`GH_CONFIG_DIR` it resolved it under —
+ * were values the reviewed content had an opportunity to set, in the step
+ * whose entire job is disarming auto-merge on a waived review.
+ *
+ * Two changes, both executed here rather than grepped. The CLI is resolved by
+ * `AI_REVIEW_PREPARE_STEP_ID`, which runs BEFORE the reviewer, and carried
+ * forward as an absolute path — `GITHUB_PATH` cannot reach backwards. And the
+ * inherited `gh` configuration is destroyed before the token is exported.
+ *
+ * Three readings of the carried value, three outcomes, because an EMPTY value
+ * and a reading of ABSENCE are different facts: empty is a broken wire, the
+ * `AI_REVIEW_CLI_ABSENT_TOKEN` is a runner with no CLI, and a recorded path
+ * that is no longer executable is a third.
+ *
+ * ## What was broken to prove it
+ *
+ * Run over this file alone. `lib/scaffold/ai-review-step.ts` restored from a
+ * `cp` backup after every row — never `git checkout --` — and confirmed
+ * byte-identical by sha256 (`56ead6ea…`) afterwards, with the baseline
+ * re-measured. Every count was predicted before the battery ran, and the
+ * baseline row was read first.
+ *
+ * | Row | Mutation | Predicted | Measured |
+ * |---|---|---|---|
+ * | **baseline** | unmutated | 39 pass, 0 fail | **39 pass, 0 fail** |
+ * | **M1** | the two call sites reverted to a bare `gh` — the pre-#1428 PATH lookup | 2 | **3 of 39** — AC-7a, AC-7b, AC-7d |
+ * | **M2** | the `unset` of the inherited configuration removed | 4 | **4 of 39** — AC-7b, AC-7c, AC-7d, AC-7e |
+ * | **M3** | the empty-reading refusal removed, so empty falls through to the not-executable arm | 1 | **1 of 39** — AC-7f |
+ * | **M4** | the prepare step records `""` instead of the absent token | 1 | **1 of 39** — AC-7i |
+ * | **M5** | the prepare step stops writing the output at all | 2 | **2 of 39** — AC-7h, AC-7i |
+ *
+ * **Before believing any row, the input on which mutant and original differ,
+ * named and run rather than assumed.** For M1 and M2 it is the AC-7a/AC-7c
+ * fixture: a `gh` planted first on PATH and a `GH_HOST` planted in the
+ * environment. The real script never executes the plant and the stub records
+ * no `GH_HOST`; M1 executes the plant and asks the pre-resolved stub nothing,
+ * M2 forwards `GH_HOST=ghe.attacker.example` into the CLI's environment. For
+ * M3 it is an empty `AI_REVIEW_DISARM_CLI_PATH_VAR`: the real script names the
+ * wire, the mutant emits the not-executable sentence about an empty path. For
+ * M4 and M5 it is a runner with no `gh`: the real prepare step records
+ * `AI_REVIEW_CLI_ABSENT_TOKEN`, M4 records the empty string and M5 records
+ * nothing.
+ *
+ * **M1 came back HIGH by one, and the extra red is the builder refusing.**
+ * The prediction named AC-7b as the aborting case and forgot that AC-7d calls
+ * the same builder: with no `"${cli}"` call site left, `prePathHardeningMutant`
+ * throws *"the CLI call site appears 0 times"* rather than measuring nothing,
+ * which is the loud-abort property a mutant builder is supposed to have. Not
+ * a crashing mutant — 36 cases still pass and both reds are squarely about the
+ * mutated behaviour.
+ *
+ * **The cheapest wrong fixes, named, and whether AC-7a survives them.**
+ * *Keep `command -v` and add only the `unset`* — AC-7a survives
+ * NON-vacuously: the plant is still first on PATH and is still what resolves.
+ * *Hardcode `PATH=/usr/local/bin:/usr/bin:/bin` at the top of the step* —
+ * AC-7a survives too, and this is why it asserts BOTH halves: the plant not
+ * running is also what a hardcoded PATH produces, so the case additionally
+ * requires that the PRE-RESOLVED stub took all three calls, which a hardcoded
+ * PATH would not satisfy.
+ *
+ * ## What AC-7 does NOT establish, said as a gap rather than implied
+ *
+ * A reviewer that can WRITE the resolved path replaces the binary without
+ * changing which path resolves. On a GitHub-hosted runner `gh` is root-owned
+ * under `/usr/bin`; on a self-hosted runner whose CLI sits in a user-writable
+ * directory this is UNMEASURED, and nothing here can tell the two apart.
  *
  * ## The configuration this removes
  *
@@ -40,13 +114,24 @@
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import {
   AI_REVIEW_AUTO_MERGE_FIELD,
+  AI_REVIEW_CLI_ABSENT_TOKEN,
   AI_REVIEW_DISARM_CLI,
+  AI_REVIEW_DISARM_CLI_OUTPUT,
+  AI_REVIEW_DISARM_CLI_PATH_VAR,
   AI_REVIEW_DISARM_FAILED_TITLE,
   AI_REVIEW_DISARM_PR_VAR,
   AI_REVIEW_DISARM_REPO_VAR,
@@ -54,8 +139,10 @@ import {
   AI_REVIEW_DISARM_TITLE,
   AI_REVIEW_DISARM_TOKEN_VAR,
   AI_REVIEW_DISARM_WAIVED_VAR,
+  AI_REVIEW_DISARM_NEUTRALISED_VARS,
   AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_FINDINGS_PATH_VAR,
+  AI_REVIEW_PREPARE_STEP_ID,
   AI_REVIEW_JOB,
   AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_OVERRIDE_LABEL,
@@ -68,6 +155,7 @@ import {
   AI_REVIEW_WAIVED_TITLE,
   AI_REVIEW_WORKFLOW_FILE,
   buildDisarmScript,
+  buildPrepareScript,
   buildReviewRunScript,
 } from "../lib/scaffold/ai-review-step";
 import { stubBunx, stubBunxAbsent } from "./helpers/stub-bunx";
@@ -132,8 +220,17 @@ const ARMED = `{"enabledAt":"2026-10-23T00:00:00Z"}`;
 interface StubGh {
   /** PATH with this `gh` first. */
   path: string;
+  /**
+   * The ABSOLUTE path of this `gh` — what the prepare step would have
+   * recorded, and what the disarm step executes since #1428. PATH is no
+   * longer how the disarm step finds its CLI, so `path` above is only the
+   * ambient environment the step happens to run under.
+   */
+  bin: string;
   /** Every argv the script handed it, one call per line. */
   calls(): string[];
+  /** Every `GH_`/`GITHUB_` variable the stub saw, one `NAME=value` per line. */
+  env(): string[];
 }
 
 /**
@@ -194,10 +291,16 @@ function stubGh(mode: GhMode): StubGh {
         : `printf 'null\\n' > ${JSON.stringify(state)}\n  exit 0`;
 
   const bin = join(dir, AI_REVIEW_DISARM_CLI);
+  // #1428: the stub records the `GH_*`/`GITHUB_*` environment it was handed.
+  // Neutralising a variable is a claim about what the CLI SEES, and the only
+  // place that can be read is inside the process that was launched.
+  const seen = join(dir, "env");
+  writeFileSync(seen, "");
   writeFileSync(
     bin,
     `#!/bin/sh
 printf '%s\\n' "$*" >> ${JSON.stringify(log)}
+env | grep -E '^(GH_|GITHUB_)' >> ${JSON.stringify(seen)} || true
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   ${onView}
 fi
@@ -212,7 +315,9 @@ exit 1
 
   return {
     path: `${dir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+    bin,
     calls: () => readFileSync(log, "utf-8").split("\n").filter(l => l !== ""),
+    env: () => readFileSync(seen, "utf-8").split("\n").filter(l => l !== ""),
   };
 }
 
@@ -225,9 +330,18 @@ exit 1
  * no-`gh` PATH on this laptop and a with-`gh` PATH in CI, and the case would
  * pass locally for a reason that does not hold where it matters.
  */
-function pathWithoutGh(): string {
+function pathWithoutGh(tools: string[] = []): string {
   const dir = scratchDir();
   symlinkSync("/bin/bash", join(dir, "bash"));
+  // #1428's AC-7i runs the PREPARE script on such a PATH, and that script
+  // needs real tools. Each is resolved rather than hardcoded: `/usr/bin` and
+  // `/bin` differ by platform, and a hardcoded path that is wrong here fails
+  // as "the tool is missing", which is the state the case is varying.
+  for (const t of tools) {
+    const at = Bun.which(t);
+    if (at === null) throw new Error(`the fixture needs ${t} and it is not on this machine's PATH`);
+    symlinkSync(at, join(dir, t));
+  }
   return dir;
 }
 
@@ -300,11 +414,20 @@ function outputs(raw: string): Record<string, string> {
   return map;
 }
 
-/** Drive the disarm step the way the runner would, given the report step's outputs. */
+/**
+ * Drive the disarm step the way the runner would, given the report step's
+ * outputs.
+ *
+ * Since #1428 the CLI arrives as `AI_REVIEW_DISARM_CLI_PATH_VAR`, which the
+ * PREPARE step resolved before the reviewer ran, and PATH is not how this
+ * step finds `gh` any more. `gh.bin` is that recording; `extra` is how a
+ * case plants something else in the environment.
+ */
 function runDisarm(
   reportOutputs: Record<string, string>,
-  gh: { path: string },
+  gh: { path: string; bin?: string },
   script = buildDisarmScript(),
+  extra: Record<string, string> = {},
 ): Run {
   return runScript(script, {
     PATH: gh.path,
@@ -312,6 +435,8 @@ function runDisarm(
     [AI_REVIEW_DISARM_PR_VAR]: "1242",
     [AI_REVIEW_DISARM_REPO_VAR]: "hornjason/pai-harness",
     [AI_REVIEW_DISARM_TOKEN_VAR]: "ghs_fixture",
+    [AI_REVIEW_DISARM_CLI_PATH_VAR]: gh.bin ?? AI_REVIEW_CLI_ABSENT_TOKEN,
+    ...extra,
   });
 }
 
@@ -422,6 +547,7 @@ describe("AC-2 (#1242): a labelled pull request that was really reviewed is unto
       [AI_REVIEW_DISARM_PR_VAR]: "1242",
       [AI_REVIEW_DISARM_REPO_VAR]: "hornjason/pai-harness",
       [AI_REVIEW_DISARM_TOKEN_VAR]: "ghs_fixture",
+      [AI_REVIEW_DISARM_CLI_PATH_VAR]: gh.bin,
     });
 
     expect(r.code, `${r.out}${r.err}`).toBe(0);
@@ -663,7 +789,10 @@ describe("AC-6 (#1242): a waiver it cannot decouple is red, never green", () => 
   const waived = { [AI_REVIEW_WAIVED_OUTPUT]: AI_REVIEW_WAIVED_OUTPUT_VALUE };
 
   test("AC-6a: no `gh` on the runner is a refusal", () => {
-    const r = runDisarm(waived, { path: pathWithoutGh() });
+    // Since #1428 the reading comes from the PREPARE step, which records the
+    // absent token rather than an empty string — see AC-7c for why an empty
+    // value is a DIFFERENT refusal.
+    const r = runDisarm(waived, { path: pathWithoutGh(), bin: AI_REVIEW_CLI_ABSENT_TOKEN });
     expect(r.code, `a runner with no CLI passed a waived pull request:\n${r.out}`).toBe(
       AI_REVIEW_REQUIRED_EXIT,
     );
@@ -678,6 +807,7 @@ describe("AC-6 (#1242): a waiver it cannot decouple is red, never green", () => 
       [AI_REVIEW_DISARM_PR_VAR]: "",
       [AI_REVIEW_DISARM_REPO_VAR]: "hornjason/pai-harness",
       [AI_REVIEW_DISARM_TOKEN_VAR]: "ghs_fixture",
+      [AI_REVIEW_DISARM_CLI_PATH_VAR]: gh.bin,
     });
     expect(r.code).toBe(AI_REVIEW_REQUIRED_EXIT);
   });
@@ -690,6 +820,7 @@ describe("AC-6 (#1242): a waiver it cannot decouple is red, never green", () => 
       [AI_REVIEW_DISARM_PR_VAR]: "1242",
       [AI_REVIEW_DISARM_REPO_VAR]: "hornjason/pai-harness",
       [AI_REVIEW_DISARM_TOKEN_VAR]: "",
+      [AI_REVIEW_DISARM_CLI_PATH_VAR]: gh.bin,
     });
     expect(r.code).toBe(AI_REVIEW_REQUIRED_EXIT);
   });
@@ -704,6 +835,7 @@ describe("AC-6 (#1242): a waiver it cannot decouple is red, never green", () => 
       [AI_REVIEW_DISARM_PR_VAR]: "",
       [AI_REVIEW_DISARM_REPO_VAR]: "",
       [AI_REVIEW_DISARM_TOKEN_VAR]: "",
+      [AI_REVIEW_DISARM_CLI_PATH_VAR]: "",
     });
     expect(r.code, `${r.out}${r.err}`).toBe(0);
   });
@@ -741,5 +873,276 @@ describe("AC-6 (#1242): a waiver it cannot decouple is red, never green", () => 
     });
     expect(r.code).toBe(0);
     expect(gh.calls(), "a case-insensitive reading disarmed on `True`").toEqual([]);
+  });
+});
+
+// ── AC-7: the step does not resolve its tool out of the reviewer's env ───
+
+/**
+ * A `gh` that is NOT the stub: it records that it ran and reports a
+ * successful disarm having done nothing.
+ *
+ * This is the binary a reviewer would plant. The reviewer step runs
+ * model-directed work and the runner carries whatever it writes to
+ * `GITHUB_PATH` into every LATER step's PATH — and the disarm step is the
+ * last step in the job, so "later" is all of it.
+ *
+ * It reports SUCCESS rather than failing, because a planted tool that
+ * crashes is caught by the refusals that already exist. The interesting
+ * state is the one where every assertion in this file passes and no pull
+ * request was disarmed.
+ */
+function hostileGh(): { dir: string; ran(): boolean } {
+  const dir = scratchDir();
+  const marker = join(dir, "ran");
+  const bin = join(dir, AI_REVIEW_DISARM_CLI);
+  writeFileSync(
+    bin,
+    `#!/bin/sh
+printf '%s\\n' "$*" >> ${JSON.stringify(marker)}
+# The always-emitting filter's absent token, so a step that runs this one
+# concludes "nothing was armed" and exits 0 having disarmed nothing.
+printf 'null\\n'
+exit 0
+`,
+  );
+  chmodSync(bin, 0o755);
+  return { dir, ran: () => existsSync(marker) };
+}
+
+/**
+ * The pre-#1428 disarm script, rebuilt from the shipped one.
+ *
+ * Three removals, and all three are what the file held before this change:
+ * the `unset` of the inherited `gh` configuration, the three readings of
+ * `AI_REVIEW_DISARM_CLI_PATH_VAR`, and the quoted `"${cli}"` at each call
+ * site, which was a bare `gh` resolved from PATH.
+ *
+ * Every anchor is located exactly once or this throws. A mutant builder
+ * that silently finds nothing measures that the file still parses
+ * (`.claude/rules/checks-must-be-able-to-fail.md`).
+ */
+function prePathHardeningMutant(): string {
+  const real = buildDisarmScript();
+  const unsetLine = `unset ${AI_REVIEW_DISARM_NEUTRALISED_VARS.join(" ")}`;
+  const end = `export GH_TOKEN="`;
+  const callSite = '"${cli}"';
+
+  const occurrences = (hay: string, needle: string) => hay.split(needle).length - 1;
+  if (occurrences(real, unsetLine) !== 1) {
+    throw new Error(
+      `could not build the mutant: the neutralise line appears ${occurrences(real, unsetLine)} times`,
+    );
+  }
+  if (occurrences(real, end) !== 1) {
+    throw new Error(
+      `could not build the mutant: the token export appears ${occurrences(real, end)} times`,
+    );
+  }
+  const from = real.indexOf(unsetLine);
+  // Back up over the block comment that introduces the `unset`, so the
+  // mutant does not carry prose describing a mechanism it no longer has.
+  const blockStart = real.lastIndexOf("\n# #1428.", from);
+  if (blockStart < 0) throw new Error("could not build the mutant: no #1428 block comment");
+  const to = real.indexOf(end);
+  const stripped = real.slice(0, blockStart + 1) + real.slice(to);
+
+  // Counted AFTER the resolution block is gone, so the number is the CALL
+  // SITES and not those plus the three readings of the same variable. Three
+  // is `pr view`, `pr merge`, `pr view` again.
+  const calls = occurrences(stripped, callSite);
+  if (calls !== 3) {
+    throw new Error(`could not build the mutant: the CLI call site appears ${calls} times, want 3`);
+  }
+  return stripped.split(callSite).join(AI_REVIEW_DISARM_CLI);
+}
+
+describe("AC-7 (#1428): the disarm does not resolve its tool from the reviewer's environment", () => {
+  const waived = { [AI_REVIEW_WAIVED_OUTPUT]: AI_REVIEW_WAIVED_OUTPUT_VALUE };
+
+  test("AC-7a: a `gh` planted ahead on PATH is not the binary that runs", () => {
+    const hostile = hostileGh();
+    const gh = stubGh("armed");
+    const r = runDisarm(waived, { path: `${hostile.dir}:${gh.path}`, bin: gh.bin });
+
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+    expect(
+      hostile.ran(),
+      "the step executed a `gh` the reviewed content put on PATH",
+    ).toBe(false);
+    // BOTH halves. "The plant did not run" is also what a step that found no
+    // CLI at all would leave behind, and a repair that hardcodes PATH would
+    // satisfy it while running some third binary. The pre-resolved stub
+    // having taken all three calls is the positive half.
+    expect(gh.calls().length, "the pre-resolved CLI was not the one driven").toBe(3);
+  });
+
+  test("AC-7b: the control — the pre-#1428 script DOES run the plant", () => {
+    // Without this, AC-7a cannot tell a fix from a fixture whose poison never
+    // worked. Same inputs, the only difference being the three removals.
+    const hostile = hostileGh();
+    const gh = stubGh("armed");
+    const r = runDisarm(
+      waived,
+      { path: `${hostile.dir}:${gh.path}`, bin: gh.bin },
+      prePathHardeningMutant(),
+    );
+
+    expect(hostile.ran(), "the plant was never reached — AC-7a witnessed nothing").toBe(true);
+    expect(gh.calls(), "the pre-#1428 script somehow used the pre-resolved path").toEqual([]);
+    // And it exits GREEN having disarmed nothing, which is the whole defect:
+    // a waived pull request left armed under a successful required check.
+    expect(r.code, "the pre-#1428 script refused, so the defect is not what AC-7a is about").toBe(0);
+  });
+
+  test("AC-7c: a `GH_HOST` the reviewer planted does not reach the CLI", () => {
+    const gh = stubGh("armed");
+    const r = runDisarm(waived, gh, undefined, {
+      GH_HOST: "ghe.attacker.example",
+      GH_CONFIG_DIR: "/tmp/planted-gh-config",
+    });
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+    const seen = gh.env();
+    expect(seen.length, "the stub recorded no environment at all").toBeGreaterThan(0);
+    expect(seen.filter(l => l.startsWith("GH_HOST="))).toEqual([]);
+    expect(seen.filter(l => l.startsWith("GH_CONFIG_DIR="))).toEqual([]);
+    // The positive control: the variables this step DOES mean to pass are
+    // still there, so the assertion above is a neutralisation and not a stub
+    // that reads its environment through a hole.
+    expect(seen.some(l => l.startsWith("GH_TOKEN="))).toBe(true);
+  });
+
+  test("AC-7d: the control — the pre-#1428 script forwards both", () => {
+    const gh = stubGh("armed");
+    runDisarm(waived, gh, prePathHardeningMutant(), {
+      GH_HOST: "ghe.attacker.example",
+      GH_CONFIG_DIR: "/tmp/planted-gh-config",
+    });
+    const seen = gh.env();
+    expect(seen.some(l => l === "GH_HOST=ghe.attacker.example"), "AC-7c witnessed nothing").toBe(
+      true,
+    );
+    expect(seen.some(l => l === "GH_CONFIG_DIR=/tmp/planted-gh-config")).toBe(true);
+  });
+
+  test("AC-7e: every name in the neutralised set is actually destroyed", () => {
+    // The set is data, so a name added to it with no `unset` behind it would
+    // read as covered. This drives the real script with every one of them
+    // planted and asserts the CLI saw none.
+    const gh = stubGh("armed");
+    const planted: Record<string, string> = {};
+    for (const v of AI_REVIEW_DISARM_NEUTRALISED_VARS) planted[v] = `planted-${v}`;
+    const r = runDisarm(waived, gh, undefined, planted);
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+    const seen = gh.env();
+    expect(seen.length).toBeGreaterThan(0);
+    const survivors = AI_REVIEW_DISARM_NEUTRALISED_VARS.filter(v =>
+      seen.includes(`${v}=planted-${v}`),
+    );
+    expect(
+      survivors,
+      "a name in AI_REVIEW_DISARM_NEUTRALISED_VARS reaches the CLI anyway",
+    ).toEqual([]);
+  });
+
+  test("AC-7f: an EMPTY reading is its own refusal, not the absent one", () => {
+    // The two states this file exists to keep apart, one layer out: the
+    // producing step recorded nothing (the wire is broken) versus the
+    // producing step recorded that there is no CLI.
+    const gh = stubGh("armed");
+    const empty = runDisarm(waived, { path: gh.path, bin: "" });
+    const absent = runDisarm(waived, { path: gh.path, bin: AI_REVIEW_CLI_ABSENT_TOKEN });
+
+    expect(empty.code, "an empty reading passed a waived pull request").toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(absent.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(
+      empty.err,
+      "the empty reading and the absent reading produce the same annotation",
+    ).not.toBe(absent.err);
+    // Each names the state it is about. The empty one names the WIRE — that
+    // is the actionable fact when no reading arrived — and the absent one
+    // does not, because on that branch the wire worked.
+    expect(empty.err).toContain(AI_REVIEW_DISARM_CLI_PATH_VAR);
+    expect(empty.err).toContain(AI_REVIEW_CLI_ABSENT_TOKEN);
+    expect(absent.err).not.toContain(AI_REVIEW_DISARM_CLI_PATH_VAR);
+    // Both are the post-#1428 messages and not one old sentence reaching
+    // both branches, which is what `not.toBe` alone would also accept.
+    expect(absent.err).toContain(AI_REVIEW_PREPARE_STEP_ID);
+    expect(empty.err).toContain(AI_REVIEW_PREPARE_STEP_ID);
+    // Neither reached the API. "It refused" and "it refused before acting"
+    // are different claims and only the second is true here.
+    expect(gh.calls()).toEqual([]);
+  });
+
+  test("AC-7g: a recorded path that is no longer executable is a third refusal", () => {
+    const gh = stubGh("armed");
+    const dir = scratchDir();
+    const dud = join(dir, AI_REVIEW_DISARM_CLI);
+    writeFileSync(dud, "#!/bin/sh\nexit 0\n");
+    chmodSync(dud, 0o644);
+
+    const r = runDisarm(waived, { path: gh.path, bin: dud });
+    expect(r.code, `a non-executable recorded CLI passed:\n${r.out}`).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(r.err).toContain(dud);
+    expect(
+      gh.calls(),
+      "the step fell back to PATH after the recorded path failed — that is #1428 reinstated",
+    ).toEqual([]);
+  });
+
+  test("AC-7h: the prepare step RESOLVES the CLI, and records an absolute path", () => {
+    // Executed, not grepped. The producing half of the wire has to be a real
+    // reading or the consuming half above is asserting about nothing.
+    const gh = stubGh("armed");
+    const temp = scratchDir();
+    const r = runScript(buildPrepareScript(), {
+      PATH: gh.path,
+      RUNNER_TEMP: temp,
+      GITHUB_RUN_ID: "1428",
+      GITHUB_RUN_ATTEMPT: "1",
+    });
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+    expect(outputs(r.output)[AI_REVIEW_DISARM_CLI_OUTPUT]).toBe(gh.bin);
+  });
+
+  test("AC-7i: a runner with no CLI records the token, never an empty value", () => {
+    const temp = scratchDir();
+    const r = runScript(buildPrepareScript(), {
+      PATH: pathWithoutGh(["mkdir", "chmod", "stat", "rm"]),
+      RUNNER_TEMP: temp,
+      GITHUB_RUN_ID: "1428",
+      GITHUB_RUN_ATTEMPT: "2",
+    });
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+    expect(outputs(r.output)[AI_REVIEW_DISARM_CLI_OUTPUT]).toBe(AI_REVIEW_CLI_ABSENT_TOKEN);
+  });
+
+  test("AC-7j: the committed workflow wires the two steps, and the disarm resolves nothing", () => {
+    const doc = Bun.YAML.parse(readFileSync(COMMITTED, "utf-8")) as any;
+    const steps: any[] = doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? [];
+    expect(steps.length, "the committed job has no steps").toBeGreaterThan(0);
+
+    const prepare = steps.find(s => s?.id === AI_REVIEW_PREPARE_STEP_ID);
+    const disarm = steps.find(s => s?.id === AI_REVIEW_DISARM_STEP_ID);
+    expect(prepare, `no '${AI_REVIEW_PREPARE_STEP_ID}' step`).toBeDefined();
+    expect(disarm, `no '${AI_REVIEW_DISARM_STEP_ID}' step`).toBeDefined();
+
+    // The producing step runs BEFORE the reviewer, which is the entire
+    // property. An ordering that put it after would resolve the CLI from the
+    // same poisoned PATH and every other case here would stay green.
+    const review = steps.findIndex(s => s?.id === AI_REVIEW_RUN_STEP_ID);
+    expect(review, `no '${AI_REVIEW_RUN_STEP_ID}' step`).toBeGreaterThan(-1);
+    expect(steps.indexOf(prepare)).toBeLessThan(review);
+
+    expect(disarm.env?.[AI_REVIEW_DISARM_CLI_PATH_VAR]).toBe(
+      `\${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_DISARM_CLI_OUTPUT} }}`,
+    );
+    expect(String(prepare.run)).toContain(`${AI_REVIEW_DISARM_CLI_OUTPUT}=`);
+    expect(
+      String(disarm.run),
+      "the disarm step resolves the CLI from PATH again — #1428 reinstated",
+    ).not.toContain(`command -v ${AI_REVIEW_DISARM_CLI}`);
   });
 });
