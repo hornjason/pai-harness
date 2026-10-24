@@ -516,21 +516,34 @@ export function writeSitesIn(
       }
 
       // Expand identifiers transitively, resolving each from ITS OWN scope.
-      const seen = new Set<string>();
+      //
+      // The dedup is keyed on the BINDING, not on the name. Keying it on the
+      // name is the same defect as `initialiserOf`, one level further in: two
+      // distinct bindings sharing a name on one chain — a local reached first,
+      // the module-level one holding the path reached later — and the second
+      // is marked done by the first and never expanded. Found by the AI review
+      // on #1569 and reproduced as shape 9. An unresolvable identifier has no
+      // binding to key on, so those are deduped by name separately.
+      const seen = new Set<Binding>();
+      const noted = new Set<string>();
       let frontier = valueIdentifiers(arg);
       for (let depth = 0; depth < EXPANSION_DEPTH && frontier.length > 0; depth++) {
         const next: AstNode[] = [];
         for (const id of frontier) {
           const name = String(id.name);
-          if (seen.has(name) || AMBIENT.has(name)) continue;
-          seen.add(name);
+          if (AMBIENT.has(name)) continue;
           const idScope = scopeOf.get(id) ?? scope;
           const binding = lookup(idScope, name, id.start);
 
           if (!binding) {
-            if (depth === 0) unresolved.push(`${name}: not-found`);
+            if (depth === 0 && !noted.has(name)) {
+              noted.add(name);
+              unresolved.push(`${name}: not-found`);
+            }
             continue;
           }
+          if (seen.has(binding)) continue;
+          seen.add(binding);
           // `let`/`var` can be reassigned by a spelling this file does not
           // enumerate, so its initialiser does not establish the value at the
           // write. `const` cannot — that is the language's guarantee, and it
@@ -549,7 +562,10 @@ export function writeSitesIn(
                   : binding.kind === "destructured"
                     ? "destructured"
                     : "no-initialiser";
-            if (depth === 0) unresolved.push(`${name}: ${reason}`);
+            if (depth === 0 && !noted.has(name)) {
+              noted.add(name);
+              unresolved.push(`${name}: ${reason}`);
+            }
             continue;
           }
           for (const v of values) {

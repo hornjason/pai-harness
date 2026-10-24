@@ -296,6 +296,60 @@ describe("SC-1566-SCOPE: a reassignable binding makes a target undetermined", ()
   });
 });
 
+// ── Shape 9, found by the AI review on #1569 round 3 ─────────────────
+
+describe("SC-1566-SCOPE: the expansion dedup is per BINDING, not per name", () => {
+  /**
+   * Two distinct bindings named `d` on one expansion chain. The local one is
+   * reached first, so a dedup keyed on the NAME marks `d` done and the
+   * module-level one — the link that actually holds the spec path — is never
+   * expanded. Same defect class as `initialiserOf`: a name standing in for a
+   * binding, one level further in.
+   *
+   * Written as `const` throughout on purpose. A `let` anywhere would make the
+   * site `opaque` and the row would pass on the undetermined reading instead
+   * of on the resolution, which is the vacuous direction.
+   */
+  const COLLIDING = `
+    const d = join(root, "A-SPEC.md");
+    const q = join(d, "x");
+    function f() {
+      const d = "safe";
+      const p = join(q, d);
+      writeFileSync(p, "y");
+    }
+  `;
+
+  test("a shadowed name later in the chain is still expanded", () => {
+    expect(targets(COLLIDING)).toBe(true);
+  });
+
+  test("PREMISE CONTROL: with no name collision the same chain already resolved", () => {
+    // Rename the local — the one feature — and the chain has no repeat. If
+    // this row were red the fixture would be failing for some other reason
+    // (depth budget, the literal being unreachable) and the row above would
+    // prove nothing about the dedup.
+    expect(targets(COLLIDING.replace(/\bd = "safe"/, 'e = "safe"').replace(/, d\)/, ", e)"))).toBe(
+      true,
+    );
+  });
+
+  test("NEGATIVE CONTROL: the same collision with no spec at the end stays false", () => {
+    // Otherwise the fix could be "keep expanding until something matches".
+    expect(targets(COLLIDING.replace("A-SPEC.md", "report.json"))).toBe(false);
+  });
+
+  test("the dedup still fires — one binding named twice is resolved once", () => {
+    // Removing the dedup entirely also makes the row above pass. This is what
+    // separates "key it by binding" from "stop deduping".
+    const site = onlySite(`const p = join(a, "x");\nwriteFileSync(join(p, p), "y");`);
+    expect(
+      site.view.match(/join\(a, "x"\)/g),
+      "the single binding `p` was expanded once per occurrence",
+    ).toHaveLength(1);
+  });
+});
+
 // ── The four "cannot tell" states, each able to go red ──────────────
 
 describe("SC-1566-SCOPE: each cannot-tell state fails if the resolver starts claiming it", () => {
