@@ -361,6 +361,15 @@ function valueIdentifiers(node: AstNode): AstNode[] {
     if (n.type === "MemberExpression" && !n.computed) skip.add(n.property as AstNode);
     if (n.type === "CallExpression" || n.type === "NewExpression") skip.add(n.callee as AstNode);
     if (n.type === "Property" && !n.computed) skip.add(n.key as AstNode);
+    // `import.meta` is a MetaProperty: two Identifier nodes that reference no
+    // binding at all. Without this they resolve to nothing and are reported as
+    // `import: not-found` / `meta: not-found` — a hole invented by the walker,
+    // in the one construct every script in this repo uses to find its own
+    // directory. `__dirname`, its CJS equivalent, is already in AMBIENT.
+    if (n.type === "MetaProperty") {
+      skip.add(n.meta as AstNode);
+      skip.add(n.property as AstNode);
+    }
   }
   for (const n of walkNodes(node)) {
     if (n.type === "Identifier" && !skip.has(n)) out.push(n);
@@ -384,12 +393,14 @@ export interface AstWriteSite {
    * True when the sweep cannot determine this target's path, so it must not
    * claim the site is not a spec write. Two causes:
    *
-   *  - the target shows NO string literal at all and has an unresolved
-   *    identifier — the path is entirely invisible. Distinct from a partial
-   *    reading like `join(root, "report.json")`, where `root` is unresolved
-   *    but the filename is not;
-   *  - the target depends on a REASSIGNABLE binding (`let`/`var`), whose value
-   *    at the write is not what its initialiser says. See `reassignable`.
+   *  - the target has an unresolved identifier at ANY depth — some component
+   *    of the path is invisible. A partial reading like
+   *    `join(root, "report.json")` IS one of these: the filename is readable
+   *    and the directory is not, and the directory is the half that decides
+   *    whether the write lands under `specs/`. An earlier predicate cleared
+   *    those on the strength of the visible literal (#1584);
+   *  - the target depends on a binding whose value set is not closed, so the
+   *    value at the write is not what its initialiser says. See `reassignable`.
    */
   opaque: boolean;
   /**
@@ -527,15 +538,9 @@ export function writeSitesIn(
 
     const unresolved: string[] = [];
     let view = target;
-    let sawLiteral = false;
     let reassignable = false;
 
     if (arg) {
-      for (const n of walkNodes(arg)) {
-        if (n.type === "Literal" && typeof n.value === "string") sawLiteral = true;
-        if (n.type === "TemplateLiteral") sawLiteral = true;
-      }
-
       // Expand identifiers transitively, resolving each from ITS OWN scope.
       //
       // The dedup is keyed on the BINDING, not on the name. Keying it on the
@@ -547,6 +552,24 @@ export function writeSitesIn(
       // binding to key on, so those are deduped by name separately.
       const seen = new Set<Binding>();
       const noted = new Set<string>();
+
+      // Record an identifier the resolver could not read a value for, AT ANY
+      // DEPTH. The push used to be gated on `depth === 0`, so a hole reached
+      // by FOLLOWING the chain — `const p = join(z, "report.json")` with `z` a
+      // parameter — left no trace: the site reported an EMPTY unresolved list,
+      // byte-identical to a fully resolved reading. A target the resolver
+      // could not follow must never read like one it followed and cleared.
+      //
+      // The depth gate's intent was readability, and the suffix keeps it: a
+      // nested hole is still tellable from a top-level one, which is what the
+      // depth gate bought at the price of dropping it entirely (#1584).
+      const note = (name: string, reason: UnresolvedReason, depth: number): void => {
+        const entry = depth === 0 ? `${name}: ${reason}` : `${name}: ${reason} (nested)`;
+        if (noted.has(entry)) return;
+        noted.add(entry);
+        unresolved.push(entry);
+      };
+
       let frontier = valueIdentifiers(arg);
       for (let depth = 0; depth < EXPANSION_DEPTH && frontier.length > 0; depth++) {
         const next: AstNode[] = [];
@@ -557,10 +580,7 @@ export function writeSitesIn(
           const binding = lookup(idScope, name, id.start);
 
           if (!binding) {
-            if (depth === 0 && !noted.has(name)) {
-              noted.add(name);
-              unresolved.push(`${name}: not-found`);
-            }
+            note(name, "not-found", depth);
             continue;
           }
           if (seen.has(binding)) continue;
@@ -582,7 +602,7 @@ export function writeSitesIn(
           // empty value list meant ONE conditional assignment erased it, and a
           // parameter whose incoming value is unknowable read as fully
           // resolved from the one branch that happened to be visible.
-          if (binding.init === null && depth === 0 && !noted.has(name)) {
+          if (binding.init === null) {
             const reason: UnresolvedReason =
               binding.kind === "param" || binding.kind === "catch"
                 ? "parameter"
@@ -591,8 +611,7 @@ export function writeSitesIn(
                   : binding.kind === "destructured"
                     ? "destructured"
                     : "no-initialiser";
-            noted.add(name);
-            unresolved.push(`${name}: ${reason}`);
+            note(name, reason, depth);
           }
 
           const values = [
@@ -612,7 +631,6 @@ export function writeSitesIn(
 
           for (const v of values) {
             view += ` ${v}`;
-            if (/["'`]/.test(v)) sawLiteral = true;
           }
           // Follow the chain: re-parse each value's identifiers from the
           // position they were written at, not the write site's.
@@ -647,7 +665,14 @@ export function writeSitesIn(
       // A reassignable binding makes the target opaque even when a literal IS
       // visible: the literal may be the initialiser while the value at the
       // write came from an assignment in a form nobody enumerated.
-      opaque: reassignable || (!sawLiteral && unresolved.length > 0),
+      //
+      // And a visible literal does not clear an invisible component. The
+      // predicate used to be `!sawLiteral && unresolved.length > 0`, so ONE
+      // readable filename cleared a target whose DIRECTORY nobody can see:
+      // `join(<unknown>, "report.json")` read as transparent. That is not a
+      // path the sweep has read, it is a filename plus a hole, and the hole is
+      // the half that decides whether the write lands under `specs/` (#1584).
+      opaque: reassignable || unresolved.length > 0,
       reassignable,
       start: node.start,
     });

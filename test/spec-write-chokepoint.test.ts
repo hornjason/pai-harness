@@ -38,14 +38,19 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import {
   CHOKEPOINT,
   NOT_A_SPEC_PATH,
+  OPAQUE_RATCHET,
   REASSIGNABLE_TARGETS,
   SWEPT_DIRS,
   SWEPT_JS_DIRS,
   WRITE_PRIMITIVES,
+  declaredOpaque,
+  opaqueDrift,
+  opaqueFingerprint,
   shellCorpus,
   shellSpecWrites,
   specChokepointViolations,
@@ -183,6 +188,106 @@ describe("#1552: the real tree routes every spec write through the chokepoint", 
     expect(
       Object.keys(REASSIGNABLE_TARGETS).filter((k) => !reassignable.has(k)),
       "these sites are no longer reassignable — delete the entry",
+    ).toEqual([]);
+  });
+
+  test("#1584: every opaque site is declared, and no declaration is stale", () => {
+    // The consumer `opaque` did not have. A target the resolver could not
+    // follow read identically to one it followed and cleared, because nothing
+    // downstream distinguished the two — a fourth state no consumer reads is
+    // the same as not having it.
+    const { added, removed } = opaqueDrift(REPO);
+    expect(
+      added,
+      `these write sites are OPAQUE — the sweep cannot establish what they ` +
+        `write — and ${OPAQUE_RATCHET} does not say so. Resolve the target, or ` +
+        `add the line verbatim to that file's \`sites\` array (#1584)`,
+    ).toEqual([]);
+    expect(
+      removed,
+      `${OPAQUE_RATCHET} declares these and the tree no longer has them. ` +
+        `Delete the line in the same commit that earned it — a ratchet nobody ` +
+        `lowers is a number nobody can interpret`,
+    ).toEqual([]);
+  });
+
+  test("#1584: the opaque ratchet refuses in both directions, and an absent one is UNMEASURED", () => {
+    // The gate above is an equality against a file I generated from the tree
+    // it measures, so on its own it cannot tell a working ratchet from one
+    // that compares two empty lists. These rows plant the three events.
+    const root = mkdtempSync(join(tmpdir(), "rg1584-ratchet-"));
+    try {
+      mkdirSync(join(root, ".claude"), { recursive: true });
+      mkdirSync(join(root, "lib"), { recursive: true });
+      const ratchet = join(root, OPAQUE_RATCHET);
+      const site = 'export function w(p: string) { writeFileSync(p, "x"); }\n';
+      writeFileSync(join(root, "lib", "w.ts"), site);
+
+      // UNMEASURED: no store at all is not an empty population.
+      expect(() => opaqueDrift(root, ["lib"])).toThrow(/UNMEASURED/);
+      writeFileSync(ratchet, JSON.stringify({ note: "", declared: [] }));
+      expect(
+        () => opaqueDrift(root, ["lib"]),
+        "a store with no `sites` key read as an empty population",
+      ).toThrow(/UNMEASURED/);
+
+      // ADDED: an undeclared opaque site.
+      writeFileSync(ratchet, JSON.stringify({ sites: [] }));
+      const first = opaqueDrift(root, ["lib"]);
+      expect(first.added).toEqual(["lib/w.ts::p | p: parameter"]);
+      expect(first.removed).toEqual([]);
+
+      // DECLARED: the same tree, written down. This is the negative control —
+      // without it the row above passes for a gate that flags everything.
+      writeFileSync(ratchet, JSON.stringify({ sites: first.added }));
+      expect(opaqueDrift(root, ["lib"])).toEqual({ added: [], removed: [] });
+
+      // CHANGED HOLES: same file, same target, a different reason. A ratchet
+      // keyed on the site alone would stay green through this.
+      writeFileSync(join(root, "lib", "w.ts"), 'import { p } from "./x";\nwriteFileSync(p, "y");\n');
+      const changed = opaqueDrift(root, ["lib"]);
+      expect(changed.added).toEqual(["lib/w.ts::p | p: import"]);
+      expect(changed.removed).toEqual(["lib/w.ts::p | p: parameter"]);
+
+      // MULTISET: three sites with the same fingerprint are three entries, so
+      // a second and third copy cannot arrive under cover of the first.
+      // Distinct function names, because re-declaring one name is not valid
+      // TypeScript and Bun's transpiler drops all but the last declaration —
+      // a fixture written that way measures the transpiler, not the ratchet.
+      writeFileSync(
+        join(root, "lib", "w.ts"),
+        ["a", "b", "c"].map((n) => site.replace(" w(", ` ${n}(`)).join(""),
+      );
+      writeFileSync(ratchet, JSON.stringify({ sites: ["lib/w.ts::p | p: parameter"] }));
+      expect(opaqueDrift(root, ["lib"]).added).toHaveLength(2);
+
+      // REMOVED: the site resolves now, and the entry outlived it.
+      writeFileSync(join(root, "lib", "w.ts"), 'const p = "out.txt";\nwriteFileSync(p, "x");\n');
+      const gone = opaqueDrift(root, ["lib"]);
+      expect(gone.added).toEqual([]);
+      expect(gone.removed).toEqual(["lib/w.ts::p | p: parameter"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("#1584: the opaque gate and the reassignable gate are separate claims", () => {
+    // Two deciders that agree are behaviourally one decider. Every
+    // reassignable site is opaque, so the populations overlap by construction
+    // and only their SIZES can say whether the wider one is doing any work.
+    const sites = writeSites(REPO).filter((s) => s.file !== CHOKEPOINT);
+    const opaque = sites.filter((s) => s.opaque);
+    const reassignable = sites.filter((s) => s.reassignable);
+    expect(reassignable.every((s) => s.opaque), "reassignable must imply opaque").toBe(true);
+    expect(
+      opaque.length,
+      "the opaque population has collapsed onto the reassignable one — the " +
+        "wider reading is no longer witnessing anything the narrow one misses",
+    ).toBeGreaterThan(reassignable.length * 2);
+    expect(declaredOpaque(REPO)).toHaveLength(opaque.length);
+    expect(
+      opaque.filter((s) => !declaredOpaque(REPO).includes(opaqueFingerprint(s))),
+      "declared by count but not by content",
     ).toEqual([]);
   });
 

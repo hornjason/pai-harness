@@ -109,8 +109,15 @@ describe("SC-1566-SCOPE: an identifier at a write site resolves by scope, not by
     // NEGATIVE CONTROL: a local declaration of the same name resolves, so the
     // unresolved list empties. Without this the row cannot distinguish "a
     // parameter is reported" from "everything is reported".
+    //
+    // `d` is DECLARED here, and that is load-bearing since #1584. This
+    // fixture used to leave it free, which made the chain hole-free only
+    // because the resolver stopped recording holes below depth 0 — the
+    // control was passing on the defect it exists to rule out.
     expect(
-      unresolved(`function f(q) { const p = join(d, "A-SPEC.md"); writeFileSync(p, "x"); }`),
+      unresolved(
+        `const d = "/tmp";\nfunction f(q) { const p = join(d, "A-SPEC.md"); writeFileSync(p, "x"); }`,
+      ),
     ).toEqual([]);
   });
 
@@ -140,7 +147,10 @@ describe("SC-1566-SCOPE: an identifier at a write site resolves by scope, not by
     expect(unresolved(`const { p } = cfg; writeFileSync(p, "x");`)).toEqual(["p: destructured"]);
 
     // NEGATIVE CONTROL: the same name bound by a plain declarator resolves.
-    expect(unresolved(`const p = cfg.p; writeFileSync(p, "x");`)).toEqual([]);
+    // `cfg` is declared, because a free `cfg` is itself a hole (#1584).
+    expect(
+      unresolved(`const cfg = { p: "out.txt" };\nconst p = cfg.p;\nwriteFileSync(p, "x");`),
+    ).toEqual([]);
   });
 
   test("shape 6 — an imported binding is UNRESOLVED, because the value is in another module", () => {
@@ -149,7 +159,9 @@ describe("SC-1566-SCOPE: an identifier at a write site resolves by scope, not by
     ).toEqual(["p: import"]);
 
     // NEGATIVE CONTROL: same identifier, declared locally instead.
-    expect(unresolved(`const p = join(d, "A-SPEC.md"); writeFileSync(p, "x");`)).toEqual([]);
+    expect(
+      unresolved(`const d = "/tmp";\nconst p = join(d, "A-SPEC.md");\nwriteFileSync(p, "x");`),
+    ).toEqual([]);
   });
 
   test("shape 7 — a reassignment between declaration and use is read as a union", () => {
@@ -269,12 +281,14 @@ describe("SC-1566-SCOPE: a reassignable binding makes a target undetermined", ()
   test("NEGATIVE CONTROL: the same shapes on a const are determined", () => {
     // Without this the row above would pass for a resolver that called
     // everything undetermined, which is the louder-not-better failure.
-    const site = onlySite('const p = join(d, "report.json");\nwriteFileSync(p, "x");');
+    // `d` is declared, because since #1584 a free `d` is a hole of its own
+    // and would make this control pass for the wrong reason.
+    const site = onlySite('const d = "/tmp";\nconst p = join(d, "report.json");\nwriteFileSync(p, "x");');
     expect(site.reassignable).toBe(false);
     expect(site.opaque).toBe(false);
     expect(specTargetingOf(site)).toBe(false);
 
-    const spec = onlySite('const p = join(d, "A-SPEC.md");\nwriteFileSync(p, "x");');
+    const spec = onlySite('const d = "/tmp";\nconst p = join(d, "A-SPEC.md");\nwriteFileSync(p, "x");');
     expect(spec.reassignable).toBe(false);
     expect(specTargetingOf(spec)).toBe(true);
   });
@@ -365,12 +379,18 @@ describe("SC-1566-SCOPE: each cannot-tell state fails if the resolver starts cla
     expect(specTargetingOf(site)).toBe(false);
   });
 
-  test("NEGATIVE CONTROL: a literal in the target makes it not opaque", () => {
-    // One feature removed — the target now shows a readable filename, so the
-    // sweep can say it is not a spec rather than that it cannot tell. Without
-    // this the row above passes for a resolver that calls everything opaque.
-    const site = onlySite(`function f(p) { writeFileSync(join(p, "report.json"), "x"); }`);
-    expect(site.unresolved, "p is still a parameter").toEqual(["p: parameter"]);
+  test("NEGATIVE CONTROL: a target with no hole in it is not opaque", () => {
+    // Without this the row above passes for a resolver that calls everything
+    // opaque.
+    //
+    // This control used to be `function f(p) { writeFileSync(join(p,
+    // "report.json"), "x"); }` asserting `opaque === false`, and that
+    // assertion WAS the defect #1584 closed: a readable filename clearing a
+    // target whose directory nobody can see. It is now pointed at a chain
+    // with no hole at all, which is the job it was always doing — the old
+    // fixture was doing it by certifying a permissive reading.
+    const site = onlySite(`const d = "/tmp";\nwriteFileSync(join(d, "report.json"), "x");`);
+    expect(site.unresolved, "nothing in this target is invisible").toEqual([]);
     expect(site.opaque).toBe(false);
     expect(specTargetingOf(site)).toBe(false);
   });
@@ -379,13 +399,135 @@ describe("SC-1566-SCOPE: each cannot-tell state fails if the resolver starts cla
     // The two inputs disagree: there IS a literal, and the path is still not
     // establishable. `reassignable` has to win, or the `let` property is
     // decorative on every target that happens to name a file.
-    const site = onlySite(`let d = tmp;\nwriteFileSync(join(d, "report.json"), "x");`);
+    const src = (kind: string): string =>
+      `const tmp = "/tmp";\n${kind} d = tmp;\nwriteFileSync(join(d, "report.json"), "x");`;
+    const site = onlySite(src("let"));
     expect(site.opaque).toBe(true);
     expect(site.reassignable).toBe(true);
 
-    // NEGATIVE CONTROL: same bytes, const.
-    const fixed = onlySite(`const d = tmp;\nwriteFileSync(join(d, "report.json"), "x");`);
+    // NEGATIVE CONTROL: same bytes, const. `tmp` is declared in both, so the
+    // only difference between the two readings is the binding kind.
+    const fixed = onlySite(src("const"));
     expect(fixed.opaque).toBe(false);
+  });
+});
+
+// ── Shape 12, from the security review on #1584 ──────────────────────
+
+describe("SC-1566-SCOPE: an invisible path component is recorded at every depth", () => {
+  /**
+   * `unresolved` was pushed only under `depth === 0`, so an identifier reached
+   * by FOLLOWING a chain left no trace at all. The site reported an empty
+   * unresolved list — byte-identical to a fully resolved reading, which is
+   * worse than being unflagged.
+   *
+   * The depth restriction existed to keep the list readable, and the fix keeps
+   * that intent: a nested one is recorded under its own reason rather than
+   * being dropped, so a reader can still tell the two apart.
+   */
+  const NESTED: [string, string][] = [
+    ["a parameter below depth 0", `function f(z) { const p = join(z, "report.json"); writeFileSync(p, "x"); }`],
+    ["an import below depth 0", `import { z } from "./x";\nconst p = join(z, "report.json");\nwriteFileSync(p, "x");`],
+    [
+      "a destructured binding below depth 0",
+      `const { z } = cfg;\nconst p = join(z, "report.json");\nwriteFileSync(p, "x");`,
+    ],
+  ];
+
+  test("a component the resolver cannot follow is never reported as resolved", () => {
+    const silent: string[] = [];
+    for (const [name, src] of NESTED) {
+      const site = onlySite(src);
+      if (site.unresolved.length === 0) silent.push(name);
+    }
+    expect(
+      silent,
+      "these targets have an unknowable directory and reported an EMPTY " +
+        "unresolved list, which reads exactly like a complete resolution",
+    ).toEqual([]);
+  });
+
+  test("a nested unresolvable is distinguishable from a top-level one", () => {
+    // The depth restriction was readability, not correctness. Recording the
+    // nested one under the SAME reason would lose that, so the fix must keep
+    // the two tellable apart or it has traded one loss for another.
+    //
+    // SAME NAME and SAME REASON on both sides, so the only thing that can
+    // separate the two readings is the depth marker. An earlier version of
+    // this row compared `p` against `z`, and the names alone made it pass —
+    // MEASURED: deleting the marker from the source left it green (M3).
+    const top = onlySite(`function f(p) { writeFileSync(p, "x"); }`).unresolved;
+    const nested = onlySite(
+      `function f(p) { const q = join(p, "report.json"); writeFileSync(q, "x"); }`,
+    ).unresolved;
+    expect(top).toEqual(["p: parameter"]);
+    expect(nested).toEqual(["p: parameter (nested)"]);
+    expect(nested).not.toEqual(top);
+  });
+
+  test("NEGATIVE CONTROL: a fully resolvable chain still reports nothing", () => {
+    // Without this the rows above pass for a resolver that reports every
+    // identifier it ever walked past. Two links deep, so it exercises the
+    // depth the rows above are about rather than only depth 0.
+    expect(
+      unresolved(
+        `const root = "/tmp";\nconst z = join(root, "out");\nconst p = join(z, "report.json");\nwriteFileSync(p, "x");`,
+      ),
+    ).toEqual([]);
+  });
+
+  test("a nested NOT-FOUND is a hole too, and says so", () => {
+    // The sibling of the three rows above: an identifier with no binding
+    // anywhere is as invisible as a parameter, and dropping the depth gate
+    // has to reach it as well or the fix covers one of two symmetric inputs
+    // again. `root` here is free — the fixture the control above repairs.
+    expect(
+      unresolved(`const z = join(root, "out");\nconst p = join(z, "report.json");\nwriteFileSync(p, "x");`),
+    ).toEqual(["root: not-found (nested)"]);
+  });
+});
+
+describe("SC-1566-SCOPE: a visible literal does not clear an invisible component", () => {
+  /**
+   * `opaque` was `reassignable || (!sawLiteral && unresolved.length > 0)`, so
+   * one readable filename cleared a target whose DIRECTORY nobody can see.
+   * `join(<unknown>, "report.json")` is not a path the sweep has read; it is a
+   * filename plus a hole.
+   */
+  const MASKED: [string, string][] = [
+    ["a parameter directory", `function f(p) { writeFileSync(join(p, "report.json"), "x"); }`],
+    ["an imported directory", `import { p } from "./x";\nwriteFileSync(join(p, "r.json"), "x");`],
+    ["a destructured directory", `const { p } = cfg;\nwriteFileSync(join(p, "r.json"), "x");`],
+  ];
+
+  test("a literal beside an unresolved identifier leaves the site opaque", () => {
+    const cleared: string[] = [];
+    for (const [name, src] of MASKED) {
+      const site = onlySite(src);
+      expect(site.unresolved.length, `${name}: the hole is recorded`).toBeGreaterThan(0);
+      if (!site.opaque) cleared.push(name);
+    }
+    expect(cleared, "a readable filename cleared a target with an unreadable directory").toEqual(
+      [],
+    );
+  });
+
+  test("NEGATIVE CONTROL: a target with no holes is not opaque", () => {
+    // The population must not become uniformly opaque — that is louder, not
+    // more accurate, and it would make the row above pass vacuously.
+    const site = onlySite(
+      `const root = "/tmp";\nconst p = join(root, "report.json");\nwriteFileSync(p, "x");`,
+    );
+    expect(site.opaque).toBe(false);
+    expect(site.unresolved).toEqual([]);
+    expect(specTargetingOf(site)).toBe(false);
+  });
+
+  test("NEGATIVE CONTROL: opaque does not make a visible spec path stop reading as one", () => {
+    // Over-reporting opacity must not cost the sweep its positive reading.
+    const site = onlySite(`function f(p) { writeFileSync(join(p, "A-SPEC.md"), "x"); }`);
+    expect(site.opaque).toBe(true);
+    expect(specTargetingOf(site)).toBe(true);
   });
 });
 
@@ -538,8 +680,11 @@ describe("SC-1566-SCOPE: an assignment never completes a value set it did not st
 
   test("NEGATIVE CONTROL: a const with an initialiser is still determined", () => {
     // The whole population must not become undetermined — that is louder, not
-    // more accurate, and it would make every row above pass vacuously.
-    const site = onlySite('const p = join(d, "report.json");\nwriteFileSync(p, "x");');
+    // more accurate, and it would make every row above pass vacuously. `d` is
+    // declared: since #1584 a free identifier is a hole in its own right, and
+    // leaving it free would make this control assert the old permissive
+    // reading rather than the const property it is here for.
+    const site = onlySite('const d = "/tmp";\nconst p = join(d, "report.json");\nwriteFileSync(p, "x");');
     expect(site.reassignable).toBe(false);
     expect(site.opaque).toBe(false);
     expect(site.unresolved).toEqual([]);

@@ -69,6 +69,7 @@ The constant is in the test file itself unless stated otherwise.
 | a computed (non-literal) anchor cutting `ship.js` | spell the anchor as a string literal — **no exemption list by design** |
 | a fixed-character `.slice(at, at + N)` in `test/` | use `structuralCut` from `lib/source-slice.ts` — no exemption list |
 | a new direct `.claude/rungate.json` path read | `.claude/config-access-ratchet.json` (absent file = zero allowed) |
+| a write site whose target the resolver cannot follow, in `lib`,`scripts`,`gates`,`bin`,`hooks`,`workflows`,`.github` | `.claude/spec-write-opaque-ratchet.json` — the failure prints the line to add; absent file = UNMEASURED, not zero |
 | ticking an SC with no coverage claim — i.e. running `sync-sc-status` | `BANKED`, `test/ticked-sc-cover.test.ts` |
 | ticking a `(behavioral)` SC — same event | `BEHAVIORAL_TICKED_RATCHET`, `test/behavioral-sc-ratchet.test.ts` |
 | ticking or unticking ANY SC, whether or not a test claims it | `UNCLAIMED_RATCHET` **and** `CLAIMED_UNBINDABLE`, `test/sc-binding-split.test.ts` — both are equalities, so they refuse a fall as well as a rise |
