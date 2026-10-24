@@ -276,6 +276,12 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
       live: ["REPO"],
       reference: ["REPO", "dir", "root"],
     },
+    "spec-template-overwrite.test.ts": {
+      // `root`, same shape. #1549 — the second instance, which is the point:
+      // the first was predicted to exist and now the pattern is ordinary.
+      live: [],
+      reference: ["root"],
+    },
   };
 
   function isCarvedIdentDivergence(file: string, live: string[], reference: string[]): boolean {
