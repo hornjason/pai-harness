@@ -243,8 +243,42 @@ describe("#338: driven against the corpus the threshold came from", () => {
     if (files.length === 0) {
       // No local run history — a fresh clone or CI. Saying so beats a test
       // that silently passes over an empty corpus, which is the shape this
-      // whole issue is about.
-      expect(existsSync(RUNS)).toBe(false);
+      // whole issue is about. What it says is that the store holds no RUN,
+      // not that the store does not exist.
+      //
+      // `expect(existsSync(RUNS)).toBe(false)` was the first spelling and it
+      // is an assertion about a path this suite does not own. `~/.rungate`
+      // is the documented fallback for `RUNGATE_WORK_DIR`, and a sibling
+      // case in the same shard exercises exactly that fallback — so on a CI
+      // runner the directory exists, holds no run, and this row went red
+      // having measured nothing about evidence portability.
+      //
+      // It is a SHARD-ORDER failure, which is the worst kind to inherit:
+      // `bun test --shard=n/4` splits the file list, so adding ANY test file
+      // anywhere in the tree moves one file across each boundary and can put
+      // a creator ahead of this reader for the first time
+      // (`.claude/rules/self-referential-tests.md`, Tier 1). It reddened on
+      // #1487, whose diff is three new files and no edit to this one.
+      //
+      // The property the first spelling was reaching for survives: a store
+      // holding RUNS but no readable state is a corpus that vanished, and
+      // that still fails. An empty or run-less store is a machine that has
+      // not run the harness, which is true of every CI runner.
+      // What replaces it is a REPORT and not a weaker assertion, because the
+      // only assertion available here is vacuous: anything this branch could
+      // scan, `stateFiles()` has already scanned, so a second `expect` over
+      // the same bytes is two empty collections compared — the third shape in
+      // `.claude/rules/checks-must-be-able-to-fail.md`. An UNMEASURED that
+      // says so is reportable; a check that cannot fail is not.
+      const entries = existsSync(RUNS)
+        ? readdirSync(RUNS).filter(d => !d.startsWith("."))
+        : [];
+      console.warn(
+        `#338 UNMEASURED: no run under ${RUNS} carries a workflow-state.json ` +
+          `(${existsSync(RUNS) ? `the store exists and holds ${entries.length} entr(ies)` : "no run store on this machine"}). ` +
+          "The corpus-driven half of this case measured nothing here; the " +
+          "hand-written cases above still bind the rule.",
+      );
       return;
     }
     let withCommand = 0;
