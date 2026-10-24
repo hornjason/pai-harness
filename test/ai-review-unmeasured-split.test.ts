@@ -437,6 +437,21 @@ describe("AC-U8 (#1486): the rewrite splices, and refuses when it cannot", () =>
     expect(reading.rounds.map(r => r.measured)).toEqual([false, true]);
   });
 
+  test("AC-U8: the rewrite is COMPACT, because the window is sized in characters", () => {
+    // `buildPersistScript` serialises with `jq -c`, and the ledger is a
+    // 12-round window against GitHub's 65,536-character body limit. A
+    // rewrite with an indent inflates every round and makes the window
+    // evict earlier — which reads as ordinary truncation and is not.
+    // The first real write on #1470 did exactly this before it was caught.
+    const out = replaceLedgerJsonBlock(body, {
+      rounds: [{ round: 1, findings: null }],
+      truncated: 0,
+    })!;
+    const fenced = out.split("```json\n")[1]!.split("\n```")[0]!;
+    expect(fenced, "the rewritten block was pretty-printed").not.toContain("\n");
+    expect(JSON.parse(fenced)).toEqual({ rounds: [{ round: 1, findings: null }], truncated: 0 });
+  });
+
   test("AC-U8: a body with no fence is a refusal, never a fresh ledger", () => {
     expect(replaceLedgerJsonBlock("no fence here", { rounds: [] })).toBeNull();
     expect(replaceLedgerJsonBlock(null, { rounds: [] })).toBeNull();

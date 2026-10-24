@@ -350,5 +350,12 @@ export function replaceLedgerJsonBlock(body: unknown, doc: unknown): string | nu
   if (start === -1) return null;
   const close = body.indexOf("\n```", start);
   if (close === -1) return null;
-  return `${body.slice(0, start + 1)}${JSON.stringify(doc, null, 2)}${body.slice(close)}`;
+  // COMPACT, because `buildPersistScript` writes it with `jq -c` and the
+  // ledger is a 12-round window sized against GitHub's 65,536-character
+  // comment body limit. Pretty-printing inflates every round, so a rewrite
+  // that re-serialised with an indent would make the window start evicting
+  // earlier — and an eviction brought on by whitespace is indistinguishable
+  // from the ordinary truncation the `truncated` count describes. Caught on
+  // #1487 after the first real write, which did exactly that.
+  return `${body.slice(0, start + 1)}${JSON.stringify(doc)}${body.slice(close)}`;
 }
