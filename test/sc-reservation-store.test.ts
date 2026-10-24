@@ -466,23 +466,97 @@ describe("#1363: a block declares which namespace its integers belong to", () =>
     ).toBe(ceiling + 1);
 
     const raw = JSON.parse(readFileSync(join(root, "specs", "sc-reservations.json"), "utf-8")) as {
-      reservations: Array<{ owner: string; namespace?: string }>;
+      reservations: Array<{ owner: string; from: number; to: number; namespace?: string }>;
     };
     expect(raw.reservations.length, "the reader and the file disagree about how many blocks there are")
       .toBe(r.blocks.length);
     const untagged = raw.reservations.filter(e => e.namespace === undefined);
     expect(untagged.length, "no untagged block is left, so the absent-means-SC default is unexercised here")
       .toBeGreaterThan(0);
-    for (const declared of raw.reservations) {
-      const block = r.blocks.find(b => b.owner === declared.owner);
-      expect(block, `${declared.owner}: the reader dropped a declared block`).toBeDefined();
-      expect(
-        block!.namespace,
-        declared.namespace === undefined
-          ? `${declared.owner}: an absent namespace did not resolve to SC`
-          : `${declared.owner}: the reader rewrote a declared namespace`,
-      ).toBe(declared.namespace ?? "SC");
-    }
+    // **Paired by INDEX, not by owner** (#1542). This loop used to find its
+    // block with `r.blocks.find(b => b.owner === declared.owner)`, and an owner
+    // is not what identifies a block: the store is keyed by nothing, and a
+    // branch holding ids in two namespaces declares two entries under one owner
+    // — `.claude/rules/parallel-sessions.md` records `rg/filing-gate-four`
+    // holding `FG-45..59` and `AR-20` as the incident the `namespace` field
+    // exists for. Against such a store `find` returned the FIRST of the two for
+    // both iterations and the second row asserted `"FG" === "AR"`, reporting the
+    // reader as having rewritten a namespace it never touched.
+    //
+    // The same key made the row vacuous from the other side, which is the half
+    // the docblock above was already worried about: while every owner is unique
+    // the lookup can only return the block the entry was taken from, so a reader
+    // that rewrote EVERY namespace to `SC` would still be matched against a
+    // correctly-tagged copy of itself. Index pairing is what makes the mutation
+    // in the PR body — forcing `namespace: SC` in `readScReservations` — land on
+    // the AR entry by name.
+    //
+    // Index pairing is sound because `readScReservations` builds its result with
+    // `declared.map(...)` and sorts nothing (the only sort is on a local copy
+    // inside `overlapFault`), and it is ASSERTED rather than assumed: the
+    // owner/from/to agreement below is the order-preservation reading, and it is
+    // a reading this row did not take at all before.
+    // Collected rather than thrown per row, so the failure names EVERY entry
+    // the reader misread instead of only the first. Under the mutation in the
+    // PR body this is the difference between a message naming `rg/1344` and a
+    // message naming the AR block the row was reinstated for.
+    const misread: string[] = [];
+    raw.reservations.forEach((declared, i) => {
+      const block = r.blocks[i];
+      if (block === undefined) {
+        misread.push(`${declared.owner} [${i}]: the reader dropped a declared block`);
+        return;
+      }
+      if (block.owner !== declared.owner || block.from !== declared.from || block.to !== declared.to) {
+        misread.push(
+          `[${i}]: declared ${declared.owner} ${declared.from}-${declared.to}, ` +
+            `read ${block.owner} ${block.from}-${block.to}`,
+        );
+      }
+      const want = declared.namespace ?? "SC";
+      if (block.namespace !== want) {
+        misread.push(
+          declared.namespace === undefined
+            ? `${declared.owner} [${i}]: an absent namespace resolved to ${block.namespace}, not SC`
+            : `${declared.owner} [${i}]: a declared ${declared.namespace} block was read as ${block.namespace}`,
+        );
+      }
+    });
+    expect(
+      misread,
+      "the reader and specs/sc-reservations.json disagree about the live blocks, entry by entry",
+    ).toEqual([]);
+  });
+
+  test("one owner holding two namespaces is read as two blocks, each with its own", () => {
+    // #1542. The arrangement above, as a fixture, so the property does not
+    // depend on the live store happening to contain a duplicate owner — the
+    // entries that exercise it today are deleted when their branches merge,
+    // which is how the live row went vacuous in the first place.
+    //
+    // This is also the case that says the duplicate owner is LEGAL. It is not a
+    // store defect to be normalised away: `lib/create-sc.ts` filters to the SC
+    // namespace BEFORE calling `reservationFor`, so the owner below has no SC
+    // block and allocates above the ceiling, which is what the FG case further
+    // up already asserts from the other direction.
+    const owner = "rg/two-namespaces";
+    const root = tree({
+      specIds: [],
+      store: storeOf(
+        { owner, from: LOW, to: HIGH, namespace: "FG" },
+        { owner, from: LOW, to: HIGH, namespace: "AR" },
+      ),
+    });
+    const r = readScReservations(root);
+    expect(r.status, "a store declaring one owner in two namespaces was refused").toBe("read");
+    expect(
+      r.blocks.map(b => b.namespace),
+      "the reader collapsed two blocks of one owner, or reordered them",
+    ).toEqual(["FG", "AR"]);
+    expect(
+      allocateAgainstReservations(1, r.blocks, owner, new Set()),
+      "an owner with no SC block was answered out of its FG or AR block",
+    ).toBe(1);
   });
 
   test("an unknown namespace refuses by name, and the store is not partially read", () => {
