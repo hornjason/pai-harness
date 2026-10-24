@@ -593,6 +593,36 @@ describe("#1552: the sweep's reading is what it claims", () => {
     );
   });
 
+  test("a template literal's ${…} hole is code, and its identifiers are chased", () => {
+    // The round-2 AI-review finding on this PR. Blanking the whole template
+    // span erased `outDir`, so the view had nothing to chase, the literal
+    // text named no spec, and a raw write straight to a spec path reported
+    // nothing — "passes on an input it never looked at", in the sweep built
+    // to end exactly that.
+    const root = tempRoot("template");
+    plant(
+      root,
+      "lib/tpl.ts",
+      ["const outDir = specsDir;", "writeFileSync(`${outDir}/REPORT.md`, body);"].join("\n"),
+    );
+    const found = specChokepointViolations(root, ["lib"]);
+    expect(found.map((s) => s.line)).toEqual([2]);
+  });
+
+  test("a template's literal text is still not a source of identifiers", () => {
+    // The other half: keeping the holes must not re-open the `AGENTS.md` →
+    // `md` bleed the blanking was added for.
+    const root = tempRoot("template-neg");
+    plant(
+      root,
+      "lib/tpl2.ts",
+      ["const md = buildSpecMap();", "const dir = base;", "writeFileSync(`${dir}/AGENTS.md`, v);"].join(
+        "\n",
+      ),
+    );
+    expect(specChokepointViolations(root, ["lib"])).toEqual([]);
+  });
+
   test("an identifier inside a string literal is not expanded", () => {
     // `join(root, "AGENTS.md")` yielded `md`, which matched an unrelated
     // `const md = …` elsewhere in the file and spliced its text into the

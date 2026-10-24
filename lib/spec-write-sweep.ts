@@ -306,9 +306,22 @@ export function identifiersIn(text: string): string[] {
   let i = 0;
   while (i < text.length) {
     const c = text[i];
-    if (c === '"' || c === "'" || c === "`") {
+    if (c === '"' || c === "'") {
       const end = skipQuoted(text, i, c);
       bare += " ".repeat(end - i);
+      i = end;
+      continue;
+    }
+    if (c === "`") {
+      // A template's LITERAL text is blanked for the reason above, but its
+      // `${…}` holes are code and are kept. Blanking the whole span loses
+      // `outDir` out of `` `${outDir}/REPORT.md` ``, so the view has no
+      // identifier to chase, the literal text names no spec, and a raw write
+      // straight to a spec path reports nothing. Found by the AI review on
+      // this PR; `blankComments` never had the bug because it keeps the
+      // literal, and only this harvester erases it.
+      const end = skipQuoted(text, i, c);
+      bare += templateHoles(text.slice(i, end));
       i = end;
       continue;
     }
@@ -316,6 +329,44 @@ export function identifiersIn(text: string): string[] {
     i++;
   }
   return [...bare.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)].map((m) => m[0]);
+}
+
+/** A template literal with everything outside its `${…}` holes blanked. */
+function templateHoles(span: string): string {
+  const out: string[] = span.split("").map(() => " ");
+  let i = 1;
+  while (i < span.length) {
+    if (span[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (span[i] === "$" && span[i + 1] === "{") {
+      let depth = 1;
+      let j = i + 2;
+      while (j < span.length && depth > 0) {
+        const ch = span[j];
+        if (ch === "`") {
+          const e = skipQuoted(span, j, "`");
+          const inner = templateHoles(span.slice(j, e));
+          for (let k = 0; k < inner.length; k++) out[j + k] = inner[k];
+          j = e;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          j = skipQuoted(span, j, ch);
+          continue;
+        }
+        if (ch === "{") depth++;
+        else if (ch === "}" && --depth === 0) break;
+        out[j] = ch;
+        j++;
+      }
+      i = j + 1;
+      continue;
+    }
+    i++;
+  }
+  return out.join("");
 }
 
 /**
