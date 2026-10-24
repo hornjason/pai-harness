@@ -282,7 +282,11 @@
         "treeReviewed": "f59037fc3b8afda1da13e73ee419791afa6701aa",
         "run": "40091835904",
         "n": 2,
+        "armReading": "DETECTED",
+        "armReadingWhy": "Scored and interpreted AGREE here. The blocking finding is at line 5, which IS a changed line and is inside the declared plant range [4, 5], so it is attributable to the arm and DETECTED means what the table says it means. Recorded explicitly rather than left absent: a field present on the clean case and missing on this one would make the clean case look specially pleaded (#1534).",
+        "armReadingIsAnINTERPRETATION": "armReading is a human reading of what the draw can support. scoreOutcome below is run.ts's output and is never hand-edited. On this case they agree; on the clean case they do not. The two no-payload draws carry no armInterpretation deliberately: there is no payload to interpret, their scoreOutcome is already UNMEASURED, and a second field that could only ever repeat it would be two deciders that agree.",
         "outcomeSet": ["DETECTED", "UNMEASURED (#1478 no payload)", "UNMEASURED (#1478 no payload)", "DETECTED"],
+        "outcomeSetIsTheSCORERSOutput": "Each entry is a scoreOutcome verbatim. Read armReading above for what the draws support.",
         "changedLinesInTheDiff": [5],
         "draws": [
           {
@@ -293,6 +297,8 @@
             "blocking": 1,
             "advisory": 0,
             "plantHits": 1,
+            "armInterpretation": "DETECTED",
+            "armInterpretationWhy": "the blocking finding is on a changed line, inside the declared plant range — attributable to the arm, so scored and interpreted agree",
             "findings": [
               {
                 "severity": "high",
@@ -327,6 +333,8 @@
             "blocking": 1,
             "advisory": 0,
             "plantHits": 1,
+            "armInterpretation": "DETECTED",
+            "armInterpretationWhy": "the blocking finding is on a changed line, inside the declared plant range — attributable to the arm, so scored and interpreted agree",
             "findings": [
               {
                 "severity": "high",
@@ -348,7 +356,12 @@
         "treeReviewed": "8335e01fe16f173d76f76f059f517ae48491ce7f",
         "run": "40091837673",
         "n": 2,
+        "armReading": "UNMEASURED",
+        "armReadingWhy": "Scored and interpreted DISAGREE here, and the interpretation is the one to read. score returned FIRED because a blocking finding was present on a clean subject, which is the rule. But the blocking finding is high at line 19 in both draws, line 19 is NOT a changed line, and its content is byte-identical in baseline.ts — so it is true of the pull request's BASE. A true finding occupied the blocking slot, so the draw cannot say whether the reviewer would falsely fire on the ARM, which is the only thing the precision half measures. A reading that could not be taken is not one that passed, and symmetrically not one that failed: calling it FIRED attributes a precision failure that was never observed (#1534).",
+        "armReadingIsAnINTERPRETATION": "armReading is a human reading of what the draw can support. scoreOutcome below is run.ts's output and is never hand-edited — a hand-written UNMEASURED in that field would make this file claim score returned something it did not, and then nothing on disk could tell a scored result from a correction of one.",
+        "whyTheSCORERWasNotTaughtThisRule": "'A blocking finding on an unchanged line should not count as FIRED' is a real candidate fix and it is one of the two options under decision in #1533. Teaching score here would pre-decide that and silently re-scale every reading banked under the current rule — DETECTED x4, QUIET x2, FIRED x2 — leaving the file a mix of two scales, which is #1533's own AC-2.",
         "outcomeSet": ["FIRED", "FIRED"],
+        "outcomeSetIsTheSCORERSOutput": "Each entry is a scoreOutcome verbatim, and FIRED is correct under the rule score applies today. It is NOT the reading: see armReading above.",
         "changedLinesInTheDiff": [7, 8, 9, 10, 11, 22, 25, 28, 30, 38, 41],
         "draws": [
           {
@@ -359,6 +372,8 @@
             "blocking": 1,
             "advisory": 1,
             "plantHits": 0,
+            "armInterpretation": "UNMEASURED",
+            "armInterpretationWhy": "the blocking finding is on an UNCHANGED line whose content is byte-identical in baseline.ts, so it is true of the base and not attributable to the arm — the draw cannot say whether the reviewer would falsely fire on the arm",
             "findings": [
               {
                 "severity": "high",
@@ -384,6 +399,8 @@
             "blocking": 1,
             "advisory": 1,
             "plantHits": 0,
+            "armInterpretation": "UNMEASURED",
+            "armInterpretationWhy": "the blocking finding is on an UNCHANGED line whose content is byte-identical in baseline.ts, so it is true of the base and not attributable to the arm — the draw cannot say whether the reviewer would falsely fire on the arm",
             "findings": [
               {
                 "severity": "high",
@@ -405,24 +422,24 @@
       }
     ],
     "theCleanArmFIREDAndTheCAUSEIsNotTheARM": {
-      "whatScoreSays": "FIRED, both draws. By the control's rule a blocking finding on a clean subject is a precision failure, and FIRED is red.",
+      "whatScoreSays": "FIRED, both draws, and that is correct under the rule score applies today: a blocking finding on a clean subject is a precision failure. What score cannot see is WHERE the finding sits, which is what makes this draw UNMEASURED rather than red — see armReading on the case, and #1534.",
       "whatTheFindingsAreAbout": "Neither finding is about the arm under measurement. The clean arm's changes are at new-side lines 7-11, 22, 25, 28, 30, 38 and 41 — the renamed locals and the extracted looksLikePath predicate. The reviewer flagged lines 19 and 34, and NEITHER is a changed line: both are unchanged context, byte-identical in the pull request's base.",
       "andBothFindingsAreTRUE": "Measured by running the subjects rather than by reading them. isFullSuite('  bun test') returns false in BOTH baseline.ts and clean.ts, and isFullSuite('bun test 2>&1 test/foo.test.ts') returns true in both. The reviewer found two real, pre-existing defects in the compacted subject copy. It did not invent them and it did not object to the refactor.",
-      "soTheReadingIs": "A precision reading of red, whose cause is the reviewer reviewing the whole FILE rather than the DIFF. The control cannot tell a precision failure about the arm from a true observation about the subject — which is the sentence the critical@39 confound already earned, arriving again from a different direction.",
+      "soTheReadingIs": "UNMEASURED, not a precision failure — see armReading on the clean case. The cause is the reviewer reviewing the whole FILE rather than the DIFF, so a true finding occupies the blocking slot and the draw cannot reach the question the precision half asks. The control cannot tell a precision failure about the arm from a true observation about the subject — which is the sentence the critical@39 confound already earned, arriving again from a different direction. Corrected by #1534: this field previously read 'a precision reading of red', which attributes a failure that was never observed.",
       "whatWasNOTDone": "The subject was not repaired, and must not be. It is supposed to carry its plant, and #1524 bars repairing it when a reviewer flags it. A finding against a control subject is a reading, not a bug report. Equally, AI_REVIEW_SEVERITIES was not changed and nothing was added to REVIEW.md's Do not flag list — shaping the instrument to produce a nicer reading is the one move that would make the whole measurement worthless.",
       "itWasPREDICTEDBeforeItWasDrawn": "README.md warned, in a section written before this reading and merged as 3cfceb05, that this subject carries a second confound 'one severity band from breaking the clean arm': isFullSuite returns false on any command it cannot parse and its own docblock calls false the permissive answer, so a reviewer can truthfully flag it as fail-open; priced medium it costs an advisory slot, priced high or critical it makes suite-lock-redirect/clean score FIRED on a finding that has nothing to do with the plant. Both draws priced it HIGH and both scored FIRED. The line-19 finding's own failure_scenario quotes the same docblock sentence the prediction quotes. The prediction named a mechanism and a severity threshold before the draw, and the draw matched both.",
       "theConfoundThisIsNOT": "This is not the critical@39 confound #1513 removed. That one came from staging a compacted copy at a path whose live callers import the real module, and it is absent from every payload here — no finding in any of the four measured draws objects that the module no longer exports what its callers import. This one comes from the compacted copy carrying latent defects of its own on lines the diff does not touch.",
-      "whatWouldSeparateThem": "A clean candidate whose baseline the reviewer has nothing true to say about, or a reading that scopes the finding set to changed lines before scoring. Neither exists today; both are changes to the instrument and are out of scope for a measurement issue. Filed as a gap rather than fixed here."
+      "whatWouldSeparateThem": "A clean candidate whose baseline the reviewer has nothing true to say about, or a reading that scopes the finding set to changed lines before scoring. Neither exists today; both are changes to the instrument and are out of scope for a measurement issue. They are the two options under decision in #1533, which names the cost of each."
     },
     "theCriticalAt39ConfoundIsAbsent": "No payload in any of the four measured draws contains a finding of the critical@39 shape. That is consistent with the eight readings after #1513 and is a second subject's worth of evidence for it.",
     "whatThisIsNOTGroundsFor": {
       "doNotTickCRCA4": "Two draws is not a variance estimate, and these two draws per arm are attempts of a SINGLE workflow run on a byte-identical tree — the same weakness #1513 recorded, not a new independent sample. The reviewer is a sampled instrument (#1290, CRC-B3). .claude/rules/claiming-sc-coverage.md is explicit. Nothing is ticked on the back of this.",
-      "andTheCleanArmIsRED": "Even read generously, half of this subject's reading is a failing outcome. A control with one green arm and one red arm is not evidence that the gate discriminates; it is evidence of exactly what it says — DETECTED twice on the plant, FIRED twice on the clean variant.",
+      "andTheCleanArmIsUNMEASURED": "Half of this subject's reading could not be taken. A control with one green arm and one UNMEASURED arm is not evidence that the gate discriminates — recall was measured and precision was not. Corrected by #1534: this field previously called the clean arm RED, which overstates the reading in the opposite direction from the usual error but is still an attribution the draw does not support. UNMEASURED fails the run and is not a pass; it is simply not a precision failure.",
       "theRecallSideIsStillOnlyTwoPoints": "DETECTED twice at a fresh round 1 says the reviewer located this silent logic defect, at the declared line, in both draws it produced a payload for. It is not a bound on how often it would."
     },
     "gaps": [
       "suite-lock-redirect/clean-loop has N = 0. It is the second clean subject (#1225), deliberately a different KIND of refactor — a control-flow rewrite rather than a rename-and-extract — and #1524's acceptance named only planted and clean. One clean subject cannot carry a rate.",
-      "The clean arm's FIRED is uninterpretable as a precision number until the reviewer's finding set can be scoped to the diff, or until the subject's baseline carries nothing true to say. Recorded as a reading, not resolved.",
+      "The clean arm is UNMEASURED: no precision number can be read from it until the reviewer's finding set can be scoped to the diff, or until the subject's baseline carries nothing true to say. The choice between those two is #1533. Recorded as a reading, not resolved.",
       "Both arms were drawn from one workflow run each. Independent runs on fresh pairs are the axis that would make N mean what N usually means."
     ]
   },
