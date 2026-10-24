@@ -43,7 +43,7 @@
  */
 
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, copyFileSync } from "fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -59,7 +59,6 @@ import {
 import {
   AI_REVIEW_BLOCK_VERDICT,
   AI_REVIEW_OUTCOME_LINE,
-  AI_REVIEW_PASS_VERDICT,
   main,
   readAiReviewFindings,
 } from "../lib/scaffold/ai-review-findings";
@@ -316,7 +315,10 @@ describe("JG-6: main withholds, blocks and refuses through the gate", () => {
 
   test("JG-6b: a ballot the group voted down turns BLOCKED into CLEAN", () => {
     const f = blocking();
-    const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_PASS_VERDICT }));
+    // BLOCK, not PASS. The reviewer never saw the ballot, so its verdict is
+    // honest and being overruled by the group is not a contradiction —
+    // exactly the reasoning `wouldBlock` applies to CRC-B7's demotion.
+    const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
     const ballots = fixture(ballotPayload({ [keyOf(f)]: ballotFor(VERIFIER_QUORUM - 1) }));
     const { code, lines } = withLedgerResult(() => captureBoth(() => main([payload, "", ballots], aiReviewJuryGate)));
     expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} CLEAN`))).toBe(true);
@@ -353,7 +355,7 @@ describe("JG-6: main withholds, blocks and refuses through the gate", () => {
 
   test("JG-6f: a withheld finding is demoted, never dropped", () => {
     const f = blocking();
-    const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_PASS_VERDICT }));
+    const payload = fixture(JSON.stringify({ findings: [f], verdict: AI_REVIEW_BLOCK_VERDICT }));
     const ballots = fixture(ballotPayload({ [keyOf(f)]: ballotFor(VERIFIER_QUORUM - 1) }));
     const { lines } = withLedgerResult(() => captureBoth(() => main([payload, "", ballots], aiReviewJuryGate)));
     expect(lines.join("\n")).toContain(String(f.summary));
@@ -383,6 +385,52 @@ function withLedgerResult<T>(fn: () => T): T {
 const AGREE_BINDING = "const agree = votes.filter(v => v.real).length;";
 const AGREE_MUTANT = "const agree = groupSize;";
 
+const LIB = join(import.meta.dir, "..", "lib");
+
+/**
+ * A copy of the gate whose `lib/finding-jury.ts` is `mutate(source)` and
+ * whose every OTHER dependency is the real one in this tree.
+ *
+ * Copying the dependency closure by hand was the first attempt and it is the
+ * wrong shape: `lib/finding-arbiter.ts` imports `./content-hash`, which
+ * imports more, and a file the copier forgets dies on module resolution —
+ * which reads exactly like the mutation being rejected on the merits rather
+ * than like a copier bug. So the gate's sibling specifiers are rewritten to
+ * absolute paths into this tree and only `./finding-jury` is redirected at
+ * the mutant.
+ *
+ * Both halves are asserted, not assumed: the mutation changed the source,
+ * and the rewrite changed the gate. A battery whose mutant did not apply
+ * reports a clean row (`.claude/rules/checks-must-be-able-to-fail.md`, the
+ * seventh shape).
+ */
+async function mutantGate(
+  name: string,
+  mutate: (source: string) => string,
+): Promise<typeof import("../lib/ai-review-jury")> {
+  const dir = join(SCRATCH, `mutant-${name}`);
+  mkdirSync(dir, { recursive: true });
+
+  const jurySource = readFileSync(join(LIB, "finding-jury.ts"), "utf-8");
+  const mutated = mutate(jurySource);
+  expect(mutated, `the mutation for ${name} did not change lib/finding-jury.ts`).not.toBe(
+    jurySource,
+  );
+  writeFileSync(join(dir, "finding-jury.ts"), mutated);
+
+  const gateSource = readFileSync(join(LIB, "ai-review-jury.ts"), "utf-8");
+  const rewritten = gateSource
+    .replace(/from "\.\/scaffold\//g, `from "${join(LIB, "scaffold")}/`)
+    .replace(/from "\.\/(?!finding-jury")/g, `from "${LIB}/`);
+  expect(rewritten, `the gate copy for ${name} kept a relative sibling import`).not.toBe(
+    gateSource,
+  );
+  expect(rewritten).toContain('from "./finding-jury"');
+  writeFileSync(join(dir, "ai-review-jury.ts"), rewritten);
+
+  return (await import(join(dir, "ai-review-jury.ts"))) as typeof import("../lib/ai-review-jury");
+}
+
 describe("JG-7: a quorum wired to a constant is told apart from a vote", () => {
   test("JG-7a: the binding the mutation rewrites appears exactly once", () => {
     const source = readFileSync(join(import.meta.dir, "..", "lib", "finding-jury.ts"), "utf-8");
@@ -390,33 +438,7 @@ describe("JG-7: a quorum wired to a constant is told apart from a vote", () => {
   });
 
   test("JG-7b: real withholds the finding; the constant-quorum mutant blocks it", async () => {
-    const dir = join(SCRATCH, "mutant-agree");
-    mkdirSync(dir, { recursive: true });
-    const juryPath = join(import.meta.dir, "..", "lib", "finding-jury.ts");
-    const source = readFileSync(juryPath, "utf-8");
-    const mutated = source.replace(AGREE_BINDING, AGREE_MUTANT);
-    expect(mutated).not.toBe(source);
-    writeFileSync(join(dir, "finding-jury.ts"), mutated);
-    copyFileSync(
-      join(import.meta.dir, "..", "lib", "ai-review-jury.ts"),
-      join(dir, "ai-review-jury.ts"),
-    );
-    // The gate's own siblings, carried so the mutant resolves. A mutant that
-    // failed to load would surface every finding, which reads exactly like
-    // the counterfeit succeeding.
-    for (const name of ["finding-arbiter.ts", "issue-filing-gate.ts"]) {
-      copyFileSync(join(import.meta.dir, "..", "lib", name), join(dir, name));
-    }
-    mkdirSync(join(dir, "scaffold"), { recursive: true });
-    for (const name of ["ai-review-findings.ts", "ai-review-step.ts"]) {
-      copyFileSync(
-        join(import.meta.dir, "..", "lib", "scaffold", name),
-        join(dir, "scaffold", name),
-      );
-    }
-
-    const mutant = (await import(join(dir, "ai-review-jury.ts"))) as typeof import("../lib/ai-review-jury");
-    // The mutant loaded and reached the mechanism: it produced a reading.
+    const mutant = await mutantGate("agree", s => s.replace(AGREE_BINDING, AGREE_MUTANT));
     const f = blocking();
     const votes = { [keyOf(f)]: ballotFor(VERIFIER_QUORUM - 1) };
 
@@ -443,32 +465,9 @@ describe("JG-7: a quorum wired to a constant is told apart from a vote", () => {
 
 describe("JG-8: the suite is not green with a group of one", () => {
   test("JG-8: VERIFIER_GROUP_SIZE = 1 breaks the withheld case", async () => {
-    const dir = join(SCRATCH, "mutant-size-one");
-    mkdirSync(dir, { recursive: true });
-    const juryPath = join(import.meta.dir, "..", "lib", "finding-jury.ts");
-    const source = readFileSync(juryPath, "utf-8");
-    const mutated = source.replace(
-      "export const VERIFIER_GROUP_SIZE = 3;",
-      "export const VERIFIER_GROUP_SIZE = 1;",
+    const mutant = await mutantGate("size-one", s =>
+      s.replace("export const VERIFIER_GROUP_SIZE = 3;", "export const VERIFIER_GROUP_SIZE = 1;"),
     );
-    expect(mutated).not.toBe(source);
-    writeFileSync(join(dir, "finding-jury.ts"), mutated);
-    copyFileSync(
-      join(import.meta.dir, "..", "lib", "ai-review-jury.ts"),
-      join(dir, "ai-review-jury.ts"),
-    );
-    for (const name of ["finding-arbiter.ts", "issue-filing-gate.ts"]) {
-      copyFileSync(join(import.meta.dir, "..", "lib", name), join(dir, name));
-    }
-    mkdirSync(join(dir, "scaffold"), { recursive: true });
-    for (const name of ["ai-review-findings.ts", "ai-review-step.ts"]) {
-      copyFileSync(
-        join(import.meta.dir, "..", "lib", "scaffold", name),
-        join(dir, "scaffold", name),
-      );
-    }
-
-    const mutant = (await import(join(dir, "ai-review-jury.ts"))) as typeof import("../lib/ai-review-jury");
     const f = blocking();
     // The SAME three-verifier ballot JG-2a withholds on.
     const votes = { [keyOf(f)]: ballotFor(VERIFIER_QUORUM - 1) };

@@ -372,7 +372,23 @@ export type AiReviewUnmeasuredReason =
    * Comparing against a list the reader cannot normalise would demote every
    * finding, so the list being unreadable is a reading that failed.
    */
-  | "CHANGED_FILES_UNREADABLE";
+  | "CHANGED_FILES_UNREADABLE"
+  /**
+   * A verifier ballot was named and could not be read (CRC-B4). An empty
+   * ballot set withholds nothing, which is indistinguishable from a group
+   * that upheld every finding, so a source this reader could not parse is a
+   * reading that failed rather than a quorum that agreed.
+   */
+  | "BALLOT_UNREADABLE"
+  /**
+   * A verifier ballot was named and no gate was wired to count it.
+   *
+   * The counting lives in `lib/ai-review-jury.ts` and is INJECTED rather
+   * than imported — see `main` — so an entry point that forgets to supply it
+   * would otherwise adjudicate the ballot away in silence. "Told to take a
+   * vote and could not" is UNMEASURED, and the finding keeps blocking.
+   */
+  | "BALLOT_UNWIRED";
 
 /**
  * The fields a BLOCKING finding must carry, derived from the one contract map
@@ -496,6 +512,7 @@ function unmeasured(
 export function readAiReviewFindings(
   raw: string | null,
   changedFiles?: readonly string[],
+  withheld?: Readonly<Record<string, string>>,
 ): AiReviewFindingsReading {
   if (raw === null) {
     return unmeasured(["FINDINGS_FILE_ABSENT"], ["no findings payload was produced"]);
@@ -571,7 +588,12 @@ export function readAiReviewFindings(
   const reasons: AiReviewUnmeasuredReason[] = [];
   const detail: string[] = [];
   const blocking: unknown[] = [];
-  /** How many findings CRC-B7 demoted. See the `agreed` computation below. */
+  /**
+   * How many findings a demotion removed from the blocking set — CRC-B7's
+   * Pre-existing tag and CRC-B4's verifier quorum both. See the `agreed`
+   * computation below for why the reviewer's word is compared against the
+   * count BEFORE either of them ran.
+   */
   let demoted = 0;
 
   list.forEach((item, i) => {
@@ -662,6 +684,29 @@ export function readAiReviewFindings(
           return;
         }
       }
+      // CRC-B4, and LAST of the three demotions, deliberately. The verifier
+      // group votes on the findings that would otherwise block, so it must
+      // see the set the earlier stages leave behind rather than the raw
+      // severity list — spending a full agent context on a finding the
+      // contract check or CRC-B7 has already removed is the budget this
+      // criterion is careful about.
+      //
+      // It DEMOTES, it does not drop (CRC-B8). The finding stays in
+      // `reported`, so `advisoryReported` carries it into the notice and a
+      // maintainer still sees what the group voted down.
+      //
+      // Absent from the map means "not withheld", which is the only reading
+      // available here: a finding the group could not be convened for is
+      // never in this map at all, because the gate keeps it blocking. The
+      // two states are separated where the ballot is counted, not here.
+      if (withheld !== undefined) {
+        const voted = withheld[advisoryKey(finding)];
+        if (voted !== undefined) {
+          demoted += 1;
+          detail.push(`finding ${i} is withheld by the verifier group: ${voted}`);
+          return;
+        }
+      }
       blocking.push(item);
       detail.push(renderFinding(i, finding));
     }
@@ -689,13 +734,18 @@ export function readAiReviewFindings(
   // The decision, and the only place it is made. `verdict` is compared to it
   // afterwards; it never contributes to it.
   const blocked = blocking.length > 0;
-  // The agreement is measured BEFORE CRC-B7's demotion, not after it.
+  // The agreement is measured BEFORE the demotions, not after them.
   //
   // The reviewer is not given the pull request's file list, so it cannot know
   // a finding is pre-existing and its `BLOCK` over one is honest. Comparing
   // its word against the post-demotion count would turn every successful
   // demotion into a CONTRADICTION — the arm would fire on the mechanism
   // working, which is the loudest possible way to be wrong.
+  //
+  // CRC-B4's withholding counts into the SAME number, for the same reason
+  // one step further out: the reviewer never saw the ballot either. A
+  // `BLOCK` over a finding a later verifier group voted down is an honest
+  // verdict that was overruled, not a reviewer disagreeing with itself.
   //
   // The real contradiction #1178 exists for is untouched: a `BLOCK` over a
   // payload whose findings are ALL advisory has `demoted === 0`, so it still
@@ -806,6 +856,7 @@ export function readChangedFiles(path: string): string[] | null {
 export function readAiReviewFindingsFile(
   path: string,
   changedFiles?: readonly string[],
+  withheld?: Readonly<Record<string, string>>,
 ): AiReviewFindingsReading {
   let raw: string;
   try {
@@ -820,7 +871,7 @@ export function readAiReviewFindingsFile(
       [`the findings payload at ${path} could not be read: ${(e as Error).message}`],
     );
   }
-  return readAiReviewFindings(raw, changedFiles);
+  return readAiReviewFindings(raw, changedFiles, withheld);
 }
 
 /** The sentence a refusal prints, or `null` when there is nothing to refuse. */
@@ -883,13 +934,48 @@ export function aiReviewExitCode(reading: AiReviewFindingsReading): number {
   return reading.outcome === "CLEAN" ? 0 : AI_REVIEW_REQUIRED_EXIT;
 }
 
+/** The annotation title the verifier quorum's own reading is printed under. */
+export const AI_REVIEW_JURY_NOTICE_TITLE = "AI review verifier quorum";
+
+/**
+ * The verifier quorum, as `main` consumes it (CRC-B4).
+ *
+ * **Injected, not imported**, and the reason is mechanical rather than
+ * stylistic. This module is copied into a scratch directory by three
+ * mutation batteries, which carry its one relative dependency —
+ * `./ai-review-step`, which has none — along with it. `lib/ai-review-jury.ts`
+ * pulls in the finding arbiter and the filing gate behind it, and a mutant
+ * that dies on module resolution reports zero findings, which reads exactly
+ * like a guard behaving differently
+ * (`.claude/rules/self-referential-tests.md`, Tier 1, last row).
+ *
+ * The seam is closed rather than left open: a ballot path with no gate wired
+ * is `BALLOT_UNWIRED`, which is UNMEASURED and refuses. So the two entry
+ * points — `scripts/ai-review-findings.ts`, which supplies the gate, and
+ * this module's own `import.meta.main`, which does not — cannot diverge into
+ * one that ignores the ballot and reports a pass.
+ */
+export interface AiReviewJuryGate {
+  (
+    blocking: readonly unknown[],
+    ballotPath: string,
+  ): {
+    /** Findings the group voted down, by key, with the sentence saying so. */
+    withheld: Readonly<Record<string, string>>;
+    /** Non-null when the ballot source itself could not be read. */
+    unreadable: string | null;
+    /** One sentence per finding voted on. */
+    detail: readonly string[];
+  };
+}
+
 /**
  * The CLI the generated workflow step runs: one argument, the payload's path.
  *
  * Returns the exit code rather than calling `process.exit`, so a test can run
  * it in-process as well as spawn it.
  */
-export function main(argv: string[]): number {
+export function main(argv: string[], jury: AiReviewJuryGate | null = null): number {
   const path = argv[0];
   // CRC-B7. The SECOND argument is a path to the pull request's changed
   // files, and it is optional: a caller that does not pass one gets exactly
@@ -903,7 +989,13 @@ export function main(argv: string[]): number {
   const changedPath = argv[1];
   const changed =
     changedPath === undefined || changedPath === "" ? undefined : readChangedFiles(changedPath);
-  const reading =
+  // CRC-B4. The THIRD argument is a path to the verifier group's ballot, and
+  // it is optional on the same terms as the second: a caller that passes
+  // none gets exactly the reading this module gave before the quorum was
+  // wired. What it may NOT do is pass one and have it quietly ignored, which
+  // is what `BALLOT_UNWIRED` below refuses.
+  const ballotPath = argv[2];
+  const reading0 =
     path === undefined || path === ""
       ? unmeasured(
           ["FINDINGS_FILE_ABSENT"],
@@ -919,6 +1011,51 @@ export function main(argv: string[]): number {
             ],
           )
         : readAiReviewFindingsFile(path, changed);
+
+  // CRC-B4, in two passes of the SAME function and never two deciders.
+  //
+  // Pass one has no ballot, so `blockingReported` is the existing decider's
+  // own answer to "which of these block". That list — and nothing re-derived
+  // from the severities — is what the group's votes are looked up for, which
+  // is the criterion's first clause: a quorum over the advisory tail spends
+  // a full agent context per nit. Pass two is the identical read with the
+  // withheld keys subtracted, so the jury only ever REMOVES from a set it
+  // did not compute.
+  //
+  // Reading the payload twice costs one `readFileSync` of a file the step
+  // just wrote. A single-pass version would have to answer "does this block"
+  // inside the gate, which is the fourth shape in
+  // `.claude/rules/checks-must-be-able-to-fail.md`: two deciders agreeing,
+  // of which a mutation leaves either one holding every case up.
+  let reading = reading0;
+  let juryDetail: readonly string[] = [];
+  if (ballotPath !== undefined && ballotPath !== "") {
+    if (jury === null) {
+      reading = unmeasured(
+        ["BALLOT_UNWIRED"],
+        [
+          `a verifier ballot was named at ${ballotPath} and this entry point has no quorum ` +
+            `wired to count it, so no finding could be withheld and none could be upheld. ` +
+            `That is a vote that was not taken, not a group that agreed`,
+        ],
+        reading0.reported,
+      );
+    } else if (
+      path !== undefined &&
+      path !== "" &&
+      changed !== null &&
+      reading0.blockingReported !== null &&
+      reading0.blockingReported.length > 0
+    ) {
+      const gate = jury(reading0.blockingReported, ballotPath);
+      juryDetail = gate.detail;
+      if (gate.unreadable !== null) {
+        reading = unmeasured(["BALLOT_UNREADABLE"], [gate.unreadable], reading0.reported);
+      } else {
+        reading = readAiReviewFindingsFile(path, changed, gate.withheld);
+      }
+    }
+  }
 
   // FIRST, and before any branch below can return. The generated workflow step
   // greps its own output for this prefix and will not read the exit code as a
@@ -945,6 +1082,20 @@ export function main(argv: string[]): number {
   const advisory = advisoryNotice(reading);
   if (advisory !== null) {
     console.log(`::notice title=${AI_REVIEW_ADVISORY_TITLE}::${escapeAnnotation(advisory)}`);
+  }
+
+  // The quorum's own reading, on its own title, and emitted whatever the
+  // outcome was. A withheld finding is the one row nothing downstream can
+  // reconstruct — it is never commented on, never fixed and never filed —
+  // and the ledger it is written to lives on the runner and dies with the
+  // job. This annotation is the only part of it that outlives the run.
+  if (juryDetail.length > 0) {
+    console.log(
+      `::notice title=${AI_REVIEW_JURY_NOTICE_TITLE}::${escapeAnnotation(
+        `A separate verifier group voted on the ${juryDetail.length} finding(s) that would ` +
+          `otherwise block. ${juryDetail.join("; ")}.`,
+      )}`,
+    );
   }
 
   return aiReviewExitCode(reading);

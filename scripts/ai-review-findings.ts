@@ -39,7 +39,25 @@
  * here would be a second non-zero exit that the mutation cannot reach, and
  * the case would go green over a refusal that no longer came from the
  * constant.
+ *
+ * ## The one thing this file supplies rather than forwards (CRC-B4)
+ *
+ * `aiReviewJuryGate` — the verifier quorum that counts the ballot before a
+ * finding is allowed to block. It is handed in here because the reader
+ * cannot import it: three mutation batteries copy
+ * `lib/scaffold/ai-review-findings.ts` into a scratch directory carrying
+ * only its one dependency, and this gate pulls the finding arbiter and the
+ * filing gate behind it. A mutant that died on module resolution would
+ * report zero findings, which reads exactly like a guard behaving
+ * differently.
+ *
+ * That seam cannot become a bypass. `main` refuses a ballot path it has no
+ * gate for — `BALLOT_UNWIRED`, UNMEASURED, non-zero — so an entry point that
+ * forgot this argument fails loudly instead of adjudicating the vote away.
+ * `test/ai-review-jury-gate.test.ts`'s `JG-6d` is that case, and
+ * `test/ai-review-findings-command.test.ts` holds this file to passing it.
  */
+import { aiReviewJuryGate } from "../lib/ai-review-jury";
 import { main } from "../lib/scaffold/ai-review-findings";
 
-process.exit(main(process.argv.slice(2)));
+process.exit(main(process.argv.slice(2), aiReviewJuryGate));
