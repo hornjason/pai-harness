@@ -288,6 +288,144 @@ export function recordTestBaseline(
   }
 }
 
+/**
+ * What /prove knows about the state of the world before the change (#1540).
+ *
+ * Three facts, not two. `beforeState.type` admits `"none"`, and
+ * `reference/prompts/goal-skill.md` tells /goal to write exactly that when it
+ * looked and there was nothing worth capturing — so "looked, found nothing"
+ * is a measurement. "Nobody looked" is not, and the two were spelled the same.
+ */
+export type BeforeStateReading =
+  | { status: "captured"; type: string; path: string | null; capturedAt: string; description?: string }
+  | { status: "declared-none"; capturedAt: string; description?: string }
+  | { status: "unmeasured"; reason: string };
+
+/** The `beforeState.type` values `gates/schema.ts` admits. */
+const BEFORE_STATE_TYPES = ["text", "screenshot", "api", "data", "none"];
+
+/**
+ * Read `beforeState` off a workflow state, saying which of the three it found.
+ *
+ * Measured on 2026-10-24: of the STANDARD and THOROUGH runs in the
+ * `~/.rungate` corpus, **none** carried a `beforeState` — the field has
+ * readers in three files and a producer in none, and every run since it was
+ * introduced has taken the absent branch. That is not the thing this function
+ * fixes; nothing here writes a before-state either. What it fixes is that the
+ * absent branch was indistinguishable from a measured one, so the gap could
+ * not be seen from outside and nothing reported it.
+ *
+ * A present-but-malformed field is UNMEASURED rather than captured. Reading
+ * an unknown shape as a measurement would put an undefined `type` into the
+ * evidence artefact and claim a comparison off it.
+ */
+export function readBeforeState(state: Record<string, any>): BeforeStateReading {
+  const bs = state?.beforeState;
+  if (bs === undefined || bs === null) {
+    return {
+      status: "unmeasured",
+      reason:
+        "no beforeState on the workflow state — /goal captures it, and nothing " +
+        "in this tree writes one (#1540)",
+    };
+  }
+  if (typeof bs !== "object" || Array.isArray(bs) || typeof bs.capturedAt !== "string" ||
+      typeof bs.type !== "string" || !BEFORE_STATE_TYPES.includes(bs.type)) {
+    return {
+      status: "unmeasured",
+      reason:
+        `beforeState is present but not readable — expected {type, capturedAt} with type one of ` +
+        `${BEFORE_STATE_TYPES.join("|")}, got ${JSON.stringify(bs)} (#1540)`,
+    };
+  }
+  if (bs.type === "none") {
+    return { status: "declared-none", capturedAt: bs.capturedAt, description: bs.description };
+  }
+  return {
+    status: "captured",
+    type: bs.type,
+    path: typeof bs.path === "string" ? bs.path : null,
+    capturedAt: bs.capturedAt,
+    description: bs.description,
+  };
+}
+
+/** The reading as a status string, for anything that records or reports one. */
+function beforeStateStatus(reading: BeforeStateReading): string {
+  return reading.status === "captured" ? "CAPTURED"
+    : reading.status === "declared-none" ? "DECLARED_NONE"
+    : "UNMEASURED";
+}
+
+/**
+ * Write a reading onto the durable workflow state, in place (#1540).
+ *
+ * Exported and pure for the same reason `recordTestBaseline` is: a reading
+ * that is honest buys nothing if the line recording it quietly drops the
+ * distinction. The two keys are mutually exclusive both ways — a stale reason
+ * beside a fresh status gives a consumer two answers and `??` picks one.
+ */
+export function recordBeforeState(
+  state: Record<string, any>,
+  reading: BeforeStateReading,
+): void {
+  state.beforeStateStatus = beforeStateStatus(reading);
+  if (reading.status === "unmeasured") {
+    state.beforeStateUnmeasured = reading.reason;
+  } else {
+    delete state.beforeStateUnmeasured;
+  }
+}
+
+/**
+ * The `beforeEvidence` block of `prove-evidence.json` (#1540).
+ *
+ * The old shape was `wf.beforeState ?? { type: "none", path: null,
+ * capturedAt: <now>, description: "no before-state captured" }`. `"none"` is
+ * a value /goal legitimately writes, so a run nobody measured and a run
+ * measured as empty differed only by a timestamp. UNMEASURED carries no
+ * `type` at all — there is no honest value to put there.
+ */
+export function beforeEvidenceFor(reading: BeforeStateReading): Record<string, any> {
+  if (reading.status === "unmeasured") {
+    return { status: "UNMEASURED", reason: reading.reason };
+  }
+  if (reading.status === "declared-none") {
+    return {
+      status: "DECLARED_NONE", type: "none", path: null,
+      capturedAt: reading.capturedAt,
+      description: reading.description ?? "/goal captured no before-state for this run",
+    };
+  }
+  return {
+    status: "CAPTURED", type: reading.type, path: reading.path,
+    capturedAt: reading.capturedAt, description: reading.description,
+  };
+}
+
+/**
+ * `prove-evidence.json`'s `comparisonSummary` (#1540).
+ *
+ * It used to read `"${passed}/${total} criteria passed"` unconditionally — a
+ * true sentence about the ACs, and no answer to the question the field name
+ * asks. The counts are kept because they are the only thing it carried; what
+ * is added is whether a comparison happened at all.
+ */
+export function comparisonSummaryFor(
+  reading: BeforeStateReading,
+  passed: number,
+  total: number,
+): string {
+  const counts = `${passed}/${total} criteria passed`;
+  if (reading.status === "unmeasured") {
+    return `before/after comparison UNMEASURED — ${reading.reason}; ${counts}`;
+  }
+  if (reading.status === "declared-none") {
+    return `no before/after comparison: /goal declared beforeState.type "none" at ${reading.capturedAt}; ${counts}`;
+  }
+  return `compared against the ${reading.type} before-state captured at ${reading.capturedAt}; ${counts}`;
+}
+
 /** What a gate run does about the tests that existed when it last looked. */
 export type CensusVerdict =
   | { kind: "unmeasured"; reason: string }
@@ -1349,10 +1487,21 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
     }
   }
 
+  // #1540: `state.beforeState || null` was the same silent default one field
+  // over — a run nobody captured a before-state for, and a run whose /goal
+  // declared there was nothing to capture, both arrived at the reproducer as
+  // `null`. The reading travels beside the raw field so the prompt can say
+  // which it got, and the raw field stays for a producer that may yet exist.
+  const beforeReading = readBeforeState(state);
+  if (beforeReading.status === "unmeasured") {
+    console.warn(`WARN: prove gate — before/after comparison UNMEASURED: ${beforeReading.reason}`);
+  }
+
   const proveInput = {
     issueBody, issueTitle, issueNumber: issue,
     acs: state.acs || [], apiBase, uiBase,
-    beforeState: state.beforeState || null, projectRoot,
+    beforeState: state.beforeState || null,
+    beforeEvidence: beforeEvidenceFor(beforeReading), projectRoot,
     // #304: the liveness readings, including the ones that measured nothing.
     // UNMEASURED has to be durable or relaxing the refusal above is a silent
     // fail-open.
@@ -1363,6 +1512,9 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
   // writing only there would make the record as ephemeral as the stdout line
   // it replaced.
   state.liveness = proveInput.liveness;
+  // Same argument as liveness, for the same reason (#1540): UNMEASURED has to
+  // be durable or the gap is visible only in a stdout line nobody reads back.
+  recordBeforeState(state, beforeReading);
   writeFileSync(stateFile, JSON.stringify(state, null, 2));
   const proveInputPath = join(workDir, "prove-input.json");
   writeFileSync(proveInputPath, JSON.stringify(proveInput, null, 2));
