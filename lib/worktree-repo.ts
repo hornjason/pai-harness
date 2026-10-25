@@ -45,6 +45,24 @@ export interface RemoteReading {
   url: string | null;
   /** Non-null when the read itself failed — git missing, path gone, non-zero exit. */
   error: string | null;
+  /**
+   * `true` when the repository was READ and has no `origin` (#1595).
+   *
+   * **One field carrying two facts is what this splits.** `error` is set for
+   * a git timeout, a missing git, a path that is gone — and for a perfectly
+   * healthy checkout that simply has no remote configured. A caller deciding
+   * anything on "is there an origin" therefore cannot tell a fact from a
+   * failure to look, and `lib/issue-filing-gate.ts` was one: a ten-second
+   * git timeout re-bucketed a real checkout into the shared non-checkout
+   * allowance, silently, in the field that decides the cap's denominator.
+   * Same shape as `#1406`'s `got` on `anchor_text` and as this gate's own
+   * `UNMEASURED_CAP`.
+   *
+   * `false` whenever the question was not settled — including every read
+   * failure. A caller that wants "absent" gets it only when absence was
+   * observed, which is the direction an unanswered question has to fail in.
+   */
+  missing: boolean;
 }
 
 /** How a worktree's identity reading can go wrong. One value per refusal kind. */
@@ -166,7 +184,7 @@ export function redactRemote(remote: string): string {
  */
 export function readWorktreeRemote(worktreePath: string): RemoteReading {
   if (typeof worktreePath !== "string" || !worktreePath.trim()) {
-    return { url: null, error: "no worktree path was given" };
+    return { url: null, error: "no worktree path was given", missing: false };
   }
   const got = spawnSync("git", ["-C", worktreePath, "remote", "get-url", "origin"], {
     timeout: 10_000,
@@ -177,13 +195,44 @@ export function readWorktreeRemote(worktreePath: string): RemoteReading {
   // appear to be a git repository" — so the error string is a second channel
   // for the same credential the URL carries, and a caller that redacted only
   // `url` would leak it through `error`.
-  if (got.error) return { url: null, error: redactRemote(got.error.message) };
+  // A spawn-level failure — timeout, git not on PATH — settles nothing about
+  // whether an origin exists, so `missing` stays false and nothing may read
+  // this as absence.
+  if (got.error) return { url: null, error: redactRemote(got.error.message), missing: false };
   if (got.status !== 0) {
     const said = String(got.stderr || "").trim().split("\n")[0] || `git exited ${got.status}`;
-    return { url: null, error: redactRemote(said) };
+    return { url: null, error: redactRemote(said), missing: absentOrigin(worktreePath) };
   }
   const url = String(got.stdout || "").trim();
-  return url ? { url, error: null } : { url: null, error: "git printed no url" };
+  return url
+    ? { url, error: null, missing: false }
+    : { url: null, error: "git printed no url", missing: false };
+}
+
+/**
+ * Was the repository readable and simply without an `origin`?
+ *
+ * **A second command rather than a match on git's stderr.** `git remote
+ * get-url` exits non-zero for a missing remote, a path that is not a
+ * repository and a corrupt one alike, and the only thing separating them in
+ * its own output is English prose that varies by git version and locale — a
+ * detector narrower than what it detects.
+ *
+ * `git config --get` has the distinction in its EXIT CODE by specification:
+ * **1 means the key is not set**, and every other non-zero code is a
+ * failure. So the answer comes from the contract rather than from text.
+ *
+ * Only ever called on the error path, so the ordinary read still costs one
+ * command. False for anything that is not an unambiguous "the key is not
+ * set", including a second failure: an unanswered question is not absence.
+ */
+function absentOrigin(worktreePath: string): boolean {
+  const got = spawnSync("git", ["-C", worktreePath, "config", "--get", "remote.origin.url"], {
+    timeout: 10_000,
+    encoding: "utf-8",
+  });
+  if (got.error) return false;
+  return got.status === 1 && String(got.stdout || "").trim() === "";
 }
 
 /**

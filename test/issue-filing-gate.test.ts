@@ -78,6 +78,7 @@ import {
   ledgerTitle,
   MAX_LEDGER_TITLE,
   overCapReason,
+  namesARepository,
   runIdFor,
   INTENT_KEY_SUFFIX,
   INTENT_PENDING,
@@ -89,6 +90,7 @@ import {
 } from "../lib/issue-filing-gate";
 import { DROPPED_CATEGORIES } from "../lib/finding-jury";
 import { toplevel } from "../lib/launch-base";
+import type { RemoteReading } from "../lib/worktree-repo";
 import {
   readFindingOutcomes,
   summariseFindingOutcomes,
@@ -412,6 +414,19 @@ function everyLedgerRow(): FilingLedgerRow[] {
 function ledgerRows(): FilingLedgerRow[] {
   return everyLedgerRow().filter(r => r.intent !== true);
 }
+
+/**
+ * `runIdFor`'s answer as a bare string, for the cases that are not about
+ * the reading itself.
+ *
+ * `runIdFor` returns three states — a checkout, the shared bucket, and
+ * `null` for a remote read that FAILED — because collapsing the third into
+ * the second moves a real checkout into the shared allowance whenever git
+ * times out. Only `FG-174` is about that; everywhere else the run is an
+ * input and this unwraps it. The sentinel is deliberately not a real run id,
+ * so a case that reaches it by accident cannot quietly match anything.
+ */
+const runOf = (dir: string): string => runIdFor(dir).run ?? "UNREADABLE-RUN";
 
 /** The reservations — see `ledgerRows()`. */
 function ledgerIntents(): FilingLedgerRow[] {
@@ -3025,7 +3040,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
     // than quietly weakened — the pre-read is now a fast path and the
     // ordinal is the decider, which is a design question for the loop
     // refactor and not something to settle by editing an assertion.
-    const spent = [{ ...spentRow, run: real.runIdFor(dir) }];
+    const spent = [{ ...spentRow, run: real.runIdFor(dir).run! }];
     const realWrote: unknown[] = [];
     const mutantWrote: unknown[] = [];
     expect((await runOn(real, spent, realWrote)).rows[0].refusal).toBe("OVER_CAP");
@@ -3088,7 +3103,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
         refiledAfter: null,
         exemption: "out-of-pr-diff" as const,
         intent: true,
-        run: real.runIdFor(dir),
+        run: real.runIdFor(dir).run!,
       },
     ];
     const labelled = `${filing} --label ${FILING_OVERRIDE_LABEL}`;
@@ -3178,7 +3193,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
         refiledAfter: null,
         exemption: "out-of-pr-diff" as const,
         intent: true,
-        run: real.runIdFor(dir),
+        run: real.runIdFor(dir).run!,
       },
     ];
 
@@ -3343,7 +3358,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
  * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
  * the half FG-91 surrendered. Nothing else in the file moved.
  */
-describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
+describe("FG-143..FG-175: a numeric cap, which no argument defeats", () => {
   const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
   const AT = "2026-10-24T12:00:00.000Z";
 
@@ -3425,7 +3440,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
       mkdirSync(dir, { recursive: true });
       checkoutAt(dir);
     }
-    expect(runIdFor(runA), "two checkouts, two runs").not.toBe(runIdFor(runB));
+    expect(runOf(runA), "two checkouts, two runs").not.toBe(runOf(runB));
   });
 
   test("FG-143: over the cap is REFUSED even with a perfect declaration", async () => {
@@ -3433,7 +3448,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     // names a claim, declares a reason from the closed list and collides
     // with nothing. Every judgement in this file clears it. The count does
     // not, and no sentence it could carry would change that.
-    const r = await gateIn(second, runA, [landed(runIdFor(runA))]);
+    const r = await gateIn(second, runA, [landed(runOf(runA))]);
     expect(r.rows[0].refusal).toBe("OVER_CAP");
     expect(r.rows[0].exemption, "the declaration was READ, and did not help").toBe("out-of-pr-diff");
     expect(r.refusal ?? "", "and the refusal says so in as many words").toContain(
@@ -3452,7 +3467,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
   test("FG-145 CONTROL: a DIFFERENT run has its own allowance", async () => {
     // Pins FG-143 to the RUN rather than to the ledger having any row in
     // it at all. Same ledger, same filing, different directory.
-    const spent = [landed(runIdFor(runA))];
+    const spent = [landed(runOf(runA))];
     expect((await gateIn(second, runA, spent)).rows[0].refusal).toBe("OVER_CAP");
     expect((await gateIn(second, runB, spent)).rows[0].refusal, "runB has filed nothing").toBeNull();
   });
@@ -3465,7 +3480,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     const r = await gateIn(
       `${second} --label ${FILING_OVERRIDE_LABEL}`,
       runA,
-      [landed(runIdFor(runA))],
+      [landed(runOf(runA))],
     );
     expect(r.rows[0].overridden, "the label is read and it waives nothing here").toBe(false);
     expect(r.rows[0].emitted).toBe(false);
@@ -3479,7 +3494,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     // it. FG-146 did not move, because the cap held either way — what a
     // refusal SAYS and what it DOES were separate readings, and the thing
     // the agent acts on is the sentence at the bottom.
-    const over = (await gateIn(second, runA, [landed(runIdFor(runA))])).refusal ?? "";
+    const over = (await gateIn(second, runA, [landed(runOf(runA))])).refusal ?? "";
     expect(over).toContain(`--label ${FILING_OVERRIDE_LABEL} does NOT waive this one`);
     expect(over, "and nothing in it tells the agent to re-run with the label").not.toContain(
       `re-run with --label ${FILING_OVERRIDE_LABEL}`,
@@ -3503,7 +3518,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     // refusal and the filing landed with the run over its allowance. Delete
     // one line, add one flag, beat the gate.
     const cmd = `${undeclaredSecond} --label ${FILING_OVERRIDE_LABEL}`;
-    const over = (await gateIn(cmd, runA, [landed(runIdFor(runA))])).rows[0];
+    const over = (await gateIn(cmd, runA, [landed(runOf(runA))])).rows[0];
     expect(over.refusal).toBe("OVER_CAP");
     expect(over.overridden, "the label waives nothing once the cap has converted").toBe(false);
     expect(over.emitted).toBe(false);
@@ -3546,7 +3561,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
         readTarget: async () => onPr,
       });
 
-    const spent = [landed(runIdFor(runA))];
+    const spent = [landed(runOf(runA))];
     for (const [why, cmd] of [
       ["DUPLICATE", `${dup} ${L}`],
       ["NO_CLAIM", `${noClaim} ${L}`],
@@ -3602,8 +3617,8 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     const two = join(scratch, "non-checkout-two");
     mkdirSync(one, { recursive: true });
     mkdirSync(two, { recursive: true });
-    expect(runIdFor(one), "two bare directories are one run").toBe(NON_CHECKOUT_RUN);
-    expect(runIdFor(two)).toBe(NON_CHECKOUT_RUN);
+    expect(runOf(one), "two bare directories are one run").toBe(NON_CHECKOUT_RUN);
+    expect(runOf(two)).toBe(NON_CHECKOUT_RUN);
 
     const spentElsewhere = [landed(NON_CHECKOUT_RUN)];
     const r = await filingGate(second, {
@@ -3617,7 +3632,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
 
     // CONTROL: a real CHECKOUT is still its own run, so this is a bucket for
     // the unidentifiable rather than a cap collapsed onto one allowance.
-    expect(runIdFor(runA)).not.toBe(NON_CHECKOUT_RUN);
+    expect(runOf(runA)).not.toBe(NON_CHECKOUT_RUN);
     const checkout = await filingGate(second, {
       projectRoot: runA,
       now: AT,
@@ -3673,7 +3688,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     // against the cap, which is the number this change exists to expose.
     const old = new Date(Date.parse(AT) - RUN_WINDOW_MS - 1000).toISOString();
     const refusedBefore = (refusal: "OVER_CAP" | "DUPLICATE"): FilingLedgerRow => ({
-      ...landed(runIdFor(runA), old),
+      ...landed(runOf(runA), old),
       title: "zqxjCapTwo miscounts its own retries",
       emitted: false,
       disposition: "DROP",
@@ -3727,10 +3742,10 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     // `checkoutTop` refuses a non-checkout, so these two lines are the
     // fixture's premise — distinct toplevels — and not a claim about the gate.
     expect(checkoutTop(one), "and the two really are distinct ones").not.toBe(checkoutTop(two));
-    expect(runIdFor(one), "yet both are the bucket, because neither has an origin").toBe(
+    expect(runOf(one), "yet both are the bucket, because neither has an origin").toBe(
       NON_CHECKOUT_RUN,
     );
-    expect(runIdFor(two)).toBe(NON_CHECKOUT_RUN);
+    expect(runOf(two)).toBe(NON_CHECKOUT_RUN);
 
     const spentThere = [landed(NON_CHECKOUT_RUN)];
     const second2 = await filingGate(second, {
@@ -3755,7 +3770,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
         env: { ...process.env },
       }).status,
     ).toBe(0);
-    expect(runIdFor(two), "an origin is what makes a checkout nameable").toBe(checkoutTop(two));
+    expect(runOf(two), "an origin is what makes a checkout nameable").toBe(checkoutTop(two));
     const withOrigin = await filingGate(second, {
       projectRoot: two,
       now: AT,
@@ -3789,7 +3804,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     expect(intents[0].withheldBy).toBe(INTENT_PENDING);
     // The two rows are one decision, and the key is the join.
     expect(intents[0].key).toBe(`${decisions[0].key}${INTENT_KEY_SUFFIX}`);
-    expect(intents[0].run, "and the reservation names the run it spent").toBe(runIdFor(dir));
+    expect(intents[0].run, "and the reservation names the run it spent").toBe(runOf(dir));
 
     // CONTROL, one axis — the same hook, a filing that is REFUSED. It
     // reserves nothing, which is what makes FG-147 true of the new counter
@@ -3887,11 +3902,11 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     expect(sink, "both reserved, and the loser released").toHaveLength(3);
     expect(sink[2].releases, "the release names the slot it returns").toBe(sink[1].key);
     expect(
-      intentOrdinal(sink.slice(0, 2), sink[1].key, runIdFor(dir), Date.parse(AT)),
+      intentOrdinal(sink.slice(0, 2), sink[1].key, runOf(dir), Date.parse(AT)),
       "and the loser's position before the release is what refused it",
     ).toBe(2);
     expect(
-      intentsInRun(sink, runIdFor(dir), Date.parse(AT)),
+      intentsInRun(sink, runOf(dir), Date.parse(AT)),
       "after it, the run has spent exactly the one filing that landed",
     ).toBe(1);
   });
@@ -3909,7 +3924,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     // The readings stay separate even though the verdict is now shared,
     // because an operator repairs a different half of the same file.
     const dir = freshRun();
-    const run = runIdFor(dir);
+    const run = runOf(dir);
     const row = { ...landed(run), intent: false, emitted: true, withheldBy: null };
 
     expect(
@@ -4007,7 +4022,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     // the reachable strandings are the concurrent loser (`FG-166`) and this
     // one.
     const dir = freshRun();
-    const run = runIdFor(dir);
+    const run = runOf(dir);
     const sink: FilingLedgerRow[] = [];
     const append = (row: FilingLedgerRow) => {
       sink.push(row);
@@ -4168,7 +4183,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     // registered after the command-level decision, so a refused clause never
     // writes one.
     const refusedRow = {
-      ...landed(runIdFor(runA)),
+      ...landed(runOf(runA)),
       intent: false,
       emitted: false,
       refusal: "DUPLICATE" as const,
@@ -4182,16 +4197,16 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
     // Without the window a long-lived checkout is barred for ever, and the
     // window is 24h because every number #1595 measured is a per-day one.
     const old = new Date(Date.parse(AT) - RUN_WINDOW_MS - 1000).toISOString();
-    expect((await gateIn(second, runA, [landed(runIdFor(runA), old)])).rows[0].refusal).toBeNull();
+    expect((await gateIn(second, runA, [landed(runOf(runA), old)])).rows[0].refusal).toBeNull();
     const justInside = new Date(Date.parse(AT) - RUN_WINDOW_MS + 1000).toISOString();
     expect(
-      (await gateIn(second, runA, [landed(runIdFor(runA), justInside)])).rows[0].refusal,
+      (await gateIn(second, runA, [landed(runOf(runA), justInside)])).rows[0].refusal,
       "and a filing one second inside the window still counts",
     ).toBe("OVER_CAP");
   });
 
   test("FG-149: `intentsInRun` is the one binding, and it counts what it says", () => {
-    const run = runIdFor(runA);
+    const run = runOf(runA);
     const now = Date.parse(AT);
     expect(intentsInRun([], run, now), "nothing reserved").toBe(0);
     expect(intentsInRun([landed(run)], run, now)).toBe(1);
@@ -4244,17 +4259,17 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
   test("FG-151: the ledger row carries the run, so the denominator is recordable", async () => {
     const r = await gateIn(second, runB, []);
     expect(r.rows[0].run, "the cap's denominator has to be written down to be counted").toBe(
-      runIdFor(runB),
+      runOf(runB),
     );
     // `runIdFor` canonicalises through git, so a subdirectory of one
     // checkout is one run. Asserted on the repo this suite lives in, which
     // is the only checkout it can be sure of.
-    expect(runIdFor(join(REPO, "lib"))).toBe(runIdFor(REPO));
+    expect(runOf(join(REPO, "lib"))).toBe(runOf(REPO));
     // And two DIFFERENT checkouts are two runs. `runA` and `runB` each carry
     // an origin, which is what makes them nameable — the earlier version of
     // this comment said a non-checkout was its own run too, which was the
     // policy this branch reversed, and FG-160 now asserts the opposite.
-    expect(runIdFor(runA)).not.toBe(runIdFor(runB));
+    expect(runOf(runA)).not.toBe(runOf(runB));
   });
 
   test("FG-154: an UNMEASURED tracker does not excuse the cap", async () => {
@@ -4275,7 +4290,7 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
       projectRoot: runA,
       now: AT,
       readExisting: unreadable,
-      readLedger: () => [landed(runIdFor(runA))],
+      readLedger: () => [landed(runOf(runA))],
       readTarget: async () => onPr,
     });
     expect(capped.rows[0].refusal).toBe("OVER_CAP");
@@ -4303,5 +4318,140 @@ describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
       "adding a fourth clause is how the per-finding judgement comes back — " +
         "the cap is the gate, and this list is only the record of why",
     ).toEqual(["evidence-expires", "green-check-lies", "out-of-pr-diff"]);
+  });
+
+  test("FG-174: a remote read that FAILED is not a checkout with no origin", async () => {
+    // **Finding 2 of the security review of `31a2324f`, and the shape this
+    // file refuses everywhere else.** `readWorktreeRemote` sets `error` for a
+    // git timeout, for a git that is not on PATH, AND for a perfectly healthy
+    // checkout that simply has no remote. `runIdFor` read that one field, so
+    // ten seconds of git being slow re-keyed a real checkout into the shared
+    // bucket — the cap's DENOMINATOR moving underneath the count, silently,
+    // in the direction that hands a spent run a fresh allowance.
+    //
+    // INJECTED rather than provoked. With a real git on PATH the failed read
+    // is a timeout or a git that vanished between two commands, and neither
+    // is producible from a test; `worktreeDiskIdentity` takes the same
+    // parameter for the same reason. The default is the real reader and the
+    // line below is what says so.
+    expect(runIdFor(runA).run, "the DEFAULT reader is the real one").toBe(checkoutTop(runA));
+
+    const failed: RemoteReading = { url: null, error: "spawnSync git ETIMEDOUT", missing: false };
+    // The ONE axis this case varies: the same stub with `missing` flipped —
+    // the read happened and the repository has no origin. BOTH carry an
+    // `error`, which is exactly why reading `error` alone could not tell a
+    // fact from a failure to look.
+    const absent: RemoteReading = { ...failed, missing: true };
+
+    expect(runIdFor(runA, () => failed).run, "a read that failed is not an answer").toBeNull();
+    expect(runIdFor(runA, () => failed).why, "and it carries what git said").toContain("ETIMEDOUT");
+    expect(runIdFor(runA, () => absent).run, "an observed absence IS an answer").toBe(
+      NON_CHECKOUT_RUN,
+    );
+
+    const unreadable = await filingGate(`${second} --label ${FILING_OVERRIDE_LABEL}`, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => [],
+      readTarget: async () => onPr,
+      readRemote: () => failed,
+    });
+    expect(unreadable.rows[0].refusal, "an unknown denominator is UNMEASURED").toBe(
+      "UNMEASURED_CAP",
+    );
+    expect(unreadable.rows[0].emitted).toBe(false);
+    expect(unreadable.rows[0].overridden, "and no label waives this one either").toBe(false);
+    // The refusal names the RUN, not the ledger. FG-161's text is about a
+    // file an operator repairs; this one is about a reading that did not
+    // happen, and the two have different remedies.
+    expect(unreadable.refusal ?? "").toContain("RUN could not be read");
+    expect(unreadable.refusal ?? "", "quoting git rather than guessing").toContain("ETIMEDOUT");
+
+    // CONTROL, one axis — `missing: true`, nothing else changed. An empty
+    // bucket allows, so without this row the assertions above are satisfied
+    // by a gate that refuses every filing on the machine.
+    const bucketed = await filingGate(second, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => [],
+      readTarget: async () => onPr,
+      readRemote: () => absent,
+    });
+    expect(bucketed.rows[0].refusal, "a checkout with no origin buckets and files").toBeNull();
+    expect(bucketed.rows[0].emitted).toBe(true);
+    // **`row.run` is NOT the discriminator and this says so.** It is
+    // `reading.run ?? NON_CHECKOUT_RUN`, so both arms above write
+    // `NON_CHECKOUT` into the row — the failed one as a fallback on a row
+    // that was refused and counts towards nothing. A later case reaching for
+    // this field to tell the two apart would be reading a value that cannot.
+    expect(bucketed.rows[0].run).toBe(NON_CHECKOUT_RUN);
+    expect(unreadable.rows[0].run, "the same value, for a different reason").toBe(NON_CHECKOUT_RUN);
+  });
+
+  test("FG-175: a bare `owner/name` origin does not mint an allowance", async () => {
+    // **The route the fix in `377e3a06` left open, found by the security
+    // review of it.** `runIdFor` asked `repoSlug`, whose LAST branch accepts
+    // a bare `owner/name` — because that is how a run's own `repo` ARGUMENT
+    // arrives, a different caller asking a different question. Reused as the
+    // admission test, `git remote add origin a/b` minted a fresh allowance:
+    // two words, no URL, no repository, one command more than the `git init`
+    // FG-163 closed.
+    const dir = join(scratch, "bare-slug-origin");
+    mkdirSync(dir, { recursive: true });
+    // late-env-ok: the child is `git`, which reads none of the variables this
+    // file writes — the gate reads them in this process, never a subprocess.
+    const git = (...args: string[]) =>
+      spawnSync("git", ["-C", dir, ...args], { encoding: "utf-8", env: { ...process.env } });
+    expect(git("init", "-q", "-b", "main").status, "the fixture must be a checkout").toBe(0);
+    expect(git("remote", "add", "origin", "a/b").status, "git accepts two words").toBe(0);
+    // The premise, measured: git STORED it. Without this the case could be
+    // passing because git refused the remote, which is a different fact.
+    expect(git("remote", "get-url", "origin").stdout.trim()).toBe("a/b");
+
+    expect(runOf(dir), "two words are not a repository").toBe(NON_CHECKOUT_RUN);
+    const spentThere = [landed(NON_CHECKOUT_RUN)];
+    const bucketed = await filingGate(second, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentThere,
+      readTarget: async () => onPr,
+    });
+    expect(bucketed.rows[0].refusal, "so it spends the bucket's allowance").toBe("OVER_CAP");
+
+    // CONTROL, one axis — the SAME directory and the same remote, re-pointed
+    // at a real scp-form URL. Without it the row above is satisfied by a gate
+    // that buckets every checkout, which is a gag rather than a cap.
+    expect(git("remote", "set-url", "origin", "git@github.com:owner/name.git").status).toBe(0);
+    expect(runOf(dir), "a transport form naming a repository is a run").toBe(checkoutTop(dir));
+    const named = await filingGate(second, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentThere,
+      readTarget: async () => onPr,
+    });
+    expect(named.rows[0].refusal, "and a named checkout has its own allowance").toBeNull();
+
+    // The predicate on the forms it has to separate. It answers *"is this a
+    // remote"* and `repoSlug` still answers *"which repository"*, so the two
+    // readers do not restate each other.
+    expect(namesARepository("git@github.com:owner/name.git")).toBe(true);
+    expect(namesARepository("https://github.com/owner/name")).toBe(true);
+    expect(namesARepository("https://x-access-token:TOKEN@github.com/owner/name.git")).toBe(true);
+    expect(namesARepository("a/b"), "a bare slug is the bypass").toBe(false);
+    expect(namesARepository("/srv/git/owner/name"), "and a path is not a remote").toBe(false);
+    expect(namesARepository(null)).toBe(false);
+    // Measured rather than supposed: with `remote.origin.url` set to the
+    // empty string, git's own `get-url` prints the REMOTE NAME back. A reader
+    // that took any non-empty answer would read `origin` as a repository.
+    expect(namesARepository("origin")).toBe(false);
+    // The stated FALSE NEGATIVE from `runIdFor`'s bound table, asserted so
+    // the bound is a measurement and not a claim in a docblock: a sub-group
+    // checkout is a legitimate unit and buckets with the nowheres, because
+    // `normaliseSlug` wants exactly two segments.
+    expect(namesARepository("https://git.example.com/group/sub/name.git")).toBe(false);
   });
 });
