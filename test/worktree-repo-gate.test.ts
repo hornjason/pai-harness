@@ -234,7 +234,7 @@ describe("SC-1544: worktreeRepoViolations is the one refusal site", () => {
     const reads: string[] = [];
     const stub = (p: string): RemoteReading => {
       reads.push(p);
-      return { url: `https://github.com/${OTHER_REPO}`, error: null };
+      return { url: `https://github.com/${OTHER_REPO}`, error: null, missing: false };
     };
     const out = worktreeRepoViolations([{ path: right }], RUN_REPO, stub);
     expect(reads).toEqual([right]);
