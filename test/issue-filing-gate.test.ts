@@ -2771,6 +2771,19 @@ describe("FG-120..FG-135: a filing declares why it cannot be a comment", () => {
     // it — and `arbiter-override` was already on 7 of the 140 issues filed
     // in the two days before this gate shipped.
     //
+    // **What this case binds to changed under it, and the honest note is
+    // that it is no longer the map.** When the reversal landed, removing
+    // `COMMENT_INSTEAD` from `UNWAIVABLE_REFUSALS` turned this row red —
+    // measured, at `df839b30`. Then `overrideOf` gained its declaration
+    // read, and a clause refused `COMMENT_INSTEAD` is BY DEFINITION one
+    // whose `exemption` is null, so the label is refused here whether or
+    // not the map entry exists. This row still asserts a true and necessary
+    // invariant — an undeclared filing does not reach the tracker under the
+    // label — it just no longer discriminates WHICH binding delivers it.
+    // `FG-177` is where the two are separated: M7 for the message, M8 for
+    // the gate. Raised by the AI review of this PR, which was right, and
+    // right about three rows rather than the one I had already found.
+    //
     // The declaration costs one line. Nothing legitimate needs the label
     // here, and the route it opened is the one that wins by making the
     // filing WORSE: delete the declaration, add the flag.
@@ -3612,7 +3625,14 @@ describe("FG-143..FG-176: a numeric cap, which no argument defeats", () => {
     'gh issue create --title "zqxjCapTwo miscounts its own retries" ' +
     `--body "\`zqxjCapTwo\` in lib/zqxj-cap-two.ts reports 51 of 83 retries across 4409 sweeps. Claim 4. ${DECLARED}"`;
 
-  /** The same filing with its declaration removed — refused, and waivable. */
+  /**
+   * The same filing with its declaration removed — refused, and NOT waivable.
+   *
+   * It said "waivable" until 2026-10-25, which was true when written and is
+   * now the opposite of what the code does: stripping the declaration gives
+   * `COMMENT_INSTEAD`, which is in `UNWAIVABLE_REFUSALS`, and the label is
+   * separately refused by `overrideOf`'s declaration read.
+   */
   const undeclaredSecond = second.replace(` ${DECLARED}`, "");
 
   /**
