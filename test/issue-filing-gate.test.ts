@@ -2247,14 +2247,25 @@ describe("FG-79..FG-89: a filing names the claim it moves", () => {
     expect(v.refusal).toBe("NO_CLAIM");
   });
 
-  test("FG-80: the refusal says what to type, in both of the two ways out", async () => {
+  test("FG-80: the refusal says what to type, and does NOT spell the bypass", async () => {
     // A check that stops somebody without telling them how to proceed is an
-    // obstacle — `.claude/rules/self-referential-tests.md`. Both exits are
-    // named because they are genuinely different acts: one asserts the work
-    // matters, the other declares it cleanup and is counted.
+    // obstacle — `.claude/rules/self-referential-tests.md` — so the
+    // actionable instruction must survive. It does: name a claim.
+    //
+    // **The second assertion was `toContain` until 2026-10-25.** This
+    // refusal closed by telling the agent to *"post it as cleanup with
+    // `--label arbiter-override`"*, and `NO_CLAIM` is issued BEFORE
+    // `COMMENT_INSTEAD` — so that sentence was the complete recipe for the
+    // bypass the whole of #1595 exists to close, printed by the refusal
+    // that the bypass defeats. Found by the team lead executing the probe
+    // against `df839b30`, after I had removed the same token from
+    // `refusalMessage`'s tail and not swept for siblings.
     const v = await adjudicateFiling(filingAttempts(NOVEL_NO_CLAIM)[0], async () => measuredCorpus([]));
-    expect(v.reason).toContain("Claim");
-    expect(v.reason).toContain(FILING_OVERRIDE_LABEL);
+    expect(v.reason, "the way forward is still named").toContain("Claim");
+    expect(v.reason, "and the way around is not").not.toContain(FILING_OVERRIDE_LABEL);
+    // The fact that a route exists is still stated, with its cost — what is
+    // gone is the token. Silence would read as cleanup being unpostable.
+    expect(v.reason, "cleanup is still reachable, and said to be counted").toContain("counted");
   });
 
   test("FG-81 CONTROL: the same filing naming a claim is ALLOWED", async () => {
@@ -4919,5 +4930,64 @@ describe("FG-143..FG-176: a numeric cap, which no argument defeats", () => {
     writeFileSync(ledger, "", "utf-8");
     const allowed = runHook(HOOK, NOVEL_FILING, {}, freshRun());
     expect(allowed.blocked, "a declared, claiming filing must still go through").toBe(false);
+  });
+
+  test("FG-179: NO refusal reason spells the override token — the property, not one site", async () => {
+    // **Written because the one-site-at-a-time repair failed three times in
+    // one night.** The token was removed from `refusalMessage`'s waivable
+    // tail; it survived in the `NO_CLAIM` reason one field up, which is the
+    // string an agent actually reads first, and `NO_CLAIM` is the refusal
+    // the bypass travels on. Each repair was correct and each left a
+    // sibling, because every one of them named a site.
+    //
+    // `.claude/rules/checks-must-be-able-to-fail.md` says this in as many
+    // words: at N sites rather than two, a behavioural suite catches only
+    // the LAST one to regress, so assert the property ACROSS the sites
+    // instead of repairing them one at a time. This is that assertion.
+    //
+    // It is deliberately driven through the real adjudicator rather than
+    // grepping the source, because the defect is what an agent READS. A
+    // source scan cannot see a token composed at runtime, and a reason
+    // assembled from a helper would pass a grep of this file while printing
+    // the recipe.
+    const corpus = OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body }));
+    // `NO_CLAIM` is reached by a DECLARED filing with the claim stripped —
+    // declared, because `NO_CLAIM` is checked first and an undeclared one
+    // would land here too and make the two rows the same input.
+    const claimless = NOVEL_FILING.replace(" Claim 4.", "");
+    expect(namedClaim(claimless), "the NO_CLAIM fixture is claimless").toBeNull();
+    expect(claimless, "and still declared, so it is not the COMMENT_INSTEAD row again").toContain(
+      EXEMPTION_PREFIX,
+    );
+    const cases: [string, string][] = [
+      ["NO_CLAIM", claimless],
+      ["COMMENT_INSTEAD", NOVEL_FILING.replace(` ${DECLARED}`, "")],
+      ["DROPPED_CATEGORY", DROPPED_FILING],
+      ["DUPLICATE", DUPLICATE_FILING],
+    ];
+
+    const seen: string[] = [];
+    for (const [why, cmd] of cases) {
+      const v = await adjudicateFiling(filingAttempts(cmd)[0], async () => measuredCorpus(corpus));
+      // The premise: this really is the refusal the row claims to cover. A
+      // sweep over four ALLOWs would be green and would measure nothing.
+      expect(v.outcome, `${why}: the fixture stopped producing a refusal`).toBe("REFUSE");
+      seen.push(v.refusal ?? "null");
+      expect(
+        v.reason,
+        `${why}'s reason spells the override token — a refusal must not hand over the ` +
+          `way around itself. Say that a route exists and is counted, without naming it.`,
+      ).not.toContain(FILING_OVERRIDE_LABEL);
+    }
+
+    // **The population, so this cannot pass by covering one refusal four
+    // times.** Four distinct refusals, named, and the set asserted rather
+    // than the count — a count is satisfied by four duplicates.
+    expect(seen.sort(), "four distinct refusals were exercised").toEqual([
+      "COMMENT_INSTEAD",
+      "DROPPED_CATEGORY",
+      "DUPLICATE",
+      "NO_CLAIM",
+    ]);
   });
 });

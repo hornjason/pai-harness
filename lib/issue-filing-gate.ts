@@ -1666,9 +1666,27 @@ export async function adjudicateFiling(
   // executes is not a rule; `.claude/rules/config-access.md` says that about
   // ADRs and it was true of this line too.
   //
-  // The escape hatch is the label that already exists. Cleanup is still
-  // postable — say so with `--label arbiter-override`, and it is counted. An
-  // override nobody can count is the thing this gate is not.
+  // Cleanup is still postable, and this used to say so by spelling the
+  // token: *"post it as cleanup with `--label arbiter-override`"*.
+  //
+  // **That was the complete bypass recipe, one field up from the tail it was
+  // removed from on 2026-10-25.** `NO_CLAIM` is issued BEFORE
+  // `COMMENT_INSTEAD`, so a filing that is undeclared and claimless is
+  // refused here — and this sentence then handed over the label that waived
+  // it, which carried the filing to the tracker without the comment default
+  // ever being consulted. The refusal taught the route around itself, and
+  // the route it taught was the cheapest one in the file.
+  //
+  // The sentence that replaces it keeps what was true — cleanup is postable
+  // and the route is counted — and drops the recipe. An agent that already
+  // holds the token still has it; one that does not does not learn it from
+  // a refusal. `refusalMessage`'s waivable tail makes the same trade and
+  // the argument is written out there.
+  //
+  // It is also no longer a sufficient instruction: since the sibling fix the
+  // label alone posts nothing, so a filing that really is cleanup needs the
+  // declaration too. A half-recipe that still worked would be worse than
+  // either.
   if (namedClaim(`${attempt.title}\n${body}`) === null) {
     return {
       ...base,
@@ -1676,8 +1694,9 @@ export async function adjudicateFiling(
       refusal: "NO_CLAIM",
       reason:
         `the filing is novel, and names no SUCCESS.md claim — nothing says what it moves. ` +
-        `Name one as "Claim <1-${SUCCESS_CLAIM_COUNT}>" in the title or body, or post it as ` +
-        `cleanup with \`--label ${FILING_OVERRIDE_LABEL}\``,
+        `Name one as "Claim <1-${SUCCESS_CLAIM_COUNT}>" in the title or body. Genuine cleanup ` +
+        `is still postable by a route that is deliberately not spelled in a refusal, and that ` +
+        `route is recorded against this run and counted later`,
     };
   }
 

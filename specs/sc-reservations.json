@@ -78,7 +78,7 @@
       "from": 176,
       "to": 199,
       "namespace": "FG",
-      "note": "#1595 - the comment DEFAULT stops being waivable by a label the refusal itself spelled. FG-120..179 was this work's previous block and was deleted when rg/1595-run-reading merged, which is the rule; this is a NEW entry rather than a resurrection because FG-175 is now the highest id on main, so a block starting at 176 sits above everything consumed and above every other declared block (rg/1536 holds FG-100..119, rg/1344 holds FG-90..99). Declared before any id was consumed. FG-176..178 are consumed. Delete when the PR merges."
+      "note": "#1595 - the comment DEFAULT stops being waivable by a label the refusal itself spelled. FG-120..179 was this work's previous block and was deleted when rg/1595-run-reading merged, which is the rule; this is a NEW entry rather than a resurrection because FG-175 is now the highest id on main, so a block starting at 176 sits above everything consumed and above every other declared block (rg/1536 holds FG-100..119, rg/1344 holds FG-90..99). Declared before any id was consumed. FG-176..179 are consumed. Delete when the PR merges."
     },
     {
       "owner": "rg/1536-arbiter-keys",
