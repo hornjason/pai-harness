@@ -74,6 +74,13 @@
       "note": "CRC-B4 phase 2. test/finding-arbiter.test.ts holds AR-1..AR-20 on main; AR has no allocator, so this is the eyeballed-headroom method the rule names, declared before any id is consumed. Delete when the PR merges."
     },
     {
+      "owner": "rg/1595-comment-default-unwaivable",
+      "from": 176,
+      "to": 199,
+      "namespace": "FG",
+      "note": "#1595 - the comment DEFAULT stops being waivable by a label the refusal itself spelled. FG-120..179 was this work's previous block and was deleted when rg/1595-run-reading merged, which is the rule; this is a NEW entry rather than a resurrection because FG-175 is now the highest id on main, so a block starting at 176 sits above everything consumed and above every other declared block (rg/1536 holds FG-100..119, rg/1344 holds FG-90..99). Declared before any id was consumed. FG-176..178 are consumed. Delete when the PR merges."
+    },
+    {
       "owner": "rg/1536-arbiter-keys",
       "from": 100,
       "to": 119,

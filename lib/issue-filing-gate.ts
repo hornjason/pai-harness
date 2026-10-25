@@ -141,26 +141,67 @@ import { clauses, createsIssue, flagValues, labelValues } from "./issue-create-o
 export const FILING_OVERRIDE_LABEL = "arbiter-override";
 
 /**
+ * The refusals no label waives, each with the sentence saying why.
+ *
+ * **One object, because the membership and the explanation are one fact.**
+ * They were two: a predicate listing the refusals and a message composing
+ * the sentence, which is the two-deciders shape
+ * `.claude/rules/checks-must-be-able-to-fail.md` names — and the drift was
+ * already live, because the shared sentence said *"an accounting of what
+ * this run has already filed"* over every member, which is true of the cap
+ * and false of a missing declaration. A reader told the wrong reason stops
+ * believing the refusal.
+ *
+ * The common property is not severity and not policy preference: **the label
+ * answers a claim ABOUT a finding, and none of these makes one.** A count
+ * does not, a missing count does not, and an absent declaration does not —
+ * it reports a fact about the COMMAND, which the agent fixes by writing one
+ * line rather than by arguing.
+ *
+ * `COMMENT_INSTEAD` joined on 2026-10-25, and it is the one that was costing
+ * something. It is the comment DEFAULT, and the default was waivable by a
+ * label the refusal itself told the agent to use — *"If this one genuinely
+ * is the exception, re-run with --label arbiter-override"* — four lines
+ * under the text explaining that the list of exceptions is closed. So the
+ * closed list had a fourth member, spelled in the refusal that enforced it,
+ * and `arbiter-override` was already on 7 of the 140 issues filed in the two
+ * days before the gate shipped: the token was in circulation before there
+ * was anything to override.
+ *
+ * Nothing legitimate is lost. The three declarations remain, cost one line,
+ * and a filing carrying one still goes through — `FG-176` is that control.
+ * What is removed is the route that beats the gate by making the filing
+ * WORSE: delete the declaration, add the label.
+ */
+export const UNWAIVABLE_REFUSALS: Partial<Record<ArbiterRefusal, string>> = {
+  OVER_CAP:
+    "It answers a claim about a finding, and this refusal makes none — it is an " +
+    "accounting of what this run has already filed.",
+  UNMEASURED_CAP:
+    "It answers a claim about a finding, and this refusal makes none — the run's " +
+    "allowance could not be counted, which no argument about the finding changes.",
+  COMMENT_INSTEAD:
+    "It answers a claim about a finding, and this refusal makes none — it reports " +
+    "that no declaration was given. Write one of the three, or post the comment.",
+};
+
+/**
  * Does `FILING_OVERRIDE_LABEL` waive this refusal?
  *
  * **ONE binding, and it exists because there were briefly two.** `filingGate`
  * decided it when it chose whether the label overrides, and `refusalMessage`
  * decided it again when it chose whether to offer the label — two deciders
- * over one question, which
- * `.claude/rules/checks-must-be-able-to-fail.md` says is behaviourally one
- * decider with a spare. They disagreed the moment the cap landed: the gate
- * made `OVER_CAP` unwaivable and the message went on closing with *"re-run
- * with --label arbiter-override"*, so the one refusal no label can open was
- * also the one advertising the bypass. Found by the AI review of PR #1597.
+ * over one question, behaviourally one decider with a spare. They disagreed
+ * the moment the cap landed: the gate made `OVER_CAP` unwaivable and the
+ * message went on closing with *"re-run with --label arbiter-override"*, so
+ * the one refusal no label could open was also the one advertising the
+ * bypass. Found by the AI review of PR #1597.
  *
- * The two `false` values are the cap's, and the reason is not a policy
- * preference: the label answers a claim ABOUT a finding, and neither a count
- * nor a missing count makes one. A waivable cap is the per-finding judgement
- * the cap exists to replace, and a waivable `UNMEASURED_CAP` is a cap any
- * agent can remove by making the ledger unreadable.
+ * Derived from `UNWAIVABLE_REFUSALS` rather than restating its membership,
+ * so a refusal added there cannot be waivable here.
  */
 export function waivableRefusal(refusal: ArbiterRefusal | null): boolean {
-  return refusal !== "OVER_CAP" && refusal !== "UNMEASURED_CAP";
+  return refusal === null || !(refusal in UNWAIVABLE_REFUSALS);
 }
 
 /**
@@ -2528,8 +2569,40 @@ export async function filingGate(
     // being ALLOWED on its merits by then; what breaks is the measurement,
     // and the count of overrides against the cap is the number this whole
     // change exists to make readable. Raised by the AI review at round 6.
+    // **`v.exemption !== null` is the sibling-refusal fix, and it is not a
+    // new policy** (#1595, 2026-10-25). The adjudicator returns the FIRST
+    // refusal it reaches, so waiving that one emits a filing whose later
+    // refusals were never computed. `COMMENT_INSTEAD` is issued last, after
+    // `NO_CLAIM` — deliberately, and the reason is defended at the stage
+    // itself — so a filing that is undeclared AND claimless is refused
+    // `NO_CLAIM`, the label waives that, and the unwaivable member is never
+    // consulted. The route this change closed was "delete the declaration";
+    // the route that replaced it was "delete the declaration AND the claim".
+    // A gate that gets cheaper to beat the worse the filing gets is not a
+    // gate, and there is no reason to believe `NO_CLAIM` is the only sibling
+    // that can win the race.
+    //
+    // Keying unwaivability on the refusal ISSUED was the actual defect:
+    // absence of a declaration is a property of the ATTEMPT, and which
+    // refusal fired is a property of the precedence. Reading `exemption` —
+    // which `adjudicateFiling` already computed and carries on EVERY
+    // adjudication, so this is not a second decider — asks the attempt
+    // directly and closes every sibling at once.
+    //
+    // **Not by making `COMMENT_INSTEAD` win the precedence race.** That
+    // deletes `NO_CLAIM` for the common filing as a side effect of adding
+    // one gate, which is exactly what the comment at that stage warns
+    // against. The ordering is untouched; `FG-178` asserts the refusal is
+    // still `NO_CLAIM`, so a later change that reorders goes red and says so.
+    //
+    // The invariant this restores, stated so it can be tested as one: **no
+    // filing without a declaration reaches the tracker, label or no label.**
+    // Without the label that was already true — undeclared is
+    // `COMMENT_INSTEAD` and `COMMENT_INSTEAD` is not emitted. The label was
+    // the only hole.
     const overrideOf = (v: FilingAdjudication) =>
       labelled &&
+      v.exemption !== null &&
       waivableRefusal(v.refusal) &&
       (v.outcome === "REFUSE" || (prior !== null && waivableRefusal(prior.refusal)));
 
@@ -2540,10 +2613,16 @@ export async function filingGate(
     // bypass: a clause refused for any WAIVABLE reason skips the cap
     // entirely, the label then waives that refusal, and the filing lands
     // with the run already over its allowance. It is not a corner either.
-    // The cheapest way to reach it is to DELETE the declaration: an
-    // undeclared filing is `COMMENT_INSTEAD`, which is waivable, so dropping
-    // one line and adding the label beats the gate. A cap that any agent can
-    // step around by making its filing *worse* is not a cap.
+    // The cheapest way to reach it was to DELETE the declaration: an
+    // undeclared filing is `COMMENT_INSTEAD`, which was waivable, so
+    // dropping one line and adding the label beat the gate. A cap that any
+    // agent can step around by making its filing *worse* is not a cap.
+    //
+    // `COMMENT_INSTEAD` became unwaivable on 2026-10-25, so that specific
+    // route is closed at its source as well as here. **This ordering stays**
+    // — it is not the fix for one spelling of the bypass. Every remaining
+    // waivable refusal reaches the tracker under the label, and the cap has
+    // to be applied to all of them or it is applied to none.
     //
     // `SAME_CLASS_IN_RUN` keeps its precedence, because a clause refused for
     // it is not emitted and `wouldEmit` is therefore false — the conversion
@@ -2860,22 +2939,48 @@ export function markBlockedCommand(rows: readonly FilingLedgerRow[]): FilingLedg
  * to re-run with the label — in the same message, four lines apart. The cap
  * holds either way, because `filingGate` reads the same predicate; what the
  * contradiction costs is the next agent, who is taught by the gate's own
- * output to reach for the override on the gate it cannot open. The refusal
- * still NAMES the label, saying it does not apply: an agent that has read
- * about the override and finds silence here tries it, and silence is also
- * indistinguishable from a message written before the cap existed.
+ * output to reach for the override on the gate it cannot open.
+ *
+ * ## The two stanzas treat the label's NAME differently, on purpose
+ *
+ * **Unwaivable: the label is named, to deny it.** An agent that has read
+ * about the override and finds silence tries it anyway, spends a round, and
+ * silence is also indistinguishable from a message written before the
+ * refusal became unwaivable. The sentence comes from
+ * `UNWAIVABLE_REFUSALS`, so the reason given is this refusal's own.
+ *
+ * **Waivable: the label is NOT named, and no step is offered.** The old text
+ * was a complete recipe with its own permission attached — *"If this one
+ * genuinely is the exception, re-run with --label …"* — and *this one
+ * genuinely is the exception* is a judgement every filing makes about
+ * itself, so the condition admits everything. A refusal that supplies both
+ * the verdict and the way around it is read as the way around it. The fact
+ * that a waiver exists is still stated, with its cost, because an agent
+ * acting on a real exception needs to know the route is recorded and
+ * counted; what it no longer does is spell the token for an agent that did
+ * not already have it. Naming-to-deny and naming-to-offer are different
+ * acts, and only the first is worth the words (#1595, 2026-10-25).
  */
 export function refusalMessage(v: FilingAdjudication): string {
-  const tail = waivableRefusal(v.refusal)
+  // **The BRANCH is `waivableRefusal`, the WORDS are the map.** Reading the
+  // map for both would make this a second decider over "does the label
+  // waive this" — the drift FG-156 exists to catch, and the mutation that
+  // forces the predicate true would stop moving this message.
+  const unwaivable = waivableRefusal(v.refusal)
+    ? undefined
+    : v.refusal === null
+      ? undefined
+      : UNWAIVABLE_REFUSALS[v.refusal];
+  const tail = unwaivable
     ? [
-        `If this one genuinely is the exception, re-run with --label ${FILING_OVERRIDE_LABEL}.`,
-        `The override is recorded in ${ledgerPath()} beside the refusal it waived, so`,
-        "an override that was right is evidence and one that was wrong is countable.",
+        `--label ${FILING_OVERRIDE_LABEL} does NOT waive this one. ${unwaivable}`,
+        `The attempt is recorded in ${ledgerPath()} either way.`,
       ]
     : [
-        `--label ${FILING_OVERRIDE_LABEL} does NOT waive this one. It answers a claim about a`,
-        "finding, and this refusal makes none — it is an accounting of what this run has",
-        `already filed. The attempt is recorded in ${ledgerPath()} either way.`,
+        "A label waives this refusal. It is deliberately not spelled here and not offered",
+        "as a step: every filing believes it is the exception, so a refusal that hands over",
+        "the way around itself is read as the way around itself. If you reach for it, it is",
+        `recorded in ${ledgerPath()} against this run and counted later.`,
       ];
   return [
     "[FindingArbiter] This filing was adjudicated and refused before it reached the tracker.",

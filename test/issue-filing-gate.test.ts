@@ -80,6 +80,8 @@ import {
   overCapReason,
   namesARepository,
   runIdFor,
+  waivableRefusal,
+  UNWAIVABLE_REFUSALS,
   INTENT_KEY_SUFFIX,
   INTENT_PENDING,
   NON_CHECKOUT_RUN,
@@ -89,6 +91,8 @@ import {
   type FilingLedgerRow,
 } from "../lib/issue-filing-gate";
 import { DROPPED_CATEGORIES } from "../lib/finding-jury";
+import type { ArbiterRefusal } from "../lib/finding-arbiter";
+import type { FilingAdjudication } from "../lib/issue-filing-gate";
 import { toplevel } from "../lib/launch-base";
 import type { RemoteReading } from "../lib/worktree-repo";
 import {
@@ -144,8 +148,20 @@ const OPEN_ISSUES = [
  * prove nothing: the whole claim is that where the body is stored does not
  * change the verdict.
  */
+/**
+ * Declared, since the sibling-refusal fix (#1595, 2026-10-25).
+ *
+ * This fixture's job is to be a DUPLICATE, and every case that overrides it
+ * is about the waiver surviving — not about the declaration. Since the label
+ * can no longer carry an UNDECLARED filing past any refusal, an undeclared
+ * fixture would make those cases green for the new reason rather than the
+ * one they were written for. The declaration is what keeps their one axis
+ * the override. It changes nothing about the DUPLICATE verdict itself, which
+ * is reached before the comment default is ever consulted.
+ */
 const DUPLICATE_BODY =
-  "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234.";
+  "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234. " +
+  `${EXEMPTION_PREFIX} out-of-pr-diff`;
 
 const DUPLICATE_FILING =
   'gh issue create --title "retryBudget gives up early on long command sweeps" ' +
@@ -157,7 +173,8 @@ const DUPLICATE_FILING =
  */
 const DROPPED_FILING =
   'gh issue create --title "The error message should name the legal values" ' +
-  '--body "`legalValues` in lib/config-loader.ts is not printed when the check refuses."';
+  '--body "`legalValues` in lib/config-loader.ts is not printed when the check refuses. ' +
+  `${EXEMPTION_PREFIX} out-of-pr-diff"`;
 
 /**
  * What every ALLOW fixture in this file must now say, as the caller types it.
@@ -717,7 +734,19 @@ describe("#1261 the hook reaches the adjudication — read on stdout, not on the
     expect(r.reason).toContain("DUPLICATE");
     // Only the dedupe can produce this: the colliding issue's number.
     expect(r.reason).toContain("#900");
-    expect(r.reason).toContain(FILING_OVERRIDE_LABEL);
+    // **The refusal says a waiver exists and does NOT spell it** (#1595,
+    // 2026-10-25). This line read `toContain(FILING_OVERRIDE_LABEL)` until
+    // the refusal stopped handing the token over: the old text was a recipe
+    // with its own permission attached — *"if this one genuinely is the
+    // exception"* — and every filing believes that of itself. The token now
+    // appears only on a refusal no label waives, to deny it. FG-176 holds
+    // both halves.
+    expect(r.reason, "the refusal hands the override token to the agent").not.toContain(
+      FILING_OVERRIDE_LABEL,
+    );
+    expect(r.reason, "and it still says a waiver exists, with its cost").toContain(
+      "A label waives this refusal",
+    );
     // And the exit code says nothing, which is why nothing above reads it.
     expect(r.exit).toBe(0);
   });
@@ -2309,13 +2338,38 @@ describe("FG-79..FG-89: a filing names the claim it moves", () => {
     expect(v.refusal).toBe("UNMEASURED");
   });
 
-  test("FG-88: the override label posts a claimless filing, and is counted", async () => {
-    const r = await filingGate(`${NOVEL_NO_CLAIM} --label ${FILING_OVERRIDE_LABEL}`, {
+  test("FG-88: the override label posts a claimless filing only if it DECLARES", async () => {
+    // **This case used to assert the bypass, and its old title said so:
+    // *"the override label posts a claimless filing, and is counted"*.**
+    // `NOVEL_NO_CLAIM` is claimless AND undeclared, which since #1595 is
+    // the cheapest route to the tracker — `NO_CLAIM` is issued before
+    // `COMMENT_INSTEAD`, so the label waived the sibling and the unwaivable
+    // comment default was never consulted. A test certifying that is why
+    // nobody saw it. Inverted rather than deleted: the row still exists, it
+    // just records the opposite verdict.
+    const undeclared = await filingGate(`${NOVEL_NO_CLAIM} --label ${FILING_OVERRIDE_LABEL}`, {
       projectRoot: scratch,
       readExisting: async () => measuredCorpus([]),
     });
-    expect(r.refusal, "cleanup is still postable").toBeNull();
+    expect(undeclared.refusal, "claimless AND undeclared is not postable by a label").not.toBeNull();
+    expect(undeclared.rows[0].overridden, "and the label waived nothing").toBe(false);
+    expect(undeclared.rows[0].emitted, "so nothing reached the tracker").toBe(false);
+
+    // **CONTROL, one axis — the declaration added, still claimless.** The
+    // original intent of this case survives and is the thing worth keeping:
+    // cleanup IS still postable. What it costs is one declared line, which
+    // is the whole bargain #1595 struck. Without this row the assertions
+    // above are satisfied by a gate that stopped honouring the label at all.
+    const declaredClaimless = `${NOVEL_NO_CLAIM.slice(0, -1)} ${DECLARED}"`;
+    expect(namedClaim(declaredClaimless), "the control is still claimless").toBeNull();
+    expect(declaredClaimless, "and it really declares").toContain(EXEMPTION_PREFIX);
+    const r = await filingGate(`${declaredClaimless} --label ${FILING_OVERRIDE_LABEL}`, {
+      projectRoot: scratch,
+      readExisting: async () => measuredCorpus([]),
+    });
+    expect(r.refusal, "declared cleanup is still postable").toBeNull();
     expect(r.rows[0].refusal, "and the override is recorded, not erased").toBe("NO_CLAIM");
+    expect(r.rows[0].overridden, "as an override").toBe(true);
   });
 
   test("FG-89: SUCCESS_CLAIM_COUNT equals the claims SUCCESS.md states", () => {
@@ -2708,12 +2762,43 @@ describe("FG-120..FG-135: a filing declares why it cannot be a comment", () => {
     expect(v.refusal).toBe("UNMEASURED");
   });
 
-  test("FG-130: the override label posts an undeclared filing, and it is counted", async () => {
+  test("FG-130: the override label does NOT post an undeclared filing", async () => {
+    // **Reversed on 2026-10-25, and the reversal is the point.** This case
+    // used to assert that the label posts an undeclared filing and records
+    // the refusal it waived. That made the comment DEFAULT waivable by a
+    // token the refusal itself told the agent to use, so the closed list of
+    // three exceptions had a fourth member spelled in the message enforcing
+    // it — and `arbiter-override` was already on 7 of the 140 issues filed
+    // in the two days before this gate shipped.
+    //
+    // **What this case binds to changed under it, and the honest note is
+    // that it is no longer the map.** When the reversal landed, removing
+    // `COMMENT_INSTEAD` from `UNWAIVABLE_REFUSALS` turned this row red —
+    // measured, at `df839b30`. Then `overrideOf` gained its declaration
+    // read, and a clause refused `COMMENT_INSTEAD` is BY DEFINITION one
+    // whose `exemption` is null, so the label is refused here whether or
+    // not the map entry exists. This row still asserts a true and necessary
+    // invariant — an undeclared filing does not reach the tracker under the
+    // label — it just no longer discriminates WHICH binding delivers it.
+    // `FG-177` is where the two are separated: M7 for the message, M8 for
+    // the gate. Raised by the AI review of this PR, which was right, and
+    // right about three rows rather than the one I had already found.
+    //
+    // The declaration costs one line. Nothing legitimate needs the label
+    // here, and the route it opened is the one that wins by making the
+    // filing WORSE: delete the declaration, add the flag.
     const r = await gateOn(`${UNDECLARED} --label ${FILING_OVERRIDE_LABEL}`);
-    expect(r.refusal, "an exception somebody declared is still postable").toBeNull();
-    expect(r.rows[0].refusal, "and the refusal it waived is recorded, not erased")
-      .toBe("COMMENT_INSTEAD");
-    expect(r.rows[0].overridden).toBe(true);
+    expect(r.refusal, "the label carried an undeclared filing to the tracker").not.toBeNull();
+    expect(r.rows[0].refusal).toBe("COMMENT_INSTEAD");
+    expect(r.rows[0].overridden, "and the ledger must not say a label waived it").toBe(false);
+    expect(r.rows[0].emitted).toBe(false);
+
+    // CONTROL, one axis — the same command with the declaration present and
+    // NO label. Without it this case is satisfied by a gate that refuses
+    // every filing, which is a gag and not a default.
+    const declared = await gateOn(DECLARED_FILING);
+    expect(declared.refusal, "a declared filing still goes through").toBeNull();
+    expect(declared.rows[0].emitted).toBe(true);
   });
 
   test("FG-131: N filings in, N dispositions recorded — on the real ledger", async () => {
@@ -2841,7 +2926,7 @@ describe("FG-120..FG-135: a filing declares why it cannot be a comment", () => {
  * parse-only test would have asserted is shown to be identical across the
  * real gate and M1.
  */
-describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case red", () => {
+describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169, FG-177: a mutant turns a case red", () => {
   const LIB = join(REPO, "lib");
   const UNIT = "issue-filing-gate.ts";
 
@@ -2890,11 +2975,30 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
   /** `M3` — the cap never binds, however much the run has filed. */
   const M3 = "spent >= FILINGS_PER_RUN";
   /** `M4` — every refusal becomes waivable, including the cap. */
-  const M4 = 'return refusal !== "OVER_CAP" && refusal !== "UNMEASURED_CAP";';
+  const M4 = "return refusal === null || !(refusal in UNWAIVABLE_REFUSALS);";
   /** `M5` — the cap stops seeing filings the label would carry through. */
   const M5 = "|| overrideOf(read2)";
   /** `M6` — the reservation is taken and its position is never read. */
   const M6 = "ordinal > FILINGS_PER_RUN";
+  /**
+   * `M7` — the comment DEFAULT goes back to being waivable by a label.
+   *
+   * The MEMBERSHIP, not the predicate: `M4` forces `waivableRefusal` true
+   * for everything and would kill a case about the cap just as readily.
+   * This removes one key and leaves the other two, so the only behaviour
+   * that can move is the one `FG-177` is about.
+   */
+  const M7 = "  COMMENT_INSTEAD:\n";
+  /**
+   * The declaration read inside `overrideOf` — the sibling-refusal fix.
+   *
+   * Separate from `M7` because after that fix the two bindings no longer
+   * control the same thing: `M7` decides what the refusal MESSAGE says, and
+   * this decides what the GATE does. `FG-177` runs both and asserts which
+   * is which, because a mutant that moves nothing is indistinguishable from
+   * a case that never exercised the branch.
+   */
+  const M8 = "      v.exemption !== null &&";
 
   const UNDECLARED =
     'gh issue create --title "zqxjMutantProbe abandons a sweep it started" ' +
@@ -3128,14 +3232,32 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
     ).toBe("OVER_CAP");
 
     // Half two, the sentence. Same mutation, the OTHER reader: with no label
-    // at all the refusal stops saying the label is no use here and starts
-    // recommending it. A test asserting only the waiver would leave this
-    // half of the predicate unmeasured.
-    expect((await runOn(real, spent)).refusal ?? "").toContain("does NOT waive this one");
+    // at all the refusal stops saying the label is no use here and switches
+    // to the stanza for a refusal a label CAN open. A test asserting only
+    // the waiver would leave this half of the predicate unmeasured.
+    //
+    // **The discriminator is the stanza, not the old recipe.** This read
+    // `toContain("re-run with --label arbiter-override")` until the waivable
+    // stanza stopped spelling the token (2026-10-25) — so the string it
+    // looked for now exists nowhere and the row would have gone red for the
+    // wrong reason, which is indistinguishable from the predicate having
+    // drifted. Both directions are asserted, because the two stanzas are
+    // distinguished by which one is ABSENT as much as by which is present.
+    const realText = (await runOn(real, spent)).refusal ?? "";
+    const mutantText = (await runOn(mutant, spent)).refusal ?? "";
+    expect(realText).toContain("does NOT waive this one");
     expect(
-      (await runOn(mutant, spent)).refusal ?? "",
+      mutantText,
       "the message follows the predicate rather than deciding again",
-    ).toContain(`re-run with --label ${FILING_OVERRIDE_LABEL}`);
+    ).toContain("A label waives this refusal");
+    expect(
+      mutantText,
+      "and it stops denying the label, which is the half a one-sided check would miss",
+    ).not.toContain("does NOT waive this one");
+    // Neither stanza hands the token over on a refusal the label would open.
+    expect(mutantText, "the mutant must not reintroduce the recipe either").not.toContain(
+      FILING_OVERRIDE_LABEL,
+    );
   });
 
   test("FG-158: M5 — the cap sees what the LABEL would carry through, not what is clean", async () => {
@@ -3149,16 +3271,26 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
     mkdirSync(dir, { recursive: true });
 
     const at = "2026-10-24T12:00:00.000Z";
-    // UNDECLARED on purpose: the cheapest route to the bypass is to make the
-    // filing worse, because `COMMENT_INSTEAD` is waivable and `OVER_CAP` is
-    // not. The declared twin is the baseline below.
+    // **The vehicle changed on 2026-10-25 and the case says why.** This drove
+    // the bypass through an UNDECLARED filing, because `COMMENT_INSTEAD` was
+    // waivable and making the filing worse was the cheapest route. It is
+    // unwaivable now, so that route is closed at its source — and a mutant
+    // driven down a closed route goes green by construction, witnessing
+    // nothing about M5.
+    //
+    // So the vehicle is `NO_CLAIM`: declared, so it clears the comment
+    // default, and naming no SUCCESS.md claim, so it is refused for a reason
+    // the label still waives. The shape M5 models is unchanged — a waivable
+    // refusal plus the label walking past the allowance — and this is simply
+    // the cheapest spelling of it that still exists.
     const body =
-      "`zqxjBypass` in lib/zqxj-bypass.ts drops 13 of 61 commands over 4703 runs. Claim 4.";
-    const undeclared =
-      `gh issue create --title "zqxjBypass abandons a sweep it started" --body "${body}" ` +
-      `--label ${FILING_OVERRIDE_LABEL}`;
+      "`zqxjBypass` in lib/zqxj-bypass.ts drops 13 of 61 commands over 4703 runs.";
+    const noClaim =
+      `gh issue create --title "zqxjBypass abandons a sweep it started" ` +
+      `--body "${body} ${DECLARED}" --label ${FILING_OVERRIDE_LABEL}`;
     const declared =
-      `gh issue create --title "zqxjBypass abandons a sweep it started" --body "${body} ${DECLARED}"`;
+      `gh issue create --title "zqxjBypass abandons a sweep it started" ` +
+      `--body "${body} Claim 4. ${DECLARED}"`;
 
     const runOn = (gate: Gate, prior: unknown[], cmd: string) =>
       gate.filingGate(cmd, {
@@ -3197,7 +3329,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
       },
     ];
 
-    const realRow = (await runOn(real, spent, undeclared)).rows[0];
+    const realRow = (await runOn(real, spent, noClaim)).rows[0];
     expect(realRow.refusal).toBe("OVER_CAP");
     expect(realRow.emitted, "nothing reached the tracker").toBe(false);
 
@@ -3208,7 +3340,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
     // reads every emitted row, so the ordinal refuses it. What M5 still
     // moves is WHICH refusal the ledger records and whether the run paid a
     // write for it.
-    const mutantRow = (await runOn(mutant, spent, undeclared)).rows[0];
+    const mutantRow = (await runOn(mutant, spent, noClaim)).rows[0];
     expect(
       mutantRow.refusal,
       "the ordinal catches what the pre-read was mutated into skipping",
@@ -3218,6 +3350,129 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
       mutantRow.overridden,
       "and no label waived it, because the stage that refused reads the same predicate",
     ).toBe(false);
+  });
+
+  test("FG-177: M7 moves the MESSAGE and M8 moves the GATE — which is which", async () => {
+    // `FG-176` asserts that an undeclared filing carrying the label is
+    // refused. On its own that is not evidence of WHICH binding did it: the
+    // clause is refused `COMMENT_INSTEAD` before any label is considered,
+    // so a gate that still honoured the label would produce the same
+    // `refusal` value on the row and differ only in `overridden` and
+    // `emitted`.
+    //
+    // **This case changed shape with the sibling-refusal fix, and the honest
+    // statement is that M7 no longer moves the gate.** It did, and the row
+    // below used to assert it. Then `overrideOf` gained `v.exemption !==
+    // null`, and a filing refused `COMMENT_INSTEAD` is BY DEFINITION one
+    // whose `exemption` is null — so the declaration read refuses it first
+    // and the map membership is redundant for this filing's outcome.
+    //
+    // Redundant, not dead, and the distinction is the point. The two
+    // bindings answer different questions: `UNWAIVABLE_REFUSALS` decides
+    // what the refusal SAYS, `overrideOf` decides what the gate DOES. Had
+    // this case been left asserting that M7 flips the gate, it would have
+    // gone red here and the cheap repair — deleting the declaration read as
+    // "already covered" — reopens every sibling route. So each mutant is
+    // run against the binding it actually controls, and both are asserted
+    // to move something.
+    const mutant: Gate = await import(
+      buildMutant("comment-default-waivable", M7, "  ZZ_NOT_A_REFUSAL:\n")
+    );
+    const undeclarable: Gate = await import(buildMutant("declaration-unread", M8, "      true &&"));
+    const real: Gate = await import("../lib/issue-filing-gate");
+    const dir = join(scratch, "mut-comment-waivable-run");
+    mkdirSync(dir, { recursive: true });
+
+    const at = "2026-10-25T12:00:00.000Z";
+    const labelled = `${UNDECLARED} --label ${FILING_OVERRIDE_LABEL}`;
+    const runOn = (gate: Gate, cmd: string) =>
+      gate.filingGate(cmd, {
+        projectRoot: dir,
+        now: at,
+        readExisting: async () => gate.measuredCorpus([]),
+        readLedger: () => [],
+        appendLedger: () => true,
+        readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
+      });
+
+    // BASELINE FIRST, all three gates: a DECLARED filing is allowed, so none
+    // is refusing everything when the rows below are read, and each mutant
+    // is known to have loaded. Without this a mutant that died on module
+    // resolution reads as one that rejected the bypass on the merits.
+    expect((await runOn(mutant, DECLARED_FILING)).rows[0].refusal, "M7 loaded").toBeNull();
+    expect((await runOn(undeclarable, DECLARED_FILING)).rows[0].refusal, "M8 loaded").toBeNull();
+    expect((await runOn(real, DECLARED_FILING)).rows[0].refusal, "as did the real gate").toBeNull();
+
+    const realRow = (await runOn(real, labelled)).rows[0];
+    expect(realRow.refusal).toBe("COMMENT_INSTEAD");
+    expect(realRow.overridden, "no label waives the comment default").toBe(false);
+    expect(realRow.emitted, "and nothing reaches the tracker").toBe(false);
+
+    // **M7 moves the MESSAGE.** With `COMMENT_INSTEAD` out of the map the
+    // refusal stops denying the label and starts describing it as available,
+    // which is the text an agent acts on. Asserted on the string because
+    // that is the only channel the membership still controls.
+    const deny = `--label ${FILING_OVERRIDE_LABEL} does NOT waive this one`;
+    const v: FilingAdjudication = {
+      outcome: "REFUSE",
+      refusal: "COMMENT_INSTEAD",
+      reason: "r",
+      category: "correctness",
+      duplicateOf: [],
+      collidingKeys: [],
+      symptomHash: "h",
+      exemption: null,
+    };
+    expect(real.refusalMessage(v), "the real refusal denies the label").toContain(deny);
+    expect(
+      mutant.refusalMessage(v),
+      "with the key removed the refusal stops denying the label",
+    ).not.toContain(deny);
+
+    // **M7 no longer moves the GATE, and that is asserted rather than left
+    // for a reader to assume.** A silent "both false" here is the shape of a
+    // mutant that never loaded; the baseline above rules that out, so this
+    // row is the redundancy itself, measured.
+    const mutantRow = (await runOn(mutant, labelled)).rows[0];
+    expect(mutantRow.refusal, "the refusal value is the same on both").toBe("COMMENT_INSTEAD");
+    expect(
+      mutantRow.overridden,
+      "the declaration read refuses it first, so the membership is redundant HERE",
+    ).toBe(false);
+    expect(mutantRow.emitted, "and nothing reaches the tracker under M7 either").toBe(false);
+
+    // **M8 needs a DIFFERENT INPUT, and finding that out is the point of
+    // running it.** On `labelled` M8 moves nothing, because that clause is
+    // refused `COMMENT_INSTEAD` and the map membership blocks it whether or
+    // not the declaration is read. Measured, not assumed:
+    const m8OnComment = (await runOn(undeclarable, labelled)).rows[0];
+    expect(
+      m8OnComment.overridden,
+      "on a COMMENT_INSTEAD clause the two bindings are genuinely redundant",
+    ).toBe(false);
+
+    // The input they must disagree on is the SIBLING refusal — undeclared
+    // AND claimless, which is refused `NO_CLAIM`, which IS waivable. There
+    // the map membership is never consulted and the declaration read is the
+    // only thing standing between the label and the tracker. That is the
+    // defect `FG-178` reproduces, and this is the mutant proving which line
+    // closed it.
+    const unclaimed = UNDECLARED.replace(" Claim 4.", "");
+    expect(namedClaim(unclaimed), "the claim really came out").toBeNull();
+    expect(unclaimed.length, "the strip matched").toBeLessThan(UNDECLARED.length);
+    const siblingLabelled = `${unclaimed} --label ${FILING_OVERRIDE_LABEL}`;
+
+    const realSibling = (await runOn(real, siblingLabelled)).rows[0];
+    expect(realSibling.refusal, "the precedence issues the sibling, not the comment default").toBe(
+      "NO_CLAIM",
+    );
+    expect(realSibling.overridden, "and the declaration read refuses the waiver").toBe(false);
+    expect(realSibling.emitted, "so nothing reaches the tracker").toBe(false);
+
+    const m8Row = (await runOn(undeclarable, siblingLabelled)).rows[0];
+    expect(m8Row.refusal, "same refusal, so `refusal` is not the discriminator").toBe("NO_CLAIM");
+    expect(m8Row.overridden, "with the declaration unread the label waives it again").toBe(true);
+    expect(m8Row.emitted, "and the undeclared filing reaches the tracker").toBe(true);
   });
 
   test("FG-169: M6 — the ORDINAL is what stops the second racer, not the pre-read", async () => {
@@ -3358,7 +3613,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
  * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
  * the half FG-91 surrendered. Nothing else in the file moved.
  */
-describe("FG-143..FG-175: a numeric cap, which no argument defeats", () => {
+describe("FG-143..FG-176: a numeric cap, which no argument defeats", () => {
   const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
   const AT = "2026-10-24T12:00:00.000Z";
 
@@ -3370,7 +3625,14 @@ describe("FG-143..FG-175: a numeric cap, which no argument defeats", () => {
     'gh issue create --title "zqxjCapTwo miscounts its own retries" ' +
     `--body "\`zqxjCapTwo\` in lib/zqxj-cap-two.ts reports 51 of 83 retries across 4409 sweeps. Claim 4. ${DECLARED}"`;
 
-  /** The same filing with its declaration removed — refused, and waivable. */
+  /**
+   * The same filing with its declaration removed — refused, and NOT waivable.
+   *
+   * It said "waivable" until 2026-10-25, which was true when written and is
+   * now the opposite of what the code does: stripping the declaration gives
+   * `COMMENT_INSTEAD`, which is in `UNWAIVABLE_REFUSALS`, and the label is
+   * separately refused by `overrideOf`'s declaration read.
+   */
   const undeclaredSecond = second.replace(` ${DECLARED}`, "");
 
   /**
@@ -3499,25 +3761,49 @@ describe("FG-143..FG-175: a numeric cap, which no argument defeats", () => {
     expect(over, "and nothing in it tells the agent to re-run with the label").not.toContain(
       `re-run with --label ${FILING_OVERRIDE_LABEL}`,
     );
+    // The sentence comes from `UNWAIVABLE_REFUSALS`, so the reason an agent
+    // reads is this refusal's own. The shared one said "an accounting of
+    // what this run has already filed" over every member, which is true of
+    // the cap and false of a missing declaration.
+    expect(over, "the cap's refusal gives the cap's reason").toContain("accounting of what this run");
 
-    // CONTROL, one axis: a refusal the label DOES waive still offers it. A
-    // message that offered it to nobody passes the assertion above and
-    // deletes the escape hatch from every other refusal in this file.
-    const waivable = await gateIn(undeclaredSecond, runA, []);
+    // CONTROL, one axis — a refusal the label DOES waive. **Its half changed
+    // on 2026-10-25**: the waivable stanza no longer spells the token
+    // either. The property is no longer "offered here, not there"; it is
+    // that the token appears ONLY to be denied, and that the existence of a
+    // waiver is still stated so an agent with a real exception is not left
+    // guessing. A message that said nothing to anybody would pass the lines
+    // above and delete the accounting from every other refusal in the file.
+    const waivable = await gateIn(DROPPED_FILING, runA, []);
     expect(waivable.rows[0].refusal, "under the cap, and refused for a waivable reason").toBe(
-      "COMMENT_INSTEAD",
+      "DROPPED_CATEGORY",
     );
-    expect(waivable.refusal ?? "").toContain(`re-run with --label ${FILING_OVERRIDE_LABEL}`);
+    const text = waivable.refusal ?? "";
+    expect(text, "a waivable refusal must still say a waiver exists").toContain(
+      "A label waives this refusal",
+    );
+    expect(text, "and must not hand the token over").not.toContain(FILING_OVERRIDE_LABEL);
+    expect(text, "naming the cost, which is what makes the statement useful").toContain(
+      "counted later",
+    );
   });
 
   test("FG-157: the label does not carry an over-cap filing past the cap", async () => {
-    // Found by the AI review of PR #1597 at round 4, and the cheapest route
-    // to it is to make the filing WORSE. An undeclared filing is refused
-    // `COMMENT_INSTEAD`, which IS waivable — so with the cap reading only
-    // clauses that were already clean, the label waived the declaration
-    // refusal and the filing landed with the run over its allowance. Delete
-    // one line, add one flag, beat the gate.
-    const cmd = `${undeclaredSecond} --label ${FILING_OVERRIDE_LABEL}`;
+    // Found by the AI review of PR #1597 at round 4: with the cap reading
+    // only clauses that were already clean, the label waived some other
+    // refusal and the filing landed with the run over its allowance.
+    //
+    // **The cheapest route to it was the undeclared filing, and that one is
+    // closed at its source now** — `COMMENT_INSTEAD` became unwaivable on
+    // 2026-10-25, so "delete one line, add one flag" no longer reaches the
+    // cap at all. The ordering under test is NOT about that one spelling,
+    // so the vehicle here is `DUPLICATE`: still waivable, still carried to
+    // the tracker by the label, and therefore still something the cap has
+    // to see. A case rewritten onto the closed route would be green by
+    // construction. `DROPPED_CATEGORY` rather than `DUPLICATE` only because
+    // `gateIn` reads an empty corpus, so nothing here can collide with an
+    // open issue — the vehicle has to be a refusal reachable without one.
+    const cmd = `${DROPPED_FILING} --label ${FILING_OVERRIDE_LABEL}`;
     const over = (await gateIn(cmd, runA, [landed(runOf(runA))])).rows[0];
     expect(over.refusal).toBe("OVER_CAP");
     expect(over.overridden, "the label waives nothing once the cap has converted").toBe(false);
@@ -3528,9 +3814,25 @@ describe("FG-143..FG-175: a numeric cap, which no argument defeats", () => {
     // the cap is not what is being argued with, or this row would pass under
     // a gate that had simply stopped honouring the label at all.
     const under = (await gateIn(cmd, runA, [])).rows[0];
-    expect(under.refusal).toBe("COMMENT_INSTEAD");
+    expect(under.refusal).toBe("DROPPED_CATEGORY");
     expect(under.overridden).toBe(true);
     expect(under.emitted).toBe(true);
+
+    // And the closed route, asserted rather than left to the comment above:
+    // undeclared plus the label is refused UNDER the cap as well as over it,
+    // so it never becomes a cap question in the first place.
+    const undeclaredUnder = (
+      await gateIn(`${undeclaredSecond} --label ${FILING_OVERRIDE_LABEL}`, runA, [])
+    ).rows[0];
+    // **This row does not discriminate the map, and says so rather than
+    // letting a reader assume it.** A clause refused `COMMENT_INSTEAD` has
+    // `exemption === null` by construction, so `overrideOf`'s declaration
+    // read refuses the label here whether or not `COMMENT_INSTEAD` is in
+    // `UNWAIVABLE_REFUSALS`. The invariant asserted is true and worth
+    // holding; the binding that delivers it is separated in `FG-177` — M7
+    // for the message, M8 for the gate.
+    expect(undeclaredUnder.refusal).toBe("COMMENT_INSTEAD");
+    expect(undeclaredUnder.emitted, "the route that beat the gate by filing worse").toBe(false);
   });
 
   test("FG-159: the cap survives EVERY other refusal, not just the ones I thought of", async () => {
@@ -3545,7 +3847,8 @@ describe("FG-143..FG-175: a numeric cap, which no argument defeats", () => {
     const L = `--label ${FILING_OVERRIDE_LABEL}`;
     const dup =
       'gh issue create --title "retryBudget misbehaves on a long sweep" ' +
-      '--body "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234."';
+      '--body "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234. ' +
+      `${DECLARED}"`;
     const noClaim =
       'gh issue create --title "zqxjNoClaim loses a sweep it started" ' +
       `--body "\`zqxjNoClaim\` in lib/zqxj-no-claim.ts drops 17 of 29 commands over 6301 runs. ${DECLARED}"`;
@@ -3561,32 +3864,49 @@ describe("FG-143..FG-175: a numeric cap, which no argument defeats", () => {
         readTarget: async () => onPr,
       });
 
+    // **`COMMENT_INSTEAD` left the waivable set on 2026-10-25, so its row
+    // carries its own expected refusal rather than the shared one.** The
+    // invariant the case is about — refused, and nothing reaches the
+    // tracker — is unchanged for all four. What changed is WHICH refusal
+    // the ledger records for the fourth: the cap converts only clauses that
+    // `wouldEmit`, and an unwaivable refusal never would, so that clause is
+    // stopped a stage EARLIER and never becomes a cap question. Written as
+    // a per-row expectation rather than relaxed to "any refusal", which
+    // would stop distinguishing the stages at all.
+    const members = [
+      ["DUPLICATE", `${dup} ${L}`, "OVER_CAP", true],
+      ["NO_CLAIM", `${noClaim} ${L}`, "OVER_CAP", true],
+      // Like FG-130 and FG-157's undeclared block, this row no longer
+      // discriminates the map: `exemption === null` is what refuses the
+      // label on a `COMMENT_INSTEAD` clause. It is here for the invariant —
+      // every member of the set is refused and emits nothing — not as
+      // evidence about `UNWAIVABLE_REFUSALS`. `FG-177` carries that.
+      ["COMMENT_INSTEAD", `${undeclaredSecond} ${L}`, "COMMENT_INSTEAD", false],
+      ["DROPPED_CATEGORY", `${DROPPED_FILING} ${L}`, "OVER_CAP", true],
+    ] as const;
+
     const spent = [landed(runOf(runA))];
-    for (const [why, cmd] of [
-      ["DUPLICATE", `${dup} ${L}`],
-      ["NO_CLAIM", `${noClaim} ${L}`],
-      ["COMMENT_INSTEAD", `${undeclaredSecond} ${L}`],
-      ["DROPPED_CATEGORY", `${DROPPED_FILING} ${L}`],
-    ] as const) {
+    for (const [why, cmd, overCap] of members) {
       const row = (await run(cmd, spent)).rows[0];
-      expect(row.refusal, `${why} + the label, over the cap, must still be refused`).toBe("OVER_CAP");
+      expect(row.refusal, `${why} + the label, over the cap, must still be refused`).toBe(overCap);
       expect(row.overridden, `${why}: the label waives nothing here`).toBe(false);
       expect(row.emitted, `${why}: nothing reaches the tracker`).toBe(false);
     }
 
     // CONTROL for the four rows above, and one axis moves: with the
     // allowance UNSPENT each of those commands is refused for its OWN
-    // reason, and the label waives it. Without this the rows above would
-    // pass against a gate that had stopped honouring the label entirely.
-    for (const [why, cmd] of [
-      ["DUPLICATE", `${dup} ${L}`],
-      ["NO_CLAIM", `${noClaim} ${L}`],
-      ["COMMENT_INSTEAD", `${undeclaredSecond} ${L}`],
-      ["DROPPED_CATEGORY", `${DROPPED_FILING} ${L}`],
-    ] as const) {
+    // reason. Without this the rows above would pass against a gate that
+    // had stopped honouring the label entirely — and the fourth row is what
+    // keeps the first three from reading as "the label does nothing".
+    for (const [why, cmd, , waivable] of members) {
       const row = (await run(cmd, [])).rows[0];
       expect(row.refusal, `${why}: under the cap it is still the clause's own refusal`).toBe(why);
-      expect(row.overridden, `${why}: and the label waives it there`).toBe(true);
+      expect(
+        row.overridden,
+        waivable
+          ? `${why}: and the label waives it there`
+          : `${why}: no label waives this one, under the cap or over it`,
+      ).toBe(waivable);
     }
 
     // The fifth member needs the allowance spent BY THIS COMMAND, because a
@@ -4457,5 +4777,147 @@ describe("FG-143..FG-175: a numeric cap, which no argument defeats", () => {
     // checkout is a legitimate unit and buckets with the nowheres, because
     // `normaliseSlug` wants exactly two segments.
     expect(namesARepository("https://git.example.com/group/sub/name.git")).toBe(false);
+  });
+
+  test("FG-176: no label waives the comment DEFAULT, and the refusal stops spelling one", async () => {
+    // **The default was waivable by a token its own refusal handed over.**
+    // `COMMENT_INSTEAD` is the comment default — the thing #1595's spec
+    // paragraph is about — and `waivableRefusal` let `arbiter-override`
+    // clear it while the message closed with *"If this one genuinely is the
+    // exception, re-run with --label arbiter-override"*, four lines under
+    // the text saying the list of exceptions is closed. So the closed list
+    // had a fourth member, spelled in the refusal that enforced it.
+    //
+    // Measured rather than argued: `arbiter-override` was already on **7 of
+    // the 140** issues filed in the two days before this gate shipped, so
+    // the token was in circulation before there was anything to override.
+    expect(waivableRefusal("COMMENT_INSTEAD"), "the comment default is not waivable").toBe(false);
+
+    // Through the real hook PROCESS, because what an agent acts on is the
+    // text on stdout and not a return value. The two commands differ by the
+    // declaration and by the label, and by nothing else: `NOVEL_FILING` is
+    // this file's standing ALLOW control, so the undeclared twin is it with
+    // one line removed — the cheapest route, and the one worth closing.
+    const undeclaredNovel = NOVEL_FILING.replace(` ${DECLARED}`, "");
+    expect(undeclaredNovel, "the declaration really came out").not.toContain(EXEMPTION_PREFIX);
+    const blocked = runHook(HOOK, `${undeclaredNovel} --label ${FILING_OVERRIDE_LABEL}`);
+    expect(blocked.blocked, "the label carried an undeclared filing to the tracker").toBe(true);
+    expect(blocked.reason).toContain("COMMENT_INSTEAD");
+    expect(blocked.reason, "and it says so rather than going silent").toContain(
+      `--label ${FILING_OVERRIDE_LABEL} does NOT waive this one`,
+    );
+
+    // **CONTROL, one axis — the declaration present, no label.** A gate that
+    // refuses everything is a gag and not a default; this is the row that
+    // tells them apart, and it is the same filing with one line added.
+    writeFileSync(ledger, "", "utf-8");
+    const allowed = runHook(HOOK, NOVEL_FILING, {}, freshRun());
+    expect(allowed.blocked, "a declared filing must still go through").toBe(false);
+
+    // The POPULATION, so a refusal added to the map later cannot be
+    // waivable and a member removed cannot go unnoticed. Two directions,
+    // because membership and non-membership are different claims.
+    const unwaivable = Object.keys(UNWAIVABLE_REFUSALS) as ArbiterRefusal[];
+    expect(unwaivable.sort(), "the three that make no claim about a finding").toEqual([
+      "COMMENT_INSTEAD",
+      "OVER_CAP",
+      "UNMEASURED_CAP",
+    ]);
+    for (const refusal of unwaivable) {
+      expect(waivableRefusal(refusal), `${refusal} is in the map and still waivable`).toBe(false);
+      expect(
+        UNWAIVABLE_REFUSALS[refusal],
+        `${refusal} has no sentence, so the refusal would give a reason that is not its own`,
+      ).toBeTruthy();
+    }
+    for (const refusal of ["DUPLICATE", "NO_CLAIM", "DROPPED_CATEGORY", "SAME_CLASS_IN_RUN"] as const) {
+      expect(waivableRefusal(refusal), `${refusal} stopped being waivable`).toBe(true);
+    }
+    // And `null` — no refusal at all — is not swept into the unwaivable set
+    // by a membership test that forgot it.
+    expect(waivableRefusal(null)).toBe(true);
+  });
+
+  test("FG-178: deleting the CLAIM as well does not carry an undeclared filing past the label", async () => {
+    // **The sibling-refusal bypass, written before the fix and run against
+    // the unchanged tree first.** `FG-176` closes the route that deletes the
+    // declaration. This asks the next question down: `COMMENT_INSTEAD` is
+    // issued **after** `NO_CLAIM` — the precedence is deliberate and
+    // defended in `lib/issue-filing-gate.ts`, because putting the comment
+    // default first makes `NO_CLAIM` unreachable for the common filing — so
+    // a filing that is undeclared **and** claimless is refused `NO_CLAIM`,
+    // never `COMMENT_INSTEAD`, and `NO_CLAIM` is waivable.
+    //
+    // If the label carries that filing to the tracker, the gate is cheaper
+    // to beat the WORSE the filing gets: before, drop one line; now, drop
+    // two. The unwaivable member is simply never consulted.
+    //
+    // The precedence itself is NOT the thing to change — making
+    // `COMMENT_INSTEAD` win the race deletes a shipped gate as a side effect
+    // of adding one, which is exactly what the source comment warns about.
+    const undeclaredUnclaimed = NOVEL_FILING.replace(` ${DECLARED}`, "").replace(" Claim 4.", "");
+
+    // **The fixture proves its own premise**, both halves, or a green row
+    // below could be a filing that still declared or still claimed and was
+    // allowed for an ordinary reason.
+    expect(undeclaredUnclaimed, "the declaration really came out").not.toContain(EXEMPTION_PREFIX);
+    expect(namedClaim(undeclaredUnclaimed), "the claim really came out").toBeNull();
+    // And BOTH `replace` calls actually matched. A `String.replace` whose
+    // needle is absent returns the haystack unchanged and silently, so
+    // without this the fixture could be `NOVEL_FILING` itself — which names
+    // a claim and declares, and would be ALLOWED for ordinary reasons while
+    // reading as the bypass being closed.
+    expect(undeclaredUnclaimed.length, "neither strip matched").toBeLessThan(
+      NOVEL_FILING.length - ` ${DECLARED}`.length,
+    );
+
+    // The adjudication, so the row records WHICH refusal was issued. If this
+    // is `COMMENT_INSTEAD` the hypothesis is wrong at its first step.
+    const v = await adjudicateFiling(
+      filingAttempts(undeclaredUnclaimed)[0],
+      async () => measuredCorpus([]),
+    );
+    expect(v.refusal, "the precedence puts NO_CLAIM first for a filing missing both").toBe(
+      "NO_CLAIM",
+    );
+
+    // **The question.** Through the real hook process, like FG-176, because
+    // what reaches the tracker is decided by the process and not by a
+    // predicate read in isolation.
+    writeFileSync(ledger, "", "utf-8");
+    const blocked = runHook(
+      HOOK,
+      `${undeclaredUnclaimed} --label ${FILING_OVERRIDE_LABEL}`,
+      {},
+      freshRun(),
+    );
+    expect(
+      blocked.blocked,
+      "the label carried a filing that declared nothing AND claimed nothing to the tracker",
+    ).toBe(true);
+
+    // **CONTROL, one axis — the claim restored, still undeclared, still
+    // labelled.** This is FG-176's row reached from the other side: if it
+    // does not block, the row above is measuring the label rather than the
+    // sibling refusal, and if the row above blocks only because the gate
+    // refuses everything, this one tells us nothing new either.
+    writeFileSync(ledger, "", "utf-8");
+    const undeclaredOnly = NOVEL_FILING.replace(` ${DECLARED}`, "");
+    expect(namedClaim(undeclaredOnly), "the control really does name a claim").toBe(4);
+    const stillBlocked = runHook(
+      HOOK,
+      `${undeclaredOnly} --label ${FILING_OVERRIDE_LABEL}`,
+      {},
+      freshRun(),
+    );
+    expect(stillBlocked.blocked, "FG-176's route reopened").toBe(true);
+    expect(stillBlocked.reason).toContain("COMMENT_INSTEAD");
+
+    // **CONTROL, the other direction — a complete filing still goes
+    // through.** Without this the two rows above are satisfied by a gate
+    // that blocks everything, which is a gag and not a default.
+    writeFileSync(ledger, "", "utf-8");
+    const allowed = runHook(HOOK, NOVEL_FILING, {}, freshRun());
+    expect(allowed.blocked, "a declared, claiming filing must still go through").toBe(false);
   });
 });
