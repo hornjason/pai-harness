@@ -3824,6 +3824,13 @@ describe("FG-143..FG-176: a numeric cap, which no argument defeats", () => {
     const undeclaredUnder = (
       await gateIn(`${undeclaredSecond} --label ${FILING_OVERRIDE_LABEL}`, runA, [])
     ).rows[0];
+    // **This row does not discriminate the map, and says so rather than
+    // letting a reader assume it.** A clause refused `COMMENT_INSTEAD` has
+    // `exemption === null` by construction, so `overrideOf`'s declaration
+    // read refuses the label here whether or not `COMMENT_INSTEAD` is in
+    // `UNWAIVABLE_REFUSALS`. The invariant asserted is true and worth
+    // holding; the binding that delivers it is separated in `FG-177` — M7
+    // for the message, M8 for the gate.
     expect(undeclaredUnder.refusal).toBe("COMMENT_INSTEAD");
     expect(undeclaredUnder.emitted, "the route that beat the gate by filing worse").toBe(false);
   });
@@ -3869,6 +3876,11 @@ describe("FG-143..FG-176: a numeric cap, which no argument defeats", () => {
     const members = [
       ["DUPLICATE", `${dup} ${L}`, "OVER_CAP", true],
       ["NO_CLAIM", `${noClaim} ${L}`, "OVER_CAP", true],
+      // Like FG-130 and FG-157's undeclared block, this row no longer
+      // discriminates the map: `exemption === null` is what refuses the
+      // label on a `COMMENT_INSTEAD` clause. It is here for the invariant —
+      // every member of the set is refused and emits nothing — not as
+      // evidence about `UNWAIVABLE_REFUSALS`. `FG-177` carries that.
       ["COMMENT_INSTEAD", `${undeclaredSecond} ${L}`, "COMMENT_INSTEAD", false],
       ["DROPPED_CATEGORY", `${DROPPED_FILING} ${L}`, "OVER_CAP", true],
     ] as const;
