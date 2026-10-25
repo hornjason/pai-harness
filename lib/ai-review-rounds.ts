@@ -177,6 +177,42 @@ export interface CarryScopeReading {
    * too much, because a compliant reviewer then reads nothing at all.
    */
   changedFileCount: unknown;
+  /**
+   * How many earlier rounds the ledger dropped, from its own `truncated`
+   * key (#1405). A COUNT, not a flag — measured across the corpus on
+   * 2026-10-24, every #1405-era ledger reads the number `0` and no ledger
+   * has ever read a boolean.
+   *
+   * It is a SEPARATE reading from `unmeasuredRounds` and the distinction is
+   * the whole of why this field exists: `unmeasuredRounds` counts recorded
+   * rounds whose findings list could not be PARSED, so it is a statement
+   * about what is in front of the reader. A truncated ledger's earlier
+   * rounds are ABSENT — nothing to fail to parse — so every entry still
+   * present reads fine, `unmeasuredRounds` is `0`, and a completeness gate
+   * built on it alone narrows the scope over a hole it cannot see. That is
+   * #1601's shape one level up, and it was found by review rather than by
+   * this file's own tests.
+   */
+  truncatedRounds: unknown;
+  /**
+   * The ledger's recorded rounds STRICTLY BELOW this one: how many distinct
+   * round numbers, and the highest of them.
+   *
+   * Two numbers because one cannot say what this gate needs: rounds 1, 2
+   * and 5 before a snapshot at 6 has a highest of 5 and a count of 3, and
+   * the hole at 3 and 4 is exactly the difference. Nothing is truncated and
+   * nothing is unparseable, so neither reading above can see it.
+   *
+   * **Strictly below**, because a re-run appends another entry at the round
+   * it is re-running (#1592). Counting the current round's own entry would
+   * make the gate refuse every re-run for a reason that is not a hole.
+   *
+   * Measured: of 197 rounds at or past the floor across 144 ledgers, 14
+   * carry a genuine gap — #1420 has no round 2, #1391 no round 1 — and 100
+   * are clean. So this refuses something real and is not adoption on paper.
+   */
+  priorRounds: unknown;
+  highestPriorRound: unknown;
 }
 
 /**
@@ -370,8 +406,36 @@ export function reviewScopeForRound(rawRound: unknown, carry: unknown): ReviewSc
   // zero through a coercion, and a blind-spot count nobody wrote is not a
   // count of zero. The carry writes a decimal integer or the word `unknown`.
   if (!isZeroCount(c.unmeasuredRounds)) return REVIEW_SCOPE_FULL;
+  // A DIFFERENT question from the one above, and the reason is the whole of
+  // this gate: `unmeasuredRounds` asks whether what is present parses.
+  // `truncated` asks whether anything is missing. A ledger that dropped its
+  // first four rounds parses perfectly, so the gate above reads `0` and
+  // narrows the scope over history it cannot see.
+  if (!isZeroCount(c.truncatedRounds)) return REVIEW_SCOPE_FULL;
+  // And a hole needs neither truncation nor an unparseable round to exist:
+  // rounds 1, 2 and 5 recorded before a snapshot at 6 is a gap that both
+  // readings above call clean. The prior rounds must be exactly 1..round-1.
+  const highest = readCount(c.highestPriorRound);
+  const distinct = readCount(c.priorRounds);
+  if (highest === null || distinct === null) return REVIEW_SCOPE_FULL;
+  if (highest !== round - 1 || distinct !== highest) return REVIEW_SCOPE_FULL;
   if (!isPositiveCount(c.changedFileCount)) return REVIEW_SCOPE_FULL;
   return REVIEW_SCOPE_DIFF;
+}
+
+/**
+ * A non-negative decimal integer, as a number or as the string a shell
+ * emits — or `null` for anything that is not one.
+ *
+ * `null` rather than a sentinel number, because every caller above treats an
+ * unreadable count as a refusal and a sentinel would have to be a value the
+ * comparison could accidentally satisfy.
+ */
+function readCount(v: unknown): number | null {
+  if (typeof v === "number") return Number.isInteger(v) && v >= 0 ? v : null;
+  if (typeof v !== "string" || !/^[0-9]+$/.test(v)) return null;
+  const n = Number.parseInt(v, 10);
+  return Number.isSafeInteger(n) ? n : null;
 }
 
 /**

@@ -4563,6 +4563,16 @@ carry_note() {
 # count of none. Every path that never reaches the read therefore narrows
 # nothing, which is the direction this is allowed to be wrong in.
 scope_unmeasured_rounds=unknown
+# How many earlier rounds the ledger DROPPED (its own \`truncated\` key), and
+# the shape of the rounds it still holds below this one. Three readings and
+# not one, because they are three different ways for the history to be
+# incomplete and only the first was ever checked: a round that will not
+# parse, a round the ledger threw away, and a round number that is simply
+# absent from an otherwise perfect list. \`unknown\` until the read path
+# establishes each, and \`unknown\` refuses.
+scope_truncated_rounds=unknown
+scope_prior_rounds=unknown
+scope_highest_prior=unknown
 
 # The review scope for this round (CRC-N2, #1600). The restatement of
 # \`reviewScopeForRound\` in lib/ai-review-rounds.ts for a runner that cannot
@@ -4631,7 +4641,29 @@ review_scope_for_round() {
   if [ "\${scope_unmeasured_rounds}" != 0 ]; then
     printf '%s' '${AI_REVIEW_SCOPE_FULL_WORD}'; return 0
   fi
-  # Gate 4. \`-s\` is the whole test: the changed-files step writes NOTHING
+  # Gate 4 — COMPLETENESS, which is a different question from readability.
+  # The gate above asks whether every recorded round PARSES. A truncated
+  # ledger's earlier rounds are absent rather than unparseable, so everything
+  # still present reads fine, the count above is 0, and a scope narrowed on
+  # it is narrowed over history nobody can see.
+  if [ "\${scope_truncated_rounds}" != 0 ]; then
+    printf '%s' '${AI_REVIEW_SCOPE_FULL_WORD}'; return 0
+  fi
+  # Gate 5 — and a hole needs neither truncation nor an unreadable round.
+  # Rounds 1, 2 and 5 before a snapshot at 6 is a gap both gates above call
+  # clean. The recorded rounds BELOW this one must be exactly 1..r-1.
+  #
+  # Below this one, not all of them: a re-run appends another entry at the
+  # round it re-runs (#1592), and counting that would refuse every re-run for
+  # a reason that is not a hole.
+  case "\${scope_prior_rounds}\${scope_highest_prior}" in
+    *[!0-9]*) printf '%s' '${AI_REVIEW_SCOPE_FULL_WORD}'; return 0 ;;
+  esac
+  if [ "\${scope_highest_prior}" -ne "\$((r - 1))" ] \\
+    || [ "\${scope_prior_rounds}" -ne "\${scope_highest_prior}" ]; then
+    printf '%s' '${AI_REVIEW_SCOPE_FULL_WORD}'; return 0
+  fi
+  # Gate 6. \`-s\` is the whole test: the changed-files step writes NOTHING
   # rather than an empty file when it cannot produce a list, and writes a
   # non-empty one when it can, so absent and empty are one refusal here and
   # the two warnings that distinguish them are that step's to emit.
@@ -4838,6 +4870,7 @@ fi
 # all) — #1406 — so the empty string reaching here is a real reading of a
 # real blank line and is compared like any other.
 if ! flat=\$(printf '%s' "\${rounds}" | jq -c --arg id '${AI_REVIEW_LEDGER_IDENTITY_V1}' '
+    ${AI_REVIEW_JQ_NORM}
     [ .[]
       | select(type == "object")
       | . as \$r
@@ -4851,6 +4884,9 @@ if ! flat=\$(printf '%s' "\${rounds}" | jq -c --arg id '${AI_REVIEW_LEDGER_IDENT
           ${AI_REVIEW_FINDING_FIELDS.line}: .${AI_REVIEW_FINDING_FIELDS.line},
           ${AI_REVIEW_FINDING_FIELDS.summary}: .${AI_REVIEW_FINDING_FIELDS.summary},
           recorded: (if (has("${AI_REVIEW_LEDGER_TEXT_FIELD}") and ((.${AI_REVIEW_LEDGER_TEXT_FIELD} | type) == "string")) then .${AI_REVIEW_LEDGER_TEXT_FIELD} else null end),
+          anchor: (if (has("${AI_REVIEW_LEDGER_TEXT_FIELD}") and ((.${AI_REVIEW_LEDGER_TEXT_FIELD} | type) == "string"))
+                   then (if ((.${AI_REVIEW_LEDGER_TEXT_FIELD} | norm) == "") then "${AI_REVIEW_ANCHOR_BY_LINE}" else "${AI_REVIEW_ANCHOR_BY_TEXT}" end)
+                   else "${AI_REVIEW_ANCHOR_NONE}" end),
           keyable: \$keyable
         }
     ]' 2>/dev/null); then
@@ -4877,9 +4913,15 @@ case "\${unmeasured_rounds}" in
   ''|*[!0-9]*) unmeasured_rounds=unknown ;;
 esac
 
-# The anchor AT THIS COMMIT, one per row, through the one reader. Positional
+# The anchor AT THIS COMMIT, one per row, through the one resolver. Positional
 # join, exactly as the writer records them: a row whose anchor cannot be read
 # now leaves the key OFF, and an absent key CARRIES.
+#
+# WHICH question is asked is \`anchor\`'s, decided in the flatten above and
+# never re-derived here (#1601). A \`${AI_REVIEW_ANCHOR_BY_TEXT}\` row is counted across the whole
+# file and cannot be disturbed by an edit elsewhere in it; a \`${AI_REVIEW_ANCHOR_BY_LINE}\` row is the
+# genuinely-blank anchor and keeps the line comparison; a \`${AI_REVIEW_ANCHOR_NONE}\` row has no
+# anchor and is not asked anything.
 if ! texts=\$(mktemp); then
   carry_unmeasured "a temporary file could not be created, so the cited lines could not be compared against this commit."
 fi
@@ -4888,16 +4930,66 @@ printf '%s' "\${flat}" | jq -c '.[]' | while IFS= read -r row; do
   # failing \$(...) aborts the loop before anything reads \$? (#1110).
   rf=\$(printf '%s' "\${row}" | jq -r '.${AI_REVIEW_FINDING_FIELDS.file} // ""') || true
   rl=\$(printf '%s' "\${row}" | jq -r 'if (.${AI_REVIEW_FINDING_FIELDS.line}|type) == "number" then (.${AI_REVIEW_FINDING_FIELDS.line}|floor|tostring) else "" end') || true
-  if now=\$(anchor_text "\${rf}" "\${rl}"); then
-    jq -nc --arg n "\${now}" '{now: \$n}'
-  else
-    printf '%s\\n' '{}'
-  fi
+  ra=\$(printf '%s' "\${row}" | jq -r '.anchor // "${AI_REVIEW_ANCHOR_NONE}"') || true
+  case "\${ra}" in
+    ${AI_REVIEW_ANCHOR_BY_TEXT})
+      rtext=\$(printf '%s' "\${row}" | jq -r '.recorded // ""') || true
+      if matches=\$(anchor_matches "\${rf}" "\${rtext}"); then
+        jq -nc --argjson m "\${matches}" '{matches: \$m}'
+      else
+        printf '%s\\n' '{}'
+      fi
+      ;;
+    ${AI_REVIEW_ANCHOR_BY_LINE})
+      if now=\$(anchor_text "\${rf}" "\${rl}"); then
+        jq -nc --arg n "\${now}" '{now: \$n}'
+      else
+        printf '%s\\n' '{}'
+      fi
+      ;;
+    *)
+      printf '%s\\n' '{}'
+      ;;
+  esac
 done > "\${texts}"
 
 # The carry rule, and the DROP is the half that makes the rest mean anything:
 # without it this step carries everything unconditionally and a suite asserting
 # only that a finding gets carried is green against it.
+#
+# #1601 CHANGED WHAT THE DROP IS KEYED ON, and that is the only change here.
+# It used to read the text at the recorded LINE NUMBER and drop the finding
+# when it differed. So an insertion or deletion anywhere above the finding
+# re-pointed the anchor at unrelated code, the comparison failed, and the
+# finding was dropped as RESOLVED — measured on #1597, where a \`high\` raised
+# at round 5 was absent from rounds 6 and 7 with nothing fixed and the
+# required check reported CLEAN. The three branches of this \`select\` were
+# always built to fail TOWARD carrying — a null anchor carries, an unreadable
+# anchor carries — and the one branch that fails open was the one ordinary
+# editing produces on every push.
+#
+# Now a \`${AI_REVIEW_ANCHOR_BY_TEXT}\` row asks how many lines of the file equal the recorded
+# text, which no edit elsewhere can disturb, and only a count of ZERO drops.
+# \`>= 1\` and not \`== 1\` deliberately: an ambiguous anchor is a question
+# this reader cannot answer, and the honest answer to "is this fixed" that
+# nobody can establish is to carry it, not to assume yes.
+#
+# A \`${AI_REVIEW_ANCHOR_BY_LINE}\` row keeps the old comparison and must: its recorded anchor is
+# the empty string, which #1406 established is a genuinely BLANK cited line
+# rather than a failed read. Counting lines equal to "" would match every
+# blank line in the file, land in the ambiguous arm, and make such a finding
+# permanently uncarryable-away — the exact inverse of the hazard
+# \`anchor_text\`'s docblock warns about, reached from the other side.
+#
+# THE THREE ARMS ARE EXCLUSIVE, and that shape is load-bearing rather than
+# tidy. The first draft of this rule kept the old \`(.recorded == null) or …\`
+# disjunction in front, and the \`${AI_REVIEW_ANCHOR_NONE}\` arm became UNREACHABLE: a row with
+# no anchor is asked nothing by the loop, so it arrives with no \`matches\`
+# key, and the content arm's own \`has("matches") | not\` carries it anyway.
+# Two deciders answering one question, with a mutation of either leaving the
+# other holding the case up — measured, not reasoned about: deleting the
+# undecidable arm was 0 red until this became an \`if/elif/else\`. Each arm
+# now has rows only it is asked about.
 #
 # Dedupe is \`carryKey\`'s rule — the file, the TEXT of the cited line falling
 # back to the line NUMBER, and the summary — and it is applied only to rounds
@@ -4906,17 +4998,18 @@ done > "\${texts}"
 # compares two different things. The EARLIEST round wins, so a finding that
 # has survived three rounds says round 1 and not round 3.
 if ! carried=\$(jq -sc --argjson base "\${flat}" '
-    def norm: (. // "") | tostring | ascii_downcase | gsub("[[:space:]]+"; " ") | sub("^ +"; "") | sub(" +\$"; "");
+    ${AI_REVIEW_JQ_NORM}
     [ range(0; (\$base | length)) as \$i | (\$base[\$i] + (.[\$i] // {})) ]
     | map(select(
-        (.recorded == null)
-        or ((has("now") | not))
-        or ((.now | norm) == (.recorded | norm))
+        if .anchor == "${AI_REVIEW_ANCHOR_BY_TEXT}" then ((has("matches") | not)) or (.matches >= 1)
+        elif .anchor == "${AI_REVIEW_ANCHOR_BY_LINE}" then ((has("now") | not)) or ((.now | norm) == (.recorded | norm))
+        else true
+        end
       ))
     | map(. + {
         k: (if .keyable
             then ((.${AI_REVIEW_FINDING_FIELDS.file} | norm) + "\\u0000"
-                  + (if ((.recorded | norm) != "") then "t:" + (.recorded | norm)
+                  + (if .anchor == "${AI_REVIEW_ANCHOR_BY_TEXT}" then "t:" + (.recorded | norm)
                      else "n:" + ((.${AI_REVIEW_FINDING_FIELDS.line} // "") | tostring) end)
                   + "\\u0000" + (.${AI_REVIEW_FINDING_FIELDS.summary} | norm))
             else null end)
@@ -4938,6 +5031,41 @@ fi
 # holds \`unknown\`. The carry's own word \`unknown\` passes straight through
 # and is refused by the scope the same way an absent count is.
 scope_unmeasured_rounds="\${unmeasured_rounds}"
+
+# CRC-N2 gates 4 and 5, set here for the same reason and from the same parse.
+#
+# \`truncated\` is a COUNT of dropped rounds, not a flag — measured across 144
+# ledgers on 2026-10-24, every #1405-era one reads the number 0 and none has
+# ever read a boolean. A PRE-#1405 bare-array ledger has no such key at all,
+# and that is \`unknown\` rather than zero: 49 of the 144 are in that state,
+# and a bare array is precisely the shape that cannot say what it dropped.
+if ! scope_truncated_rounds=\$(printf '%s' "\${fenced}" | jq -r 'if (type == "object") and ((.${AI_REVIEW_LEDGER_TRUNCATED_FIELD} | type) == "number") then (.${AI_REVIEW_LEDGER_TRUNCATED_FIELD} | floor | tostring) else "unknown" end' 2>/dev/null); then
+  scope_truncated_rounds=unknown
+fi
+case "\${scope_truncated_rounds}" in
+  ''|*[!0-9]*) scope_truncated_rounds=unknown ;;
+esac
+
+# The rounds recorded BELOW this one: how many distinct, and the highest.
+# \`--arg\` rather than an interpolation, because the round arrives from an
+# earlier step's output and is author-influenced; jq compares it as a number
+# only after its own \`tonumber\`, which refuses anything that is not one.
+if ! scope_prior_rounds=\$(printf '%s' "\${rounds}" | jq -r --arg r "\${${AI_REVIEW_SNAPSHOT_ROUND_VAR}:-}" '
+    ($r | tonumber? // -1) as $now
+    | if $now < 1 then "unknown" else
+        ([ .[] | select(type == "object") | .round | select(type == "number") | floor
+           | select(. < $now) ] | unique | length | tostring)
+      end' 2>/dev/null); then
+  scope_prior_rounds=unknown
+fi
+if ! scope_highest_prior=\$(printf '%s' "\${rounds}" | jq -r --arg r "\${${AI_REVIEW_SNAPSHOT_ROUND_VAR}:-}" '
+    ($r | tonumber? // -1) as $now
+    | if $now < 1 then "unknown" else
+        ([ .[] | select(type == "object") | .round | select(type == "number") | floor
+           | select(. < $now) ] | if length == 0 then "unknown" else (max | tostring) end)
+      end' 2>/dev/null); then
+  scope_highest_prior=unknown
+fi
 
 carry_state '${AI_REVIEW_CARRY_READ}'
 
@@ -9393,6 +9521,66 @@ echo "::notice title=${AI_REVIEW_DISARM_TITLE}::${disarmed}"
 }
 
 /**
+ * The jq normaliser every comparison of an anchor goes through, declared
+ * once because it is the OPERAND RULE of a comparison.
+ *
+ * Three positions now need it — the flatten that decides whether a row is
+ * content-addressable, `anchor_matches` counting lines equal to the recorded
+ * text, and the carry rule's own `select`. A second spelling of it would not
+ * fail: it would make two readers disagree about whether two strings are the
+ * same string, and the carry rule's answer to that question is whether a
+ * live finding is shown to the reviewer. That is #1601's shape exactly, so
+ * the remedy is one binding rather than a convention.
+ *
+ * Declared as an ordinary string, not a template literal: it reaches the
+ * generated script verbatim, and an interpolation here would be a second
+ * place where its text is decided.
+ */
+export const AI_REVIEW_JQ_NORM =
+  'def norm: (. // "") | tostring | ascii_downcase | gsub("[[:space:]]+"; " ") | sub("^ +"; "") | sub(" +$"; "");';
+
+/**
+ * Which question a ledger row's anchor can answer, decided ONCE in the
+ * flatten and read everywhere else (#1601).
+ *
+ * The three are not shades of each other and the carry rule treats them
+ * differently, which is the whole reason they are named rather than
+ * re-derived at each site:
+ *
+ *  - `text` — a non-empty recorded anchor. Content-addressed: count the
+ *    lines equal to it, carry on 1 or more, resolve only on 0.
+ *  - `line` — a recorded anchor that is the empty string, which #1406
+ *    established is a real reading of a genuinely BLANK cited line and not
+ *    a failure to read. Content-addressing it would match every blank line
+ *    in the file and the finding could never be resolved, so it stays on
+ *    the line-number comparison, where `anchor_text`'s `got` tells a blank
+ *    line from an unreadable one.
+ *  - `none` — no recorded anchor at all. Undecidable, and carried.
+ *
+ * These are also what the `t:`/`n:` key namespaces are chosen from, so the
+ * decision that routes the comparison and the decision that names the key
+ * are one decision. They were two before #1601 — both read
+ * `(.recorded | norm) != ""`, independently — which is two deciders of one
+ * question, and the rule they encode is `carryKey`'s.
+ */
+export const AI_REVIEW_ANCHOR_BY_TEXT = "text";
+export const AI_REVIEW_ANCHOR_BY_LINE = "line";
+export const AI_REVIEW_ANCHOR_NONE = "none";
+
+/**
+ * `anchor_resolve <repo-relative-path>` — resolves a reviewer-chosen path to
+ * a tracked file inside this checkout, setting `root` and `rel`.
+ *
+ * Extracted from `anchor_text` by #1601, which needed a SECOND question asked
+ * of the same file — "how many lines equal this text" beside "what is at this
+ * line". Giving the new reader its own path resolution would have been two
+ * deciders of "is this path safe to read", the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, inside the guard that
+ * exists to stop a reviewer-chosen path escaping the checkout. Every line of
+ * it is the previous inline block, moved rather than retyped, and the four
+ * strings the mutation batteries in `test/ai-review-ledger-step.test.ts`
+ * rewrite are byte-identical, so all four still apply.
+ *
  * `anchor_text <repo-relative-path> <line>` — the text at a cited line, read
  * out of the INDEX of the checkout this job holds.
  *
@@ -9427,9 +9615,8 @@ echo "::notice title=${AI_REVIEW_DISARM_TITLE}::${disarmed}"
  * the containment arm, the `-*` arm and the index read — and all three are
  * byte-identical here, so they still apply.
  */
-export const AI_REVIEW_ANCHOR_READER = `anchor_text() {
+export const AI_REVIEW_ANCHOR_READER = `anchor_resolve() {
   rf=$1
-  rl=$2
   # The REVIEWER chooses \`file\`, and a caller copies a line of it into
   # a public comment (the ledger) or into the next round's prompt (the
   # carry). An absolute path, one climbing out of the checkout, or one
@@ -9444,6 +9631,122 @@ export const AI_REVIEW_ANCHOR_READER = `anchor_text() {
   # author commits a file whose NAME is the option and writes code at
   # that path shaped to draw a finding. Every input is author-chosen.
   case "\${rf}" in ""|-*|/*|*..*) rf="" ;; esac
+  anchor_ok=no
+  # \`! -L\` BEFORE \`-f\`, and the ORDER is the fix (#1379).
+  # The three string tests above read the SPELLING of the path, and
+  # a committed symlink needs neither a leading \`/\` nor a \`..\`
+  # to leave the checkout. \`-f\` FOLLOWS the link, so it is not
+  # evidence of an ordinary in-tree file — it is the test that
+  # makes the link transparent. Ordering these the other way round
+  # reinstates the whole hole.
+  #
+  # \`! -L\` alone is not enough either: in \`notes/x.md\` the
+  # LINK can be \`notes\`, and \`x.md\` is then not a link by any
+  # test. So resolve the path and require the result to sit under
+  # the workspace. Both sides go through \`readlink -f\` because
+  # the root itself is reached through a symlink on some runners
+  # (\`/tmp\` on macOS), and comparing a resolved path against an
+  # unresolved root refuses every legitimate quote.
+  #
+  # An empty \`real\` or \`root\` REFUSES rather than defaulting:
+  # an empty root makes the pattern \`/*\`, which matches every
+  # absolute path there is. That is the fail-open shape in
+  # .claude/rules/checks-must-be-able-to-fail.md, arriving inside
+  # the guard it would disarm.
+  #
+  # Failing containment leaves \`rt\` empty, which is the existing
+  # no-quote rendering — no new failure mode and no annotation.
+  # Untrusted input being declined is not a review result.
+  #
+  # The \`./\` prefix is the SECOND half of the option defence and
+  # is independent of the \`-*\` arm above, deliberately: the arm
+  # states the intent where a reader looks for it, and the prefix
+  # still holds if someone later adds a path-rewriting step between
+  # them. \`rf\` is known relative here — absolute and \`..\` were
+  # refused above — so \`./\` only ever prefixes, never redirects.
+  #
+  # \`--\` on \`readlink\`, where the operand is still the
+  # attacker-shaped \`rf\` and both GNU and BSD accept it.
+  #
+  # \`--\` DELIBERATELY NOT on \`sed\`, against a review that asked
+  # for it as a third layer. BSD sed does not implement it: it
+  # takes \`--\` as a FILE OPERAND, and numbering is continuous
+  # across operands, so with a file literally named \`--\` in the
+  # tree the quote comes from THAT file. Measured on darwin 25.6 —
+  # \`sed -n 1p -- /abs/a.ts\` printed the contents of \`./--\` —
+  # and git tracks such a file, so on a BSD runner \`--\` would ADD
+  # a disclosure route of exactly the class this fixes. It also
+  # buys nothing: \`sed\` is handed \`\${real}\`, an absolute
+  # resolved path known to start with \`\${root}/\`, which cannot
+  # be parsed as an option. That is a guarantee by construction,
+  # which is stronger than a terminator.
+  if [ -n "\${rf}" ] && [ ! -L "./\${rf}" ] && [ -f "./\${rf}" ]; then
+    real=\$(readlink -f -- "./\${rf}" 2>/dev/null || true)
+    root=\$(readlink -f -- "\${GITHUB_WORKSPACE:-\$PWD}" 2>/dev/null || true)
+    if [ -n "\${real}" ] && [ -n "\${root}" ]; then
+      case "\${real}" in
+        "\${root}"/*)
+          # TRACKED, not merely inside the workspace. Containment
+          # answers "is this in the checkout"; the question worth
+          # asking is "is this a file the pull request contains".
+          # They differ by exactly the interesting set — \`.git/\`,
+          # and anything an earlier step or the reviewer itself
+          # wrote into the workspace. Tracked source is public by
+          # construction for a pull request: the reviewer is
+          # quoting something already visible in the diff.
+          #
+          # This SUBSUMES the \`.git/\`/\`.ssh/\` dot-directory arm
+          # the same review suggested, so that arm is not added —
+          # two deciders answering one question are behaviourally
+          # one, and a mutation of either leaves the other holding
+          # the case up.
+          #
+          # \`ls-files\` reads the INDEX, not history, so
+          # \`fetch-depth: 1\` is sufficient — asserted in the rig,
+          # not reasoned about. It is local and reaches no network,
+          # which matters because this job checks out with
+          # \`persist-credentials: false\` and has no token in
+          # \`.git/config\` to spend.
+          # READ THE INDEX, not the working tree. \`ls-files\`
+          # asks the index "is this path tracked"; a \`sed\` of
+          # \`\${real}\` reads whatever is on disk NOW. A tracked
+          # file that an earlier step modified passes the gate and
+          # gets its MODIFIED content quoted — the validator and
+          # the consumer talking about two different objects,
+          # which is the same class as the symlink defect this arm
+          # exists to fix, arriving inside the guard that fixed it.
+          #
+          # \`git show ":\${rel}"\` makes them one object: the
+          # thing quoted IS the thing the pull request contains,
+          # which is what the tracked boundary was for.
+          #
+          # ONE decider, and no separate \`ls-files\` gate. An
+          # earlier draft kept it as a membership check and it was
+          # measured redundant: \`git show\` on a path not in the
+          # index fails by itself, so defeating \`ls-files\`
+          # changed no input and the mutation rows for it went
+          # green witnessing nothing. Two deciders answering one
+          # question are behaviourally one, and a mutation of
+          # either leaves the other holding the case up.
+          #
+          # Dropping it also removes a PATHSPEC. \`ls-files --
+          # "\${rel}"\` reads \`rel\` as a pathspec, where glob
+          # magic means a tracked \`a?c.ts\` answers yes for a
+          # request naming \`abc.ts\`; \`:\${rel}\` is a revision
+          # and never globbed. The mismatch was one-sided, which
+          # is exactly what made it invisible.
+          rel=\${real#"\${root}"/}
+          anchor_ok=yes
+          ;;
+      esac
+    fi
+  fi
+  [ "\${anchor_ok}" = yes ]
+}
+
+anchor_text() {
+  rf=$1
+  rl=$2
   # \`rt\` holds the anchor; \`got\` says whether there IS one. Two
   # variables because one value cannot hold two facts, which is the
   # whole of #1406: \`rt=""\` was the initial value AND the value every
@@ -9469,136 +9772,84 @@ export const AI_REVIEW_ANCHOR_READER = `anchor_text() {
   case "\${rl}" in
     ""|0|*[!0-9]*) ;;
     *)
-      # \`! -L\` BEFORE \`-f\`, and the ORDER is the fix (#1379).
-      # The three string tests above read the SPELLING of the path, and
-      # a committed symlink needs neither a leading \`/\` nor a \`..\`
-      # to leave the checkout. \`-f\` FOLLOWS the link, so it is not
-      # evidence of an ordinary in-tree file — it is the test that
-      # makes the link transparent. Ordering these the other way round
-      # reinstates the whole hole.
-      #
-      # \`! -L\` alone is not enough either: in \`notes/x.md\` the
-      # LINK can be \`notes\`, and \`x.md\` is then not a link by any
-      # test. So resolve the path and require the result to sit under
-      # the workspace. Both sides go through \`readlink -f\` because
-      # the root itself is reached through a symlink on some runners
-      # (\`/tmp\` on macOS), and comparing a resolved path against an
-      # unresolved root refuses every legitimate quote.
-      #
-      # An empty \`real\` or \`root\` REFUSES rather than defaulting:
-      # an empty root makes the pattern \`/*\`, which matches every
-      # absolute path there is. That is the fail-open shape in
-      # .claude/rules/checks-must-be-able-to-fail.md, arriving inside
-      # the guard it would disarm.
-      #
-      # Failing containment leaves \`rt\` empty, which is the existing
-      # no-quote rendering — no new failure mode and no annotation.
-      # Untrusted input being declined is not a review result.
-      #
-      # The \`./\` prefix is the SECOND half of the option defence and
-      # is independent of the \`-*\` arm above, deliberately: the arm
-      # states the intent where a reader looks for it, and the prefix
-      # still holds if someone later adds a path-rewriting step between
-      # them. \`rf\` is known relative here — absolute and \`..\` were
-      # refused above — so \`./\` only ever prefixes, never redirects.
-      #
-      # \`--\` on \`readlink\`, where the operand is still the
-      # attacker-shaped \`rf\` and both GNU and BSD accept it.
-      #
-      # \`--\` DELIBERATELY NOT on \`sed\`, against a review that asked
-      # for it as a third layer. BSD sed does not implement it: it
-      # takes \`--\` as a FILE OPERAND, and numbering is continuous
-      # across operands, so with a file literally named \`--\` in the
-      # tree the quote comes from THAT file. Measured on darwin 25.6 —
-      # \`sed -n 1p -- /abs/a.ts\` printed the contents of \`./--\` —
-      # and git tracks such a file, so on a BSD runner \`--\` would ADD
-      # a disclosure route of exactly the class this fixes. It also
-      # buys nothing: \`sed\` is handed \`\${real}\`, an absolute
-      # resolved path known to start with \`\${root}/\`, which cannot
-      # be parsed as an option. That is a guarantee by construction,
-      # which is stronger than a terminator.
-      if [ -n "\${rf}" ] && [ ! -L "./\${rf}" ] && [ -f "./\${rf}" ]; then
-        real=\$(readlink -f -- "./\${rf}" 2>/dev/null || true)
-        root=\$(readlink -f -- "\${GITHUB_WORKSPACE:-\$PWD}" 2>/dev/null || true)
-        if [ -n "\${real}" ] && [ -n "\${root}" ]; then
-          case "\${real}" in
-            "\${root}"/*)
-              # TRACKED, not merely inside the workspace. Containment
-              # answers "is this in the checkout"; the question worth
-              # asking is "is this a file the pull request contains".
-              # They differ by exactly the interesting set — \`.git/\`,
-              # and anything an earlier step or the reviewer itself
-              # wrote into the workspace. Tracked source is public by
-              # construction for a pull request: the reviewer is
-              # quoting something already visible in the diff.
-              #
-              # This SUBSUMES the \`.git/\`/\`.ssh/\` dot-directory arm
-              # the same review suggested, so that arm is not added —
-              # two deciders answering one question are behaviourally
-              # one, and a mutation of either leaves the other holding
-              # the case up.
-              #
-              # \`ls-files\` reads the INDEX, not history, so
-              # \`fetch-depth: 1\` is sufficient — asserted in the rig,
-              # not reasoned about. It is local and reaches no network,
-              # which matters because this job checks out with
-              # \`persist-credentials: false\` and has no token in
-              # \`.git/config\` to spend.
-              # READ THE INDEX, not the working tree. \`ls-files\`
-              # asks the index "is this path tracked"; a \`sed\` of
-              # \`\${real}\` reads whatever is on disk NOW. A tracked
-              # file that an earlier step modified passes the gate and
-              # gets its MODIFIED content quoted — the validator and
-              # the consumer talking about two different objects,
-              # which is the same class as the symlink defect this arm
-              # exists to fix, arriving inside the guard that fixed it.
-              #
-              # \`git show ":\${rel}"\` makes them one object: the
-              # thing quoted IS the thing the pull request contains,
-              # which is what the tracked boundary was for.
-              #
-              # ONE decider, and no separate \`ls-files\` gate. An
-              # earlier draft kept it as a membership check and it was
-              # measured redundant: \`git show\` on a path not in the
-              # index fails by itself, so defeating \`ls-files\`
-              # changed no input and the mutation rows for it went
-              # green witnessing nothing. Two deciders answering one
-              # question are behaviourally one, and a mutation of
-              # either leaves the other holding the case up.
-              #
-              # Dropping it also removes a PATHSPEC. \`ls-files --
-              # "\${rel}"\` reads \`rel\` as a pathspec, where glob
-              # magic means a tracked \`a?c.ts\` answers yes for a
-              # request naming \`abc.ts\`; \`:\${rel}\` is a revision
-              # and never globbed. The mismatch was one-sided, which
-              # is exactly what made it invisible.
-              rel=\${real#"\${root}"/}
-              # The \`X\` is the discriminator, and it is here because
-              # \`sed -n "\${rl}p"\` prints nothing for a line that is
-              # BLANK and nothing for a line that does not EXIST — two
-              # facts, one empty capture (#1406). Prefixing makes a
-              # blank line \`X\` and a missing line still empty, so
-              # \`[ -n ]\` below tells them apart. It survives a
-              # \`git show\` that fails too: \`sed\` then reads empty
-              # input and prints nothing, so no pipefail is needed for
-              # the failure to be visible.
-              #
-              # Tested on BSD sed (darwin 25.6) as well as GNU: the
-              # brace form with internal semicolons is portable, and
-              # the suite runs on macOS while the job runs on ubuntu.
-              marked=\$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}{s/^/X/;p;q;}" || true)
-              if [ -n "\${marked}" ]; then
-                rt=\${marked#X}
-                got=yes
-              fi
-              ;;
-          esac
+      if anchor_resolve "\${rf}"; then
+        # The \`X\` is the discriminator, and it is here because
+        # \`sed -n "\${rl}p"\` prints nothing for a line that is
+        # BLANK and nothing for a line that does not EXIST — two
+        # facts, one empty capture (#1406). Prefixing makes a
+        # blank line \`X\` and a missing line still empty, so
+        # \`[ -n ]\` below tells them apart. It survives a
+        # \`git show\` that fails too: \`sed\` then reads empty
+        # input and prints nothing, so no pipefail is needed for
+        # the failure to be visible.
+        #
+        # Tested on BSD sed (darwin 25.6) as well as GNU: the
+        # brace form with internal semicolons is portable, and
+        # the suite runs on macOS while the job runs on ubuntu.
+        marked=\$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}{s/^/X/;p;q;}" || true)
+        if [ -n "\${marked}" ]; then
+          rt=\${marked#X}
+          got=yes
         fi
       fi
       ;;
   esac
   [ "\${got}" = yes ] || return 1
   printf '%s' "\${rt}"
+}
+
+# \`anchor_matches <repo-relative-path> <recorded-text>\` — HOW MANY lines of
+# the file equal the recorded anchor at this commit, under the same \`norm\`
+# the carry rule compares with.
+#
+# This is #1601's fix. \`anchor_text\` answers "what is at file:LINE", and a
+# finding's line number stops being its identity the moment anything above it
+# is inserted or deleted: the read succeeds, returns unrelated text, the
+# comparison fails, and a live finding is classified RESOLVED. Measured on
+# #1597 — a \`high\` raised at \`lib/issue-filing-gate.ts:1827\` on round 5 was
+# gone from rounds 6 and 7 with nothing fixed, because that line number now
+# holds a comment. The required check reported CLEAN over it.
+#
+# So the question becomes "is this text still in the file", which no edit
+# elsewhere can disturb. Three counts and three different facts:
+#
+#   1  — the finding is still there, wherever it now sits. CARRY.
+#   0  — the text is gone, so the code was changed or deleted. RESOLVED,
+#        and this is the ONLY route to that conclusion.
+#   >1 — the anchor is ambiguous and this reader cannot say which one the
+#        finding meant. CARRY, because an answer nobody can establish is
+#        not an answer that the finding is fixed.
+#
+# A path that does not resolve returns 1 and CARRIES, same as \`anchor_text\`.
+#
+# An EMPTY recorded text never reaches here — a substring of nothing matches
+# everywhere, so it would land in \`>1\` and the finding would become
+# permanently uncarryable. It stays on the line-number path, where
+# \`anchor_text\`'s \`got\` discriminator already tells a genuinely blank line
+# from one that could not be read (#1406). \`anchor\` in the flatten below is
+# the one site that decides which of the two paths a row takes.
+anchor_matches() {
+  rf=\$1
+  rtext=\$2
+  anchor_n=
+  if anchor_resolve "\${rf}"; then
+    # Same \`git show ":\${rel}"\` object the line reader quotes — the INDEX,
+    # not the working tree — so the two readers cannot disagree about which
+    # file they are talking about.
+    if ! anchor_n=\$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | jq -R -s --arg want "\${rtext}" '
+        ${AI_REVIEW_JQ_NORM}
+        [ split("\\n")[] | select(norm == (\$want | norm)) ] | length
+      ' 2>/dev/null); then
+      anchor_n=
+    fi
+  fi
+  # A count that could not be read is NOT zero. Zero is the one value that
+  # drops a finding, and substituting it for a reading nobody took is the
+  # Silent Default Substitution that produced #1601 in the first place.
+  case "\${anchor_n}" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "\${anchor_n}"
 }`;
 
 export function buildPersistScript(): string {

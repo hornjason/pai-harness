@@ -935,6 +935,9 @@ describe("AC-S6 (#1241): the cap bounds re-litigation, never the gate", () => {
       state: AI_REVIEW_CARRY_READ,
       unmeasuredRounds: "0",
       changedFileCount: "1",
+      truncatedRounds: "0",
+      priorRounds: String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL - 1),
+      highestPriorRound: String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL - 1),
     };
     expect(reviewScopeForRound(floor, { ...complete, state: AI_REVIEW_CARRY_UNMEASURED })).toBe(
       REVIEW_SCOPE_FULL,

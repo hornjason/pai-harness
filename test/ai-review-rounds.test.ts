@@ -170,19 +170,64 @@ describe("AC-3: diff-only re-review, and the fail-open it must not reopen", () =
    * to this function and where the negative control lives. These cases are
    * the library's own contract.
    */
-  const READ = { state: AI_REVIEW_CARRY_READ_STATE, unmeasuredRounds: "0", changedFileCount: "2" };
+  // The complete reading, at round 9: the carry was read, nothing was
+  // unparseable, nothing was truncated, rounds 1..8 are all recorded, and
+  // the changed-file list names two paths. Every row below varies ONE field
+  // away from it (#585), so deleting any single gate leaves a row nothing
+  // else catches.
+  const readingAt = (round: number) => ({
+    state: AI_REVIEW_CARRY_READ_STATE,
+    unmeasuredRounds: "0",
+    changedFileCount: "2",
+    truncatedRounds: "0",
+    priorRounds: String(round - 1),
+    highestPriorRound: String(round - 1),
+  });
+  // A FUNCTION of the round, not a constant, and that is forced: gate 5 asks
+  // for rounds 1..r-1 with no hole, so a fixed `priorRounds` would be a hole
+  // at every round but one and the rows would pass for the wrong reason.
+  const READ = readingAt(9);
 
   test("AC-3: the first rounds are full reviews whatever the carry says", () => {
     for (let r = 1; r < AI_REVIEW_DIFF_SCOPE_FROM_ROUND; r++) {
-      expect(reviewScopeForRound(String(r), READ), `round ${r}`).toBe(REVIEW_SCOPE_FULL);
+      expect(reviewScopeForRound(String(r), readingAt(r)), `round ${r}`).toBe(REVIEW_SCOPE_FULL);
     }
   });
 
   test("AC-3: from the floor, a complete carry reading may be diff-scoped", () => {
-    expect(reviewScopeForRound(String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND), READ)).toBe(
+    const floor = AI_REVIEW_DIFF_SCOPE_FROM_ROUND;
+    expect(reviewScopeForRound(String(floor), readingAt(floor))).toBe(REVIEW_SCOPE_DIFF);
+    expect(reviewScopeForRound("9", READ)).toBe(REVIEW_SCOPE_DIFF);
+  });
+
+  test("AC-3: the history must be COMPLETE, not merely readable — #1601 one level up", () => {
+    // Three ways for the history to be incomplete, and the first gate sees
+    // only one of them. `unmeasuredRounds` counts recorded rounds that will
+    // not PARSE; a truncated ledger's earlier rounds are ABSENT, so every
+    // entry still present parses fine and the count reads 0 over a hole.
+    //
+    // Measured across 144 ledgers on 2026-10-24: of 197 rounds at or past
+    // the floor, 83 are refused for truncation or an unknown truncation
+    // reading, and 14 more carry a round-number gap that neither truncation
+    // nor unreadability can see — #1420 has no round 2, #1391 no round 1.
+    // 100 still narrow, so these refuse something real.
+    const rows: Array<[string, Record<string, unknown>]> = [
+      ["the ledger dropped earlier rounds", { truncatedRounds: "1" }],
+      ["whether it dropped any is unknown", { truncatedRounds: "unknown" }],
+      ["a pre-#1405 bare array has no truncation key", { truncatedRounds: undefined }],
+      ["round 9's history stops at round 7", { highestPriorRound: "7", priorRounds: "7" }],
+      ["rounds 1..8 recorded, but only six of them", { priorRounds: "6" }],
+      ["how many prior rounds there are is unknown", { priorRounds: "unknown" }],
+      ["the highest prior round is unknown", { highestPriorRound: "unknown" }],
+    ];
+    for (const [why, delta] of rows) {
+      expect(reviewScopeForRound("9", { ...READ, ...delta }), why).toBe(REVIEW_SCOPE_FULL);
+    }
+    // The control: the same reading with nothing varied still narrows, so
+    // the rows above are refusals and not a gate that refuses everything.
+    expect(reviewScopeForRound("9", READ), "the base row stopped narrowing").toBe(
       REVIEW_SCOPE_DIFF,
     );
-    expect(reviewScopeForRound("9", READ)).toBe(REVIEW_SCOPE_DIFF);
   });
 
   test("AC-3: an INCOMPLETE carry is NEVER diff-scoped — 46034035, by a different door", () => {
@@ -214,7 +259,14 @@ describe("AC-3: diff-only re-review, and the fail-open it must not reopen", () =
     // varying exactly ONE field away from a reading that narrows (#585), so
     // deleting any single gate leaves one row that nothing else catches.
     expect(reviewScopeForRound("9", READ), "the base row does not narrow").toBe(REVIEW_SCOPE_DIFF);
-    expect(reviewScopeForRound("2", READ)).toBe(REVIEW_SCOPE_FULL);
+    // `readingAt(2)` and NOT `READ`, and the difference is the whole point of
+    // the row. `READ` is the round-9 reading, so handing it to round 2 varies
+    // TWO things — the round AND the prior-round history, which then no
+    // longer describes round 2. Gate 5 refuses it on the history, gate 1
+    // never gets asked, and deleting the floor leaves the row green: measured
+    // at 3 red where 4 was predicted, which is #585's pair discipline failing
+    // inside a case whose own comment claims to vary exactly one field.
+    expect(reviewScopeForRound("2", readingAt(2))).toBe(REVIEW_SCOPE_FULL);
     expect(reviewScopeForRound("9", { ...READ, state: "AI_REVIEW_CARRY_ABSENT" })).toBe(
       REVIEW_SCOPE_FULL,
     );
