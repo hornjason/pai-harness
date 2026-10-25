@@ -17,6 +17,19 @@ path to `.claude/rungate.json` or `.claude/rungate/*` anywhere else.
 | config, and running unscaffolded is normal | `tryLoadRungateConfig(root)` | `null` |
 | to *report* which case you hit | `resolveConfig(root)` | `{ status: "absent" }` |
 | just the roles / slug / remote hosts | `lib/config-readers.ts` | `{}` / `null` / `{}` |
+| the top-level workflow keys a consumer declined | `readWorkflowOverrides(root)` in `lib/config-readers.ts` | `{}` |
+
+`readWorkflowOverrides` is the **only** reader of `ci.workflowOverrides`
+(#839), and `test/workflow-overrides-decline.test.ts` holds that population at
+one with no exemption list. Its `{}` covers two states deliberately — no
+config, and a config declaring no overrides — because the ANSWER is the same
+in both: the consumer declined nothing. A caller that must report WHICH state
+it hit asks `resolveConfig`, per the row above; a second empty value here
+would be a second decider for a question the loader already answers. A
+declaration it cannot read — `"workflowOverrides": "permissions"`, an entry
+that is not an object, a `decline` that is not a list of key names — THROWS
+naming the key, because well-formed JSON carrying a meaningless declaration
+read as "no overrides" is the bare catch below, one layer further in.
 
 All three throw on malformed JSON. **A corrupt config is never a missing
 config** — that distinction is the whole point, and conflating them is how #70
