@@ -138,6 +138,45 @@ export const AI_REVIEW_ROUND_CAP = 3;
  * round, so the tail shares are a lower bound. That moves the >=3 share UP,
  * which is the direction that argues for this floor rather than against it.
  *
+ * ## 21.1% is this FLOOR's reach. It is not CRC-N2's reach
+ *
+ * Every number above is gate 1 alone — the share of rounds at or past the
+ * floor. A reader reaching this table reads it as what narrowing does, and
+ * narrowing does far less, because the other gates then refuse most of what
+ * the floor admits. Both numbers belong here or the docblock overstates the
+ * change by an order of magnitude.
+ *
+ * Re-measured 2026-10-25 by walking **all 828 pull requests** over the
+ * GraphQL API and replaying the decision per round against the ledger **as
+ * the carry step would have read it at that round** — entries with
+ * `round < r`, never the final ledger, which charges a round 3 for an entry
+ * that arrived on round 4:
+ *
+ * | | rounds | share of all 333 |
+ * |---|---|---|
+ * | at or past the floor (gate 1 alone) | 115 | 34.5% |
+ * | **narrow under every gate as built** | **12** | **3.6%** |
+ * | would narrow with #1592 fixed | 20 | 6.0% |
+ *
+ * **3.6%, not 34.5%.** The subtraction is almost entirely gate 3: of the 115
+ * at-floor rounds it refuses 96, truncation refuses 46 and the round-gap
+ * refuses 15 (not exclusive). **8 of the refusals are #1592 and nothing
+ * else** — `unmeasured_rounds` counts dead ENTRIES, and a re-run appends an
+ * entry at the same round number, so a round whose first attempt wrote no
+ * payload and whose second wrote a full one is unmeasured for ever. #1569 is
+ * the clean instance: 5 rounds, every one readable on attempt 2, three dead
+ * attempt-1 entries, refused on every round it will ever have. That unit was
+ * a warning's wording until this constant started reading it.
+ *
+ * **This corpus is larger than the one the table above was taken on** (147
+ * pull requests carrying a parseable ledger, 333 distinct rounds, against 90
+ * and 161). The earlier walk enumerated fewer pull requests; this one took
+ * every one of the 828 and carries two controls — **0** ledger comments that
+ * failed to parse, and **0** pull requests with more than 100 comments, so
+ * no ledger was missed behind a comment page. The floor's shares move with
+ * it (>=3 is 34.5% here) and the floor does not: rounds 1 and 2 are still
+ * 65.5% and still read the whole branch.
+ *
  * It equals `AI_REVIEW_ROUND_CAP` and is deliberately a SEPARATE constant:
  * they answer different questions — one bounds how many rounds an author
  * gets, the other says when a round may read less — and binding them would
