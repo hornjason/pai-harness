@@ -61,10 +61,18 @@
  * the next run replaces wholesale, so a finding not re-raised simply
  * disappears and the check goes green.
  *
- * So `reviewScopeForRound` delegates to `reReviewScope`, which refuses to
- * diff-scope anything but a held PASS, and `carryForward` is what makes a
- * diff-scoped round honest: the unresolved earlier findings are re-emitted by
- * the ADJUDICATOR rather than re-discovered by the reviewer.
+ * So for as long as nothing re-emitted them, `reviewScopeForRound` delegated
+ * gate 2 to `reReviewScope` and no round was ever narrowed. **`carryForward`
+ * is what makes a diff-scoped round honest**: the unresolved earlier findings
+ * are re-emitted by the ADJUDICATOR rather than re-discovered by the
+ * reviewer, so they are in the payload whether or not the diff contains the
+ * lines they name.
+ *
+ * That is now a production path rather than a plan — the generated
+ * `ai-review-carry` step restates this module's walker in bash and reported
+ * `2 finding(s) ... unanswered at this commit` on run `40137812549` — so
+ * #1600 narrows from the floor below, gated on the carry having actually been
+ * READ with no blind spots. See `reviewScopeForRound`.
  */
 
 import {
@@ -74,7 +82,6 @@ import {
   REVIEW_SCOPE_FULL,
   SECURITY_REREVIEW_EXHAUSTED,
   reReviewDecision,
-  reReviewScope,
   type ReviewScope,
 } from "./security-verdict.ts";
 
@@ -95,12 +102,157 @@ export const AI_REVIEW_ROUND_CAP = 3;
 /**
  * The round from which a re-review may be scoped to the diff.
  *
- * Anthropic's "after the first few passes". Here it is the round AFTER the
- * first, and it is a floor rather than the decision: `reviewScopeForRound`
- * still refuses to diff-scope a round whose held verdict is not a PASS, which
- * is `reReviewScope`'s rule and the whole of #244.
+ * Anthropic's "after the first few passes". It is a FLOOR and not the
+ * decision — `reviewScopeForRound` has a second gate below it.
+ *
+ * **Three, re-derived against this repository rather than inherited from the
+ * cap it happens to equal (#1600).** Measured 2026-10-24 over the ai-review
+ * ledgers of the 90 most recent pull requests, all 90 parseable. Counted in
+ * DISTINCT ROUNDS and not in ledger entries — an entry is a run ATTEMPT and a
+ * re-run appends another at the same round number (#1592). 202 entries
+ * collapse to 161 distinct rounds here, 1.25x, which is the same direction and
+ * near the 1.32x that measurement reports.
+ *
+ * | round | distinct rounds | share |
+ * |---|---|---|
+ * | 1 | 90 | 55.9% |
+ * | 2 | 37 | 23.0% |
+ * | 3 | 19 | 11.8% |
+ * | 4 | 9 | 5.6% |
+ * | 5 | 6 | 3.7% |
+ *
+ * The internal control on that reading: round 1 is 90, which is exactly the
+ * number of pull requests, and every pull request that has a ledger has had a
+ * first round. A round-1 count below the PR count would have meant the walk
+ * was dropping entries.
+ *
+ * So the floor decides what share of rounds narrows: **>=2 is 44.1%, >=3 is
+ * 21.1%, >=4 is 9.3%.** Three is taken because it leaves the first two rounds
+ * of every pull request reading the whole branch. Round 2 is the round most
+ * likely to reach a part of the branch round 1 never got to — the reviewer is
+ * a sampled instrument, not an enumerated one, and two full draws is the
+ * cheapest protection against that. A floor of 4 narrows 9.3% of rounds and
+ * would be adoption on paper.
+ *
+ * **The cohort is right-censored**: an open pull request can still gain a
+ * round, so the tail shares are a lower bound. That moves the >=3 share UP,
+ * which is the direction that argues for this floor rather than against it.
+ *
+ * ## 21.1% is this FLOOR's reach. It is not CRC-N2's reach
+ *
+ * Every number above is gate 1 alone — the share of rounds at or past the
+ * floor. A reader reaching this table reads it as what narrowing does, and
+ * narrowing does far less, because the other gates then refuse most of what
+ * the floor admits. Both numbers belong here or the docblock overstates the
+ * change by an order of magnitude.
+ *
+ * Re-measured 2026-10-25 by walking **all 828 pull requests** over the
+ * GraphQL API and replaying the decision per round against the ledger **as
+ * the carry step would have read it at that round** — entries with
+ * `round < r`, never the final ledger, which charges a round 3 for an entry
+ * that arrived on round 4:
+ *
+ * | | rounds | share of all 333 |
+ * |---|---|---|
+ * | at or past the floor (gate 1 alone) | 115 | 34.5% |
+ * | **narrow under every gate as built** | **12** | **3.6%** |
+ * | would narrow with #1592 fixed | 20 | 6.0% |
+ *
+ * **3.6%, not 34.5%.** The subtraction is almost entirely gate 3: of the 115
+ * at-floor rounds it refuses 96, truncation refuses 46 and the round-gap
+ * refuses 15 (not exclusive). **8 of the refusals are #1592 and nothing
+ * else** — `unmeasured_rounds` counts dead ENTRIES, and a re-run appends an
+ * entry at the same round number, so a round whose first attempt wrote no
+ * payload and whose second wrote a full one is unmeasured for ever. #1569 is
+ * the clean instance: 5 rounds, every one readable on attempt 2, three dead
+ * attempt-1 entries, refused on every round it will ever have. That unit was
+ * a warning's wording until this constant started reading it.
+ *
+ * **This corpus is larger than the one the table above was taken on** (147
+ * pull requests carrying a parseable ledger, 333 distinct rounds, against 90
+ * and 161). The earlier walk enumerated fewer pull requests; this one took
+ * every one of the 828 and carries two controls — **0** ledger comments that
+ * failed to parse, and **0** pull requests with more than 100 comments, so
+ * no ledger was missed behind a comment page. The floor's shares move with
+ * it (>=3 is 34.5% here) and the floor does not: rounds 1 and 2 are still
+ * 65.5% and still read the whole branch.
+ *
+ * It equals `AI_REVIEW_ROUND_CAP` and is deliberately a SEPARATE constant:
+ * they answer different questions — one bounds how many rounds an author
+ * gets, the other says when a round may read less — and binding them would
+ * make lowering the cap silently narrow earlier.
  */
 export const AI_REVIEW_DIFF_SCOPE_FROM_ROUND = 3;
+
+/**
+ * The carry reading that makes a narrowed round honest.
+ *
+ * Declared again here and in `lib/scaffold/ai-review-step.ts` as
+ * `AI_REVIEW_CARRY_READ`, and bound by an agreement assertion rather than an
+ * import, for the reason every other constant in this file is: that module is
+ * copied into a `mkdtemp` by the mutation batteries, where a relative
+ * specifier does not resolve and the mutant fails to LOAD — which reads as a
+ * behavioural difference on every row (`.claude/rules/self-referential-tests.md`,
+ * Tier 1).
+ */
+export const AI_REVIEW_CARRY_READ_STATE = "AI_REVIEW_CARRY_READ";
+
+/**
+ * The carry step's reading, reduced to the two fields the scope depends on.
+ *
+ * Both `unknown`, because they arrive as text off a file written by a bash
+ * step on a runner. `unmeasuredRounds` is the carry's own word for "rounds
+ * this pull request recorded whose findings list could not be read", and it
+ * is `"unknown"` when even that count could not be established.
+ */
+export interface CarryScopeReading {
+  state: unknown;
+  unmeasuredRounds: unknown;
+  /**
+   * How many paths this pull request changed, as the changed-files step
+   * recorded them. A narrowed round is an instruction to read THIS list, so
+   * a list that could not be read or that is empty is a `diff` scope naming
+   * nothing — the one failure in this subsystem strictly worse than reading
+   * too much, because a compliant reviewer then reads nothing at all.
+   */
+  changedFileCount: unknown;
+  /**
+   * How many earlier rounds the ledger dropped, from its own `truncated`
+   * key (#1405). A COUNT, not a flag — measured across the corpus on
+   * 2026-10-24, every #1405-era ledger reads the number `0` and no ledger
+   * has ever read a boolean.
+   *
+   * It is a SEPARATE reading from `unmeasuredRounds` and the distinction is
+   * the whole of why this field exists: `unmeasuredRounds` counts recorded
+   * rounds whose findings list could not be PARSED, so it is a statement
+   * about what is in front of the reader. A truncated ledger's earlier
+   * rounds are ABSENT — nothing to fail to parse — so every entry still
+   * present reads fine, `unmeasuredRounds` is `0`, and a completeness gate
+   * built on it alone narrows the scope over a hole it cannot see. That is
+   * #1601's shape one level up, and it was found by review rather than by
+   * this file's own tests.
+   */
+  truncatedRounds: unknown;
+  /**
+   * The ledger's recorded rounds STRICTLY BELOW this one: how many distinct
+   * round numbers, and the highest of them.
+   *
+   * Two numbers because one cannot say what this gate needs: rounds 1, 2
+   * and 5 before a snapshot at 6 has a highest of 5 and a count of 3, and
+   * the hole at 3 and 4 is exactly the difference. Nothing is truncated and
+   * nothing is unparseable, so neither reading above can see it.
+   *
+   * **Strictly below**, because a re-run appends another entry at the round
+   * it is re-running (#1592). Counting the current round's own entry would
+   * make the gate refuse every re-run for a reason that is not a hole.
+   *
+   * Measured: of 197 rounds at or past the floor across 144 ledgers, 14
+   * carry a genuine gap — #1420 has no round 2, #1391 no round 1 — and 100
+   * are clean. So this refuses something real and is not adoption on paper.
+   */
+  priorRounds: unknown;
+  highestPriorRound: unknown;
+}
 
 /**
  * The round budget could not be read, so this job does not know which round
@@ -220,19 +372,130 @@ export function roundOutcome(raw: unknown, cap: unknown = AI_REVIEW_ROUND_CAP): 
 /**
  * The scope the reviewer should read on this round.
  *
- * Two gates, and BOTH must open. The round floor is Anthropic's "after the
- * first few passes"; `reReviewScope` is #244's refusal to diff-scope anything
- * but a held PASS. The second is the one that matters, and it is delegated
- * rather than restated: a diff against the flagged commit does not contain
- * the flagged code.
+ * FOUR gates, and all four must open. Anything else is `REVIEW_SCOPE_FULL`.
  *
- * FAILS CLOSED TOWARD READING MORE, in both halves. An unreadable round is a
- * full review, not a skipped one.
+ *  1. the round number is readable, and is at or past the floor above;
+ *  2. the carry reading is `READ` — the earlier rounds were actually read;
+ *  3. no recorded round of this pull request had an unreadable findings list;
+ *  4. the changed-file list was read and names at least one path.
+ *
+ * FAILS CLOSED TOWARD READING MORE, in every half. An unreadable round, an
+ * unreadable carry, a carry that could not count its own blind spots: all
+ * full reviews. A narrowed round is the only outcome that can lose a finding,
+ * so it is the one that has to be earned.
+ *
+ * ## Why the held-verdict gate is gone, and what replaced it (#1600)
+ *
+ * This function used to delegate gate 2 to `reReviewScope`, which refuses to
+ * diff-scope anything but a held PASS. That rule is #244's and it is right in
+ * the context it was written for — a ship run, where a held FAIL names code
+ * the diff does not contain, so a diff-scoped re-review says nothing about
+ * it. `reReviewScope` still governs that path through `reReviewBaseFor` and
+ * is unchanged.
+ *
+ * It is the wrong gate HERE, and not because the risk went away. There is no
+ * held verdict on a CI round, so a conjunction including it could never open
+ * and this function would be a decider that always answers FULL — a
+ * configuration that reads like a decision, which is the shape this
+ * repository keeps paying for.
+ *
+ * What makes a narrowed round honest is the thing #244 said was missing:
+ * `carryForward` re-emits every earlier finding whose cited line still reads
+ * as it did, **whether or not that line is in the diff**, and the prompt
+ * requires the reviewer to check each one against the code. So the finding a
+ * diff-scoped round would have lost is in the payload by construction. That
+ * is the spec's own declared retirement condition for this deviation —
+ * *"an adjudicator re-emits unresolved findings"* — and it fired in
+ * production on run `40137812549`, which carried 2.
+ *
+ * Gate 3 is the part that keeps gate 2 from being a formality. `READ` with
+ * `unmeasuredRounds > 0` means the carried set is a LOWER BOUND: some
+ * recorded round's findings could not be read, so a live earlier finding may
+ * be absent from the list. Narrowing on top of that is exactly the silent
+ * loss the deviation existed to prevent, with the carry present and saying so
+ * in a warning nobody is required to read. `"unknown"` — the carry could not
+ * even count them — is refused with the rest.
+ *
+ * Gate 4 is the asymmetric one. Gates 1-3 fail toward a reviewer reading MORE
+ * than it needed to, which costs turns. Gate 4 is the only one whose absence
+ * fails the other way: `diff` is an instruction to read the changed files,
+ * and a changed-file list that could not be produced — the step warns
+ * `CHANGED_FILES_UNREADABLE` and writes nothing — leaves a compliant reviewer
+ * with nothing to read at all. The prompt also tells the reviewer to fall
+ * back to `full` in that case, and that is a second line of defence rather
+ * than this one: a prompt is a request, and whether the reviewer honours one
+ * is the thing this whole criterion cannot yet measure.
+ *
+ * ## What this function does NOT establish
+ *
+ * That the reviewer HONOURS the scope. This returns a word; whether a
+ * narrowed round's reads were confined is a behaviour, measurable only from a
+ * real run, and #1533 measured the reviewer reading whole files under a
+ * prompt that told it to. Treat a `diff` here as a request, and see
+ * `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` for why the observation is recorded
+ * UNMEASURED rather than inferred from this value.
  */
-export function reviewScopeForRound(rawRound: unknown, heldVerdict: unknown): ReviewScope {
+export function reviewScopeForRound(rawRound: unknown, carry: unknown): ReviewScope {
   const round = readRoundNumber(rawRound);
   if (round === null || round < AI_REVIEW_DIFF_SCOPE_FROM_ROUND) return REVIEW_SCOPE_FULL;
-  return reReviewScope(heldVerdict);
+  if (typeof carry !== "object" || carry === null || Array.isArray(carry)) return REVIEW_SCOPE_FULL;
+  const c = carry as CarryScopeReading;
+  if (c.state !== AI_REVIEW_CARRY_READ_STATE) return REVIEW_SCOPE_FULL;
+  // Not `!= 0`, and not `Number(...)`: `""`, `" 0 "` and `"0x0"` all read as
+  // zero through a coercion, and a blind-spot count nobody wrote is not a
+  // count of zero. The carry writes a decimal integer or the word `unknown`.
+  if (!isZeroCount(c.unmeasuredRounds)) return REVIEW_SCOPE_FULL;
+  // A DIFFERENT question from the one above, and the reason is the whole of
+  // this gate: `unmeasuredRounds` asks whether what is present parses.
+  // `truncated` asks whether anything is missing. A ledger that dropped its
+  // first four rounds parses perfectly, so the gate above reads `0` and
+  // narrows the scope over history it cannot see.
+  if (!isZeroCount(c.truncatedRounds)) return REVIEW_SCOPE_FULL;
+  // And a hole needs neither truncation nor an unparseable round to exist:
+  // rounds 1, 2 and 5 recorded before a snapshot at 6 is a gap that both
+  // readings above call clean. The prior rounds must be exactly 1..round-1.
+  const highest = readCount(c.highestPriorRound);
+  const distinct = readCount(c.priorRounds);
+  if (highest === null || distinct === null) return REVIEW_SCOPE_FULL;
+  if (highest !== round - 1 || distinct !== highest) return REVIEW_SCOPE_FULL;
+  if (!isPositiveCount(c.changedFileCount)) return REVIEW_SCOPE_FULL;
+  return REVIEW_SCOPE_DIFF;
+}
+
+/**
+ * A non-negative decimal integer, as a number or as the string a shell
+ * emits — or `null` for anything that is not one.
+ *
+ * `null` rather than a sentinel number, because every caller above treats an
+ * unreadable count as a refusal and a sentinel would have to be a value the
+ * comparison could accidentally satisfy.
+ */
+function readCount(v: unknown): number | null {
+  if (typeof v === "number") return Number.isInteger(v) && v >= 0 ? v : null;
+  if (typeof v !== "string" || !/^[0-9]+$/.test(v)) return null;
+  const n = Number.parseInt(v, 10);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Exactly zero, written as a number or as the decimal string a shell emits.
+ *
+ * Not `== 0` and not `Number(v) === 0`: `""`, `null`, `false`, `[]` and
+ * `" 0 "` all read as zero through a coercion, and a count nobody wrote is
+ * not a count of none. `"unknown"` — the carry's own word for a blind-spot
+ * count it could not establish — fails here, which is the point.
+ */
+function isZeroCount(v: unknown): boolean {
+  if (typeof v === "number") return Number.isInteger(v) && v === 0;
+  return v === "0";
+}
+
+/** A decimal integer of at least one, as a number or as a shell's string. */
+function isPositiveCount(v: unknown): boolean {
+  if (typeof v === "number") return Number.isInteger(v) && v >= 1;
+  if (typeof v !== "string" || !/^[0-9]+$/.test(v)) return false;
+  const n = Number.parseInt(v, 10);
+  return Number.isSafeInteger(n) && n >= 1;
 }
 
 /** A finding as the payload contract spells it (`AI_REVIEW_FINDING_FIELDS`). */

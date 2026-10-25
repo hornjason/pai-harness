@@ -36,6 +36,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
+  AI_REVIEW_ANCHOR_BY_LINE,
+  AI_REVIEW_ANCHOR_BY_TEXT,
+  AI_REVIEW_ANCHOR_NONE,
   AI_REVIEW_CARRY_ABSENT,
   AI_REVIEW_CARRY_BASENAME,
   AI_REVIEW_CARRY_MARK,
@@ -78,6 +81,7 @@ import {
   AI_REVIEW_LEDGER_ROUNDS_KEY,
   type CarriedFinding,
   carryForward,
+  carryKey,
   priorFindings,
   readLedger,
 } from "../lib/ai-review-rounds.ts";
@@ -257,6 +261,169 @@ function recorded(file: string, line: number, summary: string, text?: string) {
     ...(text === undefined ? {} : { [AI_REVIEW_LEDGER_TEXT_FIELD]: text }),
   };
 }
+
+// ── AC-C4 (#1601): an anchor survives an edit elsewhere in the file ──────
+
+/**
+ * The live defect, as a fixture.
+ *
+ * On PR #1597 a `high` raised at `lib/issue-filing-gate.ts:1827` on round 5
+ * was absent from rounds 6 and 7, and nothing had been fixed — the agent
+ * working the PR said so in its own report. Unrelated edits had shifted the
+ * file, so line 1827 now held a comment, the recorded text did not match it,
+ * and the finding was classified RESOLVED. The required check reported
+ * `CLEAN` over a live blocker, twice.
+ *
+ * The three branches of the carry rule's `select` were always built to fail
+ * TOWARD carrying — a null anchor carries, an unreadable anchor carries —
+ * and a successfully read WRONG line was indistinguishable from a genuinely
+ * fixed one. That is the single failure-open branch, and it is the one
+ * ordinary editing produces on every push.
+ *
+ * Rows 1 and 3 below are not padding. They are what tells "the rule is
+ * broken" from "my harness is broken": a battery in which every row reports
+ * `dropped` cannot distinguish a real finding from a probe that never
+ * worked, and row 2 is the only row whose value changed in #1601.
+ */
+describe("AC-C4 (#1601): a finding is anchored by its TEXT, not by a line number", () => {
+  const ANCHOR = "  const priorRows = (options.readLedger ?? (() => readLedgerRows()))();";
+  const SHIFTED = `// a comment nobody asked for\n// and another\n${ANCHOR}\n`;
+
+  const ledger = (text: string | undefined = ANCHOR) => [
+    botComment(5, windowBody([round(5, [recorded("lib/a.ts", 1, "TOCTOU on the cap", text)])])),
+  ];
+
+  test("AC-C4: row 1 — an unchanged anchor carries (control)", () => {
+    const r = runCarry({ list: ledger(), files: { "lib/a.ts": `${ANCHOR}\n` } });
+    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
+    expect(r.carried).toHaveLength(1);
+  });
+
+  test("AC-C4: row 2 — the anchor SHIFTED by an edit above it still carries", () => {
+    // The red this change exists to turn green. The finding is recorded at
+    // line 1; two lines are inserted above it, so line 1 now holds an
+    // unrelated comment and the text sits at line 3. Nothing was fixed.
+    const r = runCarry({ list: ledger(), files: { "lib/a.ts": SHIFTED } });
+    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
+    expect(
+      r.carried,
+      "the finding was dropped by an edit above it — #1601, and the check goes CLEAN over it",
+    ).toHaveLength(1);
+    expect(r.carried[0]!.summary).toBe("TOCTOU on the cap");
+  });
+
+  test("AC-C4: row 3 — an unreadable anchor carries (control)", () => {
+    // No such file in the checkout, so the path does not resolve at all.
+    const r = runCarry({ list: ledger(), files: { "lib/other.ts": "x\n" } });
+    expect(r.carried).toHaveLength(1);
+  });
+
+  test("AC-C4: the premise — row 2's fixture really does move the cited line", () => {
+    // #500's shape: without this, row 2 is satisfied by a fixture in which
+    // nothing shifted and the case stops being about anything.
+    const lines = SHIFTED.split("\n");
+    expect(lines[0], "line 1 still holds the anchor, so nothing shifted").not.toBe(ANCHOR);
+    expect(lines.indexOf(ANCHOR), "the anchor is not in the shifted file at all").toBe(2);
+  });
+
+  test("AC-C4: text that is GONE is still resolved — the drop did not stop deciding", () => {
+    // The direction this must not be wrong in. Content-addressing must not
+    // become "carry everything": a count of zero is the one route to
+    // resolved and it has to stay reachable, or every finding is immortal.
+    const r = runCarry({ list: ledger(), files: { "lib/a.ts": "something else entirely\n" } });
+    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
+    expect(r.carried).toHaveLength(0);
+  });
+
+  test("AC-C4: an AMBIGUOUS anchor carries rather than resolving", () => {
+    // Two identical lines. This reader cannot say which one the finding
+    // meant, and "nobody can establish whether it is fixed" is not the same
+    // fact as "it is fixed". Acceptance item 2: there must be exactly one
+    // route to `resolved`, and it must not be reachable by accident.
+    const r = runCarry({ list: ledger(), files: { "lib/a.ts": `${ANCHOR}\n${ANCHOR}\n` } });
+    expect(r.carried).toHaveLength(1);
+  });
+
+  test("AC-C4: a genuinely BLANK anchor keeps the line path, both ways", () => {
+    // #1406's distinction, which content-addressing would destroy: a
+    // recorded `""` is a real reading of a real blank line, and counting
+    // lines equal to `""` matches every blank line in the file — so the
+    // finding could never be resolved. It stays on the line comparison.
+    const stillBlank = runCarry({
+      list: ledger(""),
+      files: { "lib/a.ts": "\nconst a = 1;\n" },
+    });
+    expect(stillBlank.carried, "a still-blank cited line is unresolved").toHaveLength(1);
+
+    const filledIn = runCarry({
+      list: ledger(""),
+      files: { "lib/a.ts": "const a = 1;\n" },
+    });
+    expect(filledIn.carried, "a blank line that now has code is resolved").toHaveLength(0);
+  });
+
+  test("AC-C4: the MUTANT — the line-number lookup restored — reddens row 2 and only row 2", () => {
+    // The mutation acceptance item 3 names, performed and observed. The
+    // `text` arm is routed back to the line comparison, which IS the
+    // pre-#1601 rule: every row keeps its old answer except the shifted one.
+    // Mutating the `select` alone is NOT the old rule and the first draft of
+    // this case proved it: the LOOP decides which question is asked, so a
+    // `text` row arrives carrying `matches` and no `now`, and a select
+    // rewritten to compare `now` carries everything through its absent-key
+    // clause. That mutant failed the unchanged-row assertion below rather
+    // than passing quietly, which is what that assertion is for.
+    //
+    // The faithful mutation is one site earlier: make the flatten classify
+    // every string anchor as a line anchor, which routes every finding back
+    // down the line-number path. That IS pre-#1601.
+    const real = buildCarryScript();
+    const mutant = real.replace(
+      `then (if ((.${AI_REVIEW_LEDGER_TEXT_FIELD} | norm) == "") then "${AI_REVIEW_ANCHOR_BY_LINE}" else "${AI_REVIEW_ANCHOR_BY_TEXT}" end)`,
+      `then "${AI_REVIEW_ANCHOR_BY_LINE}"`,
+    );
+    expect(mutant, "the anchor classifier was not found, so nothing was mutated").not.toBe(real);
+
+    // The input on which mutant and original differ, named and run rather
+    // than assumed — and the mutant must still CARRY the unchanged row, or
+    // it is a broken mutant rather than the pre-#1601 rule.
+    const shifted = runCarry({ list: ledger(), files: { "lib/a.ts": SHIFTED }, script: mutant });
+    expect(shifted.status, `the mutant failed for an unrelated reason: ${shifted.stderr}`).toBe(0);
+    expect(shifted.carried, "the mutant carried the shifted finding, so it is not the old rule")
+      .toHaveLength(0);
+
+    const unchanged = runCarry({
+      list: ledger(),
+      files: { "lib/a.ts": `${ANCHOR}\n` },
+      script: mutant,
+    });
+    expect(unchanged.carried, "the mutant dropped everything, so row 2 measures nothing")
+      .toHaveLength(1);
+  });
+
+  test("AC-C4: the carry step and the suppression gate choose the same key namespace", () => {
+    // Team-lead's consistency requirement, asserted over an INPUT the two
+    // must classify identically rather than over shared code. `anchor`
+    // decides `t:` against `n:` in the generated jq; `carryKey` decides the
+    // same thing in TypeScript from `recordedText`. A divergence does not
+    // fail loudly — it makes the carry and the dedupe talk about different
+    // findings, which is #1601's own shape one layer over.
+    const script = buildCarryScript();
+    expect(script).toContain(`if .anchor == "${AI_REVIEW_ANCHOR_BY_TEXT}" then "t:"`);
+    expect(script).toContain(`"${AI_REVIEW_ANCHOR_BY_LINE}"`);
+
+    // The input: a non-empty anchor keys on text, an empty one on the line
+    // number. Driven through the real `carryKey`, not described.
+    const withText = carryKey({ file: "lib/a.ts", line: 7, summary: "s" }, ANCHOR);
+    const withBlank = carryKey({ file: "lib/a.ts", line: 7, summary: "s" }, "");
+    expect(withText, "a non-empty anchor must key on the TEXT").toContain("t:");
+    expect(withBlank, "an empty anchor must fall back to the LINE").toContain("n:");
+    expect(withText).not.toBe(withBlank);
+
+    // And the generated flatten must classify those same two inputs the same
+    // way, which is what makes this a comparison and not two statements.
+    expect(script).toContain(`then "${AI_REVIEW_ANCHOR_BY_LINE}" else "${AI_REVIEW_ANCHOR_BY_TEXT}" end`);
+  });
+});
 
 // ── AC-C0: the rig delivers its own fixture unmangled ────────────────────
 
@@ -534,11 +701,13 @@ describe("AC-C3 (#1381): the walker's refusals, performed and observed", () => {
   });
 
   test("AC-C3: the MUTANT — the text comparison removed — carries a resolved finding", () => {
+    // #1601 moved what this mutates and not what it means. The drop used to
+    // be keyed on the text at the recorded LINE; it is now keyed on how many
+    // lines of the file equal the recorded text. Either way this case exists
+    // to show the DROP decides an input — widen it and a resolved finding is
+    // carried for ever.
     const real = buildCarryScript();
-    const mutant = real.replace(
-      "or ((.now | norm) == (.recorded | norm))",
-      "or true",
-    );
+    const mutant = real.replace("(.matches >= 1)", "true");
     expect(mutant, "the comparison was not found, so nothing was mutated").not.toBe(real);
     const r = runCarry({
       list: [
@@ -558,7 +727,13 @@ describe("AC-C3 (#1381): the walker's refusals, performed and observed", () => {
 
   test("AC-C3: the MUTANT — the UNDECIDABLE arm removed — drops a finding with no anchor", () => {
     const real = buildCarryScript();
-    const mutant = real.replace("(.recorded == null)\n", "(false)\n");
+    // #1601 made the rule an exclusive `if/elif/else`, so the undecidable
+    // arm is the `else`. It had to become exclusive for this case to mean
+    // anything: as a leading disjunct the arm was unreachable, because a
+    // row with no anchor is asked nothing and the content arm's own
+    // absent-key clause carried it. This mutation was 0 red against that
+    // draft and is 1 red against this one.
+    const mutant = real.replace("else true\n", "else false\n");
     expect(mutant, "the undecidable arm was not found, so nothing was mutated").not.toBe(real);
     const r = runCarry({
       list: [botComment(5, windowBody([round(1, [recorded("lib/a.ts", 1, "no anchor")])]))],

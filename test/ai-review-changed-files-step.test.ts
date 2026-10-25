@@ -334,12 +334,18 @@ describe("#1356 / CF: the generated job supplies the changed-file list", () => {
       expect(s).toContain(AI_REVIEW_CHANGED_FILES_PATH_VAR);
     }
 
-    // The generated job carries the basename TWICE on purpose — the writer
-    // step and the report step each need their own `env:`, because a step's
-    // environment does not carry to a later step (#826, measured from a
-    // runner's own echo). What must not happen is a second SPELLING, so the
-    // census is over the generator's source: the constant's declaration, and
-    // nothing else.
+    // The generated job carries the basename once per CONSUMING STEP on
+    // purpose, because a step's environment does not carry to a later step
+    // (#826, measured from a runner's own echo). Four as of #1600, and the
+    // two new ones are the reason the number moved: `ai-review-carry` needs
+    // the list to decide `review_scope` — a `diff` scope handed to a reviewer
+    // with no list is worse than `full` — and `ai-review-action` needs it
+    // because the prompt now tells the reviewer to read it.
+    //
+    // What must not happen is a second SPELLING, and that is the assertion
+    // above: the census over the generator's source holds the literal at its
+    // own declaration and nothing else. This count is the weaker claim and
+    // moves whenever a real consumer is added or removed.
     const source = readFileSync(join(REPO_ROOT, "lib/scaffold/ai-review-step.ts"), "utf-8");
     expect(
       source.split(`"${AI_REVIEW_CHANGED_FILES_BASENAME}"`).length - 1,
@@ -348,8 +354,14 @@ describe("#1356 / CF: the generated job supplies the changed-file list", () => {
     ).toBe(1);
     expect(
       JOB.split(AI_REVIEW_CHANGED_FILES_BASENAME).length - 1,
-      "the two env bindings for the list are no longer both present",
-    ).toBe(2);
+      "the env bindings for the list no longer number four. The consumers are " +
+        "`ai-review-changed-files` (writes it), `ai-review-carry` (decides " +
+        "`review_scope` from it, #1600), `ai-review-action` (the prompt reads " +
+        "it, #1600) and `ai-review-run` (reports on it). If you added or " +
+        "removed a consumer, update this number and name it in the comment " +
+        "above; if you did not, a binding has gone missing and a step is " +
+        "about to read a path nothing set.",
+    ).toBe(4);
     expect(AI_REVIEW_CHANGED_FILES_STEP_NAME.length).toBeGreaterThan(0);
   });
 

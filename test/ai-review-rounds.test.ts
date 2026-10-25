@@ -34,7 +34,12 @@ import {
   roundOutcome,
   suppressRepeats,
   type ReviewFinding,
+  AI_REVIEW_CARRY_READ_STATE,
 } from "../lib/ai-review-rounds.ts";
+// #244's rule, asked where it still governs. Imported from its own module
+// rather than through the one above, so the case cannot pass because
+// `ai-review-rounds.ts` happens to re-export something.
+import { reReviewScope } from "../lib/security-verdict.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -145,39 +150,145 @@ describe("AC-2: the cap speaks", () => {
 });
 
 describe("AC-3: diff-only re-review, and the fail-open it must not reopen", () => {
-  const PASS = { verdict: "PASS" };
-  const FAIL = { verdict: "FAIL", failures: ["a thing"] };
+  /**
+   * **This block's second gate changed in #1600, and the change is the whole
+   * of CRC-N2.** It used to hand the held verdict to `reReviewScope`, which
+   * refuses to diff-scope anything but a held PASS. That rule is #244's and
+   * it is unchanged where it belongs — `reReviewBaseFor` in
+   * `lib/security-verdict.ts` still asks it, and
+   * `test/security-verdict*.test.ts` still holds it.
+   *
+   * It was the wrong gate here for a reason that is not "the risk went
+   * away": a CI round has no held verdict, so the conjunction could never
+   * open and this function answered FULL for every input anybody could
+   * supply. What replaced it is the thing #244 said was missing —
+   * `carryForward` re-emitting unresolved priors whether or not the diff
+   * contains the lines they name, which the spec names as this deviation's
+   * own retirement condition and which fired on run `40137812549`.
+   *
+   * `test/ai-review-diff-scope.test.ts` is where the generated bash is held
+   * to this function and where the negative control lives. These cases are
+   * the library's own contract.
+   */
+  // The complete reading, at round 9: the carry was read, nothing was
+  // unparseable, nothing was truncated, rounds 1..8 are all recorded, and
+  // the changed-file list names two paths. Every row below varies ONE field
+  // away from it (#585), so deleting any single gate leaves a row nothing
+  // else catches.
+  const readingAt = (round: number) => ({
+    state: AI_REVIEW_CARRY_READ_STATE,
+    unmeasuredRounds: "0",
+    changedFileCount: "2",
+    truncatedRounds: "0",
+    priorRounds: String(round - 1),
+    highestPriorRound: String(round - 1),
+  });
+  // A FUNCTION of the round, not a constant, and that is forced: gate 5 asks
+  // for rounds 1..r-1 with no hole, so a fixed `priorRounds` would be a hole
+  // at every round but one and the rows would pass for the wrong reason.
+  const READ = readingAt(9);
 
-  test("AC-3: the first rounds are full reviews whatever the held verdict", () => {
+  test("AC-3: the first rounds are full reviews whatever the carry says", () => {
     for (let r = 1; r < AI_REVIEW_DIFF_SCOPE_FROM_ROUND; r++) {
-      expect(reviewScopeForRound(String(r), PASS), `round ${r}`).toBe(REVIEW_SCOPE_FULL);
-      expect(reviewScopeForRound(String(r), FAIL), `round ${r}`).toBe(REVIEW_SCOPE_FULL);
+      expect(reviewScopeForRound(String(r), readingAt(r)), `round ${r}`).toBe(REVIEW_SCOPE_FULL);
     }
   });
 
-  test("AC-3: from the floor, a held PASS may be diff-scoped", () => {
-    expect(reviewScopeForRound(String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND), PASS)).toBe(
+  test("AC-3: from the floor, a complete carry reading may be diff-scoped", () => {
+    const floor = AI_REVIEW_DIFF_SCOPE_FROM_ROUND;
+    expect(reviewScopeForRound(String(floor), readingAt(floor))).toBe(REVIEW_SCOPE_DIFF);
+    expect(reviewScopeForRound("9", READ)).toBe(REVIEW_SCOPE_DIFF);
+  });
+
+  test("AC-3: the history must be COMPLETE, not merely readable — #1601 one level up", () => {
+    // Three ways for the history to be incomplete, and the first gate sees
+    // only one of them. `unmeasuredRounds` counts recorded rounds that will
+    // not PARSE; a truncated ledger's earlier rounds are ABSENT, so every
+    // entry still present parses fine and the count reads 0 over a hole.
+    //
+    // Measured across 144 ledgers on 2026-10-24: of 197 rounds at or past
+    // the floor, 83 are refused for truncation or an unknown truncation
+    // reading, and 14 more carry a round-number gap that neither truncation
+    // nor unreadability can see — #1420 has no round 2, #1391 no round 1.
+    // 100 still narrow, so these refuse something real.
+    const rows: Array<[string, Record<string, unknown>]> = [
+      ["the ledger dropped earlier rounds", { truncatedRounds: "1" }],
+      ["whether it dropped any is unknown", { truncatedRounds: "unknown" }],
+      ["a pre-#1405 bare array has no truncation key", { truncatedRounds: undefined }],
+      ["round 9's history stops at round 7", { highestPriorRound: "7", priorRounds: "7" }],
+      ["rounds 1..8 recorded, but only six of them", { priorRounds: "6" }],
+      ["how many prior rounds there are is unknown", { priorRounds: "unknown" }],
+      ["the highest prior round is unknown", { highestPriorRound: "unknown" }],
+    ];
+    for (const [why, delta] of rows) {
+      expect(reviewScopeForRound("9", { ...READ, ...delta }), why).toBe(REVIEW_SCOPE_FULL);
+    }
+    // The control: the same reading with nothing varied still narrows, so
+    // the rows above are refusals and not a gate that refuses everything.
+    expect(reviewScopeForRound("9", READ), "the base row stopped narrowing").toBe(
       REVIEW_SCOPE_DIFF,
     );
-    expect(reviewScopeForRound("9", PASS)).toBe(REVIEW_SCOPE_DIFF);
   });
 
-  test("AC-3: a held FAIL is NEVER diff-scoped — 46034035, by a different door", () => {
+  test("AC-3: an INCOMPLETE carry is NEVER diff-scoped — 46034035, by a different door", () => {
     // A diff against the flagged commit does not contain the flagged code,
-    // so a diff-scoped PASS says nothing about the finding it would clear.
-    // This is `reReviewScope`'s rule and the case exists to prove the
-    // delegation is real: dropping the second gate turns it red.
-    for (const held of [FAIL, undefined, null, {}, "PASS", { verdict: "pass" }, []]) {
-      expect(
-        reviewScopeForRound("9", held),
-        `held ${JSON.stringify(held) ?? String(held)}`,
-      ).toBe(REVIEW_SCOPE_FULL);
+    // so a narrowed round says nothing about an earlier finding UNLESS the
+    // carry hands it over. Each row below is a reading in which it cannot:
+    // the history was not read, or was read with blind spots, or the
+    // changed-file list the narrowing points at does not exist.
+    const rows: Array<[string, unknown]> = [
+      ["not an object", undefined],
+      ["null", null],
+      ["an array", []],
+      ["no state at all", {}],
+      ["the history could not be read", { ...READ, state: "AI_REVIEW_CARRY_UNMEASURED" }],
+      ["no history to read", { ...READ, state: "AI_REVIEW_CARRY_ABSENT" }],
+      ["a state nobody declared", { ...READ, state: "PASS" }],
+      ["one round's findings unreadable", { ...READ, unmeasuredRounds: "1" }],
+      ["the blind-spot count unknown", { ...READ, unmeasuredRounds: "unknown" }],
+      ["no changed-file list", { ...READ, changedFileCount: "unknown" }],
+      ["a changed-file list naming nothing", { ...READ, changedFileCount: "0" }],
+    ];
+    for (const [why, carry] of rows) {
+      expect(reviewScopeForRound("9", carry), why).toBe(REVIEW_SCOPE_FULL);
     }
+  });
+
+  test("AC-3: each gate has an input only it refuses", () => {
+    // #420: two deciders that agree are behaviourally one. Four rows, each
+    // varying exactly ONE field away from a reading that narrows (#585), so
+    // deleting any single gate leaves one row that nothing else catches.
+    expect(reviewScopeForRound("9", READ), "the base row does not narrow").toBe(REVIEW_SCOPE_DIFF);
+    // `readingAt(2)` and NOT `READ`, and the difference is the whole point of
+    // the row. `READ` is the round-9 reading, so handing it to round 2 varies
+    // TWO things — the round AND the prior-round history, which then no
+    // longer describes round 2. Gate 5 refuses it on the history, gate 1
+    // never gets asked, and deleting the floor leaves the row green: measured
+    // at 3 red where 4 was predicted, which is #585's pair discipline failing
+    // inside a case whose own comment claims to vary exactly one field.
+    expect(reviewScopeForRound("2", readingAt(2))).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("9", { ...READ, state: "AI_REVIEW_CARRY_ABSENT" })).toBe(
+      REVIEW_SCOPE_FULL,
+    );
+    expect(reviewScopeForRound("9", { ...READ, unmeasuredRounds: "2" })).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("9", { ...READ, changedFileCount: "0" })).toBe(REVIEW_SCOPE_FULL);
   });
 
   test("AC-3: an unreadable round reads MORE, not less", () => {
-    expect(reviewScopeForRound("", PASS)).toBe(REVIEW_SCOPE_FULL);
-    expect(reviewScopeForRound(undefined, PASS)).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("", READ)).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound(undefined, READ)).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("0", READ)).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("nine", READ)).toBe(REVIEW_SCOPE_FULL);
+  });
+
+  test("AC-3: #244's rule is unchanged where it still governs", () => {
+    // The gate did not disappear from the codebase, it stopped being asked
+    // on a path that could never answer it. Asserted rather than claimed,
+    // because "the rule still holds elsewhere" is the kind of sentence that
+    // outlives the code it describes.
+    expect(reReviewScope({ verdict: "PASS" })).toBe(REVIEW_SCOPE_DIFF);
+    expect(reReviewScope({ verdict: "FAIL", failures: ["a thing"] })).toBe(REVIEW_SCOPE_FULL);
+    expect(reReviewScope(undefined)).toBe(REVIEW_SCOPE_FULL);
   });
 });
 

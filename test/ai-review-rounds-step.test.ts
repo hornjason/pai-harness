@@ -73,9 +73,12 @@ import {
   buildReviewPrompt,
   AI_REVIEW_CARRY_PATH_VAR,
   AI_REVIEW_CARRY_READ,
+  AI_REVIEW_CARRY_SCOPE_KEY,
+  AI_REVIEW_CARRY_UNMEASURED,
   buildCarryScript,
   buildRoundsScript,
 } from "../lib/scaffold/ai-review-step.ts";
+import { structuralCut } from "../lib/source-slice.ts";
 import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
 
 /**
@@ -494,17 +497,30 @@ describe("AC-S5: nothing from the branch under review reaches the prompt", () =>
     expect(flat).toContain("Do not stay silent");
   });
 
-  test("AC-S5: the prompt names no scope at all, and says to read everything", () => {
-    // The field is gone from the file (#1255), so the prompt may not name it:
-    // a prompt describing a field nobody writes is an instruction the
-    // reviewer cannot follow, and the previous wording explained a narrowing
-    // that no longer has a mechanism behind it.
-    expect(flat, "the prompt names a field the step no longer writes").not.toContain(
-      "review_scope",
+  test("AC-S5: the prompt reads its scope from the CARRY file, never this step's", () => {
+    // **Rewritten in #1600, and the property is narrower than it looks.**
+    // Until CRC-N2 was adopted this case required the prompt to name no
+    // scope at all, because the rounds step wrote none and a prompt
+    // describing a field nobody writes is an instruction nobody can follow.
+    // A scope exists now — so the question this case answers is no longer
+    // "is there one" but "whose", and the answer has to stay the carry
+    // step's. The round state file is still written by THIS step, and a
+    // prompt telling the reviewer to read a scope out of it would put the
+    // decision back where #1241 had it, one edit from a round-number floor.
+    const roundFileFields = structuralCut(
+      prompt,
+      "It states three things:",
+      { endAnchor: "non-blocking finding." },
     );
-    // Said positively too, so the absence above is not the only thing
-    // standing between here and a reviewer inventing its own scope.
-    expect(flat).toContain("READ THE WHOLE BRANCH, ON EVERY ROUND");
+    expect(
+      roundFileFields.replace(/\s+/g, " "),
+      "the round state file is described as carrying a scope",
+    ).not.toContain(AI_REVIEW_CARRY_SCOPE_KEY);
+    // Said positively: the scope the prompt DOES name is the carry file's.
+    expect(flat).toContain(`${AI_REVIEW_CARRY_SCOPE_KEY}=`);
+    expect(buildRoundsScript(), "the rounds step writes a scope field again").not.toContain(
+      AI_REVIEW_CARRY_SCOPE_KEY,
+    );
     // This used to require "nothing carries its findings forward for you",
     // which was true when it was written and stopped being true in #1381.
     // What the case is FOR is that the prompt states the carry's real state
@@ -908,14 +924,28 @@ describe("AC-S6 (#1241): the cap bounds re-litigation, never the gate", () => {
     expect(code).toContain(`${AI_REVIEW_ROUND_OUTPUT}=`);
   });
 
-  test("AC-S6: the library still refuses to diff-scope a held FAIL at the floor", () => {
-    // Unchanged and re-stated here, because the bash now pins `full` and can
-    // no longer disagree with it. When the adjudicator is wired and the pin
-    // comes off, this is the rule the bash has to restate.
-    expect(reviewScopeForRound(String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL), { verdict: "FAIL", failures: ["x"] }))
-      .toBe(REVIEW_SCOPE_FULL);
-    expect(reviewScopeForRound(String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL), { verdict: "PASS" }))
-      .toBe(REVIEW_SCOPE_DIFF);
+  test("AC-S6: the library refuses to diff-scope an incomplete carry at the floor", () => {
+    // **The second gate changed in #1600 and the shape of this case did
+    // not.** It used to be the held verdict, which no CI round has; it is
+    // now the carry reading, which every CI round has. What the case is FOR
+    // is unchanged: reaching the floor is necessary and is never sufficient,
+    // and the rounds step may not be the thing that decides otherwise.
+    const floor = String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL);
+    const complete = {
+      state: AI_REVIEW_CARRY_READ,
+      unmeasuredRounds: "0",
+      changedFileCount: "1",
+      truncatedRounds: "0",
+      priorRounds: String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL - 1),
+      highestPriorRound: String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL - 1),
+    };
+    expect(reviewScopeForRound(floor, { ...complete, state: AI_REVIEW_CARRY_UNMEASURED })).toBe(
+      REVIEW_SCOPE_FULL,
+    );
+    expect(reviewScopeForRound(floor, { ...complete, unmeasuredRounds: "1" })).toBe(
+      REVIEW_SCOPE_FULL,
+    );
+    expect(reviewScopeForRound(floor, complete)).toBe(REVIEW_SCOPE_DIFF);
   });
 });
 
