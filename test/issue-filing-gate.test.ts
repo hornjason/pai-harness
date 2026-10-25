@@ -29,8 +29,8 @@
  * stopped reporting (`.claude/rules/parallel-sessions.md`).
  */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { spawnSync } from "child_process";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { spawn, spawnSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
@@ -71,9 +71,13 @@ import {
   declaredExemption,
   exemptionReason,
   filingFinding,
-  emittedInRun,
+  intentsInRun,
+  intentOrdinal,
+  reserveAllowance,
   overCapReason,
   runIdFor,
+  INTENT_KEY_SUFFIX,
+  INTENT_PENDING,
   NON_CHECKOUT_RUN,
   RUN_WINDOW_MS,
   type CommentExemption,
@@ -178,6 +182,18 @@ const NOVEL_BODY =
 const NOVEL_FILING =
   'gh issue create --title "pullRequestCache is never invalidated" ' +
   `--body ${JSON.stringify(NOVEL_BODY)}`;
+
+/**
+ * A SECOND novel filing, sharing nothing with the first.
+ *
+ * `FG-165`'s two racers must differ in the finding as well as the process,
+ * or the loser could be refused as a duplicate of the winner and the case
+ * would go green having measured the dedupe.
+ */
+const SECOND_NOVEL_FILING =
+  'gh issue create --title "branchIndex rebuilds on every read" ' +
+  '--body "`branchIndex` in lib/branch-index.ts rescans 418 refs on each of 9120 reads. ' +
+  `Claim 4. ${DECLARED}"`;
 
 /**
  * The differential control the DUPLICATE row needs.
@@ -311,7 +327,59 @@ function runHook(
   };
 }
 
-function ledgerRows(): FilingLedgerRow[] {
+/**
+ * The same hook, spawned so that two of them can be in flight at once.
+ *
+ * `runHook` is `spawnSync`, which cannot race anything: the first process has
+ * exited before the second starts, so the second reads a ledger the first
+ * already wrote and the TOCTOU window never opens. Two REAL processes is the
+ * only configuration in which the defect exists at all — one process calling
+ * `filingGate` twice is serialised by `await` — so `FG-165` needs this and
+ * nothing else in the file does.
+ */
+function runHookAsync(
+  command: string,
+  cwd: string,
+  extraEnv: Record<string, string> = {},
+): Promise<HookReading> {
+  return new Promise(done => {
+    // late-env-ok: every variable this child reads is passed explicitly
+    // below. Nothing is inherited from an assignment made after startup.
+    const child = spawn("bun", [HOOK], {
+      cwd,
+      env: {
+        ...process.env,
+        RUNGATE_WORK_DIR: join(scratch, "work"),
+        RUNGATE_OPEN_FINDINGS: issuesFile,
+        RUNGATE_FINDING_LEDGER: ledger,
+        CLAUDE_CODE_SESSION_ID: "f9a1c0de-0000-4000-8000-000000000000",
+        ...extraEnv,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", (d: Buffer) => {
+      out += d.toString();
+    });
+    child.on("close", code => {
+      let payload: HookReading["payload"] = null;
+      try {
+        payload = JSON.parse(out.trim());
+      } catch {
+        payload = null;
+      }
+      done({
+        payload,
+        blocked: payload?.decision === "block",
+        reason: payload?.reason ?? payload?.systemMessage ?? "",
+        exit: code,
+      });
+    });
+    child.stdin.end(JSON.stringify({ tool_name: "Bash", tool_input: { command } }));
+  });
+}
+
+function everyLedgerRow(): FilingLedgerRow[] {
   let text = "";
   try {
     text = readFileSync(ledger, "utf-8");
@@ -324,9 +392,55 @@ function ledgerRows(): FilingLedgerRow[] {
     .map(l => JSON.parse(l) as FilingLedgerRow);
 }
 
+/**
+ * The DECISION rows — one per adjudicated clause, which is what almost every
+ * case here means by "a row".
+ *
+ * A filing the gate allows also leaves an INTENT row, appended before the
+ * decision to reserve the run's allowance (`FilingLedgerRow.intent`). It is a
+ * second row about the same clause and it is not a decision, so counting it
+ * here would turn "one clause, one countable row" into "one clause, one or
+ * two depending on the verdict" everywhere in this file.
+ *
+ * Read `ledgerIntents()` for that population. It is asserted directly rather
+ * than left to this filter — `FG-164` holds the intent row's shape, and
+ * `FG-166` holds that an allowed filing writes exactly one of each.
+ */
+function ledgerRows(): FilingLedgerRow[] {
+  return everyLedgerRow().filter(r => r.intent !== true);
+}
+
+/** The reservations — see `ledgerRows()`. */
+function ledgerIntents(): FilingLedgerRow[] {
+  return everyLedgerRow().filter(r => r.intent === true);
+}
+
+/**
+ * The cap, held fixed for a case that is measuring something else.
+ *
+ * An empty allowance on every read and an intent that lands nowhere, so one
+ * case can file repeatedly from one directory without its second filing
+ * being `OVER_CAP`. Spread it into a `filingGate` call that is about another
+ * stage; the cap's own cases inject neither of these.
+ */
+const noCap = {
+  readLedger: () => [] as FilingLedgerRow[],
+  appendLedger: () => true,
+};
+
 beforeAll(() => {
   scratch = mkdtempSync(join(tmpdir(), "rg-filing-gate-"));
   ledger = join(scratch, "finding-ledger.jsonl");
+  // **In THIS process too, not only in the hook children.** `runHook` has
+  // always passed the temp ledger in the child's environment, so the cases
+  // that call `filingGate` directly without injecting `readLedger` were
+  // reading the developer's live `~/.rungate/finding-ledger.jsonl` — which
+  // was invisible while the gate only read it, and stopped being invisible
+  // the moment it started appending intent rows: a suite run put 57 fixture
+  // rows into the live file and the next case read "this run has already
+  // filed 25 issues". Setting it here is also the only thing that makes
+  // those cases deterministic.
+  process.env.RUNGATE_FINDING_LEDGER = ledger;
   issuesFile = join(scratch, "open-issues.json");
   writeFileSync(issuesFile, JSON.stringify(OPEN_ISSUES), "utf-8");
   // An empty work dir, so `findActiveWorkflow` reads no VERIFY phase and gate
@@ -355,6 +469,21 @@ beforeAll(() => {
     source.replace(WIRING, "const gate = { refusal: null, note: null, rows: [] };"),
     "utf-8",
   );
+});
+
+/**
+ * One case, one ledger. **Required since the cap writes to it (#1595).**
+ *
+ * The ledger used to be read-only to this process and append-only across the
+ * file, so a case could ignore what earlier cases had left in it. The cap
+ * reserves an allowance by appending an intent row, and every case that does
+ * not name a checkout files from `scratch`, which is one `NON_CHECKOUT` run
+ * — so without this the FIRST filing in the file spends the allowance and
+ * every later case reads `OVER_CAP`. Measured: 5 cases red, each of them
+ * green when run alone, which is the worst way to find this.
+ */
+beforeEach(() => {
+  if (ledger !== undefined) writeFileSync(ledger, "", "utf-8");
 });
 
 afterAll(() => {
@@ -1720,8 +1849,13 @@ describe("FG-60..FG-65: the --repo parser differential", () => {
   test("FG-64 CONTROL: the same filing with a resolvable --repo is allowed", async () => {
     // Against "refuse any --repo", which passes FG-63 and switches the
     // cross-tracker path off entirely.
+    //
+    // `noCap` because this case files three times from one directory, which
+    // is one run: without it the second spelling is OVER_CAP and the case
+    // would be measuring the cap it is not about. The three spellings are
+    // the axis; the allowance is held fixed.
     for (const spelling of [SLUG, ...HOST_BEARING]) {
-      const r = await filingGate(withRepo(spelling), { projectRoot: scratch, readExisting: allow });
+      const r = await filingGate(withRepo(spelling), { projectRoot: scratch, readExisting: allow, ...noCap });
       expect(r.rows, spelling).toHaveLength(1);
       expect(r.refusal, spelling).toBeNull();
     }
@@ -2681,7 +2815,7 @@ describe("FG-120..FG-135: a filing declares why it cannot be a comment", () => {
  * parse-only test would have asserted is shown to be identical across the
  * real gate and M1.
  */
-describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", () => {
+describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case red", () => {
   const LIB = join(REPO, "lib");
   const UNIT = "issue-filing-gate.ts";
 
@@ -2733,6 +2867,9 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
   const M4 = 'return refusal !== "OVER_CAP" && refusal !== "UNMEASURED_CAP";';
   /** `M5` — the cap stops seeing filings the label would carry through. */
   const M5 = "|| overrideOf(read2)";
+  /** `M6` — the reservation is taken and its position is never read. */
+  const M6 =
+    'return ordinal > FILINGS_PER_RUN ? { outcome: "LOST", already: ordinal - 1 } : { outcome: "WON" };';
 
   const UNDECLARED =
     'gh issue create --title "zqxjMutantProbe abandons a sweep it started" ' +
@@ -2817,9 +2954,14 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
     mkdirSync(dir, { recursive: true });
 
     const at = "2026-10-24T12:00:00.000Z";
+    // The row a spent allowance leaves is the INTENT, not the outcome — the
+    // cap counts reservations so that a filing in flight in another process
+    // is visible. A fixture built as an emitted row would be a spent
+    // allowance the gate cannot see, and every mutant below would go green
+    // against a cap that was never loaded.
     const spentRow = {
       at,
-      key: `b.1/${at}/0`,
+      key: `b.1/${at}/0${INTENT_KEY_SUFFIX}`,
       id: "new",
       title: "already filed by this run",
       symptomHash: "h",
@@ -2827,13 +2969,14 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
       severity: null,
       disposition: "ISSUE" as const,
       refusal: null,
-      emitted: true,
-      withheldBy: null,
+      emitted: false,
+      withheldBy: INTENT_PENDING,
       jury: null,
       duplicateOf: [],
       overridden: false,
       refiledAfter: null,
       exemption: "out-of-pr-diff" as const,
+      intent: true,
       run: null as string | null,
     };
     const filing =
@@ -2900,7 +3043,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
     const spent = [
       {
         at,
-        key: `b.1/${at}/0`,
+        key: `b.1/${at}/0${INTENT_KEY_SUFFIX}`,
         id: "new",
         title: "already filed by this run",
         symptomHash: "h",
@@ -2908,13 +3051,14 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
         severity: null,
         disposition: "ISSUE" as const,
         refusal: null,
-        emitted: true,
-        withheldBy: null,
+        emitted: false,
+        withheldBy: INTENT_PENDING,
         jury: null,
         duplicateOf: [],
         overridden: false,
         refiledAfter: null,
         exemption: "out-of-pr-diff" as const,
+        intent: true,
         run: real.runIdFor(dir),
       },
     ];
@@ -2979,7 +3123,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
     const spent = [
       {
         at,
-        key: `b.1/${at}/0`,
+        key: `b.1/${at}/0${INTENT_KEY_SUFFIX}`,
         id: "new",
         title: "already filed by this run",
         symptomHash: "h",
@@ -2987,13 +3131,14 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
         severity: null,
         disposition: "ISSUE" as const,
         refusal: null,
-        emitted: true,
-        withheldBy: null,
+        emitted: false,
+        withheldBy: INTENT_PENDING,
         jury: null,
         duplicateOf: [],
         overridden: false,
         refiledAfter: null,
         exemption: "out-of-pr-diff" as const,
+        intent: true,
         run: real.runIdFor(dir),
       },
     ];
@@ -3008,6 +3153,62 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
     );
     expect(mutantRow.overridden, "and the label waived that refusal instead").toBe(true);
     expect(mutantRow.emitted, "so an over-cap run filed anyway — the bypass, restored").toBe(true);
+  });
+
+  test("FG-169: M6 — the ORDINAL is what stops the second racer, not the pre-read", async () => {
+    // `FG-166` asserts the second of two interleaved racers is refused. On
+    // its own that is not evidence the ORDINAL did it: a cap that still
+    // decided from the pre-read would refuse the second too, as soon as the
+    // two stopped being simultaneous. M6 removes the position check and
+    // nothing else, so the real gate and this one differ in exactly the
+    // reading under test.
+    const real: Gate = await import("../lib/issue-filing-gate");
+    const mutant: Gate = await import(buildMutant("unordered", M6, 'return { outcome: "WON" };'));
+    const dir = join(scratch, "mut-race-run");
+    mkdirSync(dir, { recursive: true });
+    const at = "2026-10-24T12:00:00.000Z";
+    const other = new Date(Date.parse(at) + 1).toISOString();
+
+    const two = 'gh issue create --title "zqxjRaceTwo rebuilds an index it just built" ' +
+      `--body "\`zqxjRaceTwo\` in lib/zqxj-race-two.ts rescans 418 refs on 9120 reads. Claim 4. ${DECLARED}"`;
+    const one = 'gh issue create --title "zqxjRaceOne loses a sweep it started" ' +
+      `--body "\`zqxjRaceOne\` in lib/zqxj-race-one.ts drops 19 of 37 commands over 8803 runs. Claim 4. ${DECLARED}"`;
+
+    /** Both racers read an EMPTY ledger first, then the live one. */
+    const raceOn = (gate: Gate, sink: unknown[]) => (cmd: string, now: string) => {
+      let reads = 0;
+      return gate.filingGate(cmd, {
+        projectRoot: dir,
+        now,
+        readExisting: async () => gate.measuredCorpus([]),
+        readLedger: (() => (reads++ === 0 ? [] : [...sink])) as never,
+        appendLedger: ((row: unknown) => {
+          sink.push(row);
+          return true;
+        }) as never,
+        readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
+      });
+    };
+
+    const realSink: unknown[] = [];
+    const realRace = raceOn(real, realSink);
+    expect((await realRace(one, at)).rows[0].emitted, "the real gate's first racer files").toBe(true);
+    const realSecond = (await realRace(two, other)).rows[0];
+    expect(realSecond.refusal, "and its second is refused on its position").toBe("OVER_CAP");
+
+    const mutantSink: unknown[] = [];
+    const mutantRace = raceOn(mutant, mutantSink);
+    // BASELINE: the mutant loaded and still allows a first filing, so the row
+    // below is not a module that failed to import.
+    expect((await mutantRace(one, at)).rows[0].emitted, "the mutant loaded").toBe(true);
+    const mutantSecond = (await mutantRace(two, other)).rows[0];
+    expect(mutantSecond.refusal, "with no position check, nothing refuses it").toBeNull();
+    expect(mutantSecond.emitted, "so both racers file — the race, reopened").toBe(true);
+    // Both reserved either way: the mutation is in what the position MEANS,
+    // not in whether one was taken. Without this the row above could be an
+    // append that silently stopped happening.
+    expect(mutantSink, "both took a position").toHaveLength(2);
+    expect(realSink, "and so did both of the real gate's").toHaveLength(2);
   });
 
   test("FG-140: a directory that is not a git repository is UNMEASURED, naming it", async () => {
@@ -3089,7 +3290,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158: a mutant turns a case red", ()
  * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
  * the half FG-91 surrendered. Nothing else in the file moved.
  */
-describe("FG-143..FG-163: a numeric cap, which no argument defeats", () => {
+describe("FG-143..FG-168: a numeric cap, which no argument defeats", () => {
   const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
   const AT = "2026-10-24T12:00:00.000Z";
 
@@ -3104,10 +3305,20 @@ describe("FG-143..FG-163: a numeric cap, which no argument defeats", () => {
   /** The same filing with its declaration removed — refused, and waivable. */
   const undeclaredSecond = second.replace(` ${DECLARED}`, "");
 
-  /** One emitted row, attributed to `run`, at `at`. */
+  /**
+   * The row a filing leaves that the cap counts — its INTENT.
+   *
+   * A real landed filing leaves two rows: the intent that reserved the
+   * allowance, and the outcome the hook writes afterwards. The outcome is
+   * deliberately NOT what the cap counts (`FilingLedgerRow.intent` says why
+   * counting `emitted` cannot see a filing that is in flight), so a fixture
+   * that built one would be a spent allowance the gate does not see — and
+   * every cap case here would pass for the wrong reason. `FG-149` holds the
+   * counter's population directly.
+   */
   const landed = (run: string, at: string = AT): FilingLedgerRow => ({
     at,
-    key: `b.1/${at}/0`,
+    key: `b.1/${at}/0${INTENT_KEY_SUFFIX}`,
     id: "new",
     title: "something this run already filed",
     symptomHash: "h",
@@ -3115,14 +3326,24 @@ describe("FG-143..FG-163: a numeric cap, which no argument defeats", () => {
     severity: null,
     disposition: "ISSUE",
     refusal: null,
-    emitted: true,
-    withheldBy: null,
+    emitted: false,
+    withheldBy: INTENT_PENDING,
     jury: null,
     duplicateOf: [],
     overridden: false,
     refiledAfter: null,
     exemption: "out-of-pr-diff",
+    intent: true,
     run,
+  });
+
+  /** The OUTCOME row the hook writes after a filing is allowed. */
+  const outcome = (run: string, at: string = AT): FilingLedgerRow => ({
+    ...landed(run, at),
+    key: `b.1/${at}/0`,
+    emitted: true,
+    withheldBy: null,
+    intent: false,
   });
 
   const gateIn = (cmd: string, projectRoot: string, prior: FilingLedgerRow[]) =>
@@ -3405,6 +3626,9 @@ describe("FG-143..FG-163: a numeric cap, which no argument defeats", () => {
       disposition: "DROP",
       refusal,
       withheldBy: refusal,
+      // A refused filing reserved nothing: the gate only registers an intent
+      // for a clause the command-level decision has already cleared.
+      intent: false,
     });
     const withLabel = `${second} --label ${FILING_OVERRIDE_LABEL}`;
 
@@ -3485,11 +3709,213 @@ describe("FG-143..FG-163: a numeric cap, which no argument defeats", () => {
     expect(withOrigin.rows[0].refusal, "and a named checkout has its own allowance").toBeNull();
   });
 
+  test("FG-164: an allowed filing writes one INTENT and one outcome", async () => {
+    // The intent row is the whole of the race fix and it is a row nobody
+    // asked for, so its shape is asserted here rather than inferred from the
+    // cap behaving. `ledgerRows()` filters intents out — see its docblock —
+    // and this is the case that stops that filter from hiding them.
+    const dir = freshRun();
+    const r = runHook(HOOK, NOVEL_FILING, {}, dir);
+    expect(r.blocked, "the premise: this filing is allowed").toBe(false);
+
+    const intents = ledgerIntents();
+    const decisions = ledgerRows();
+    expect(intents, "one reservation").toHaveLength(1);
+    expect(decisions, "and one decision").toHaveLength(1);
+    expect(decisions[0].emitted, "the decision is the filing").toBe(true);
+    expect(intents[0].intent).toBe(true);
+    // **`emitted: false` on the reservation.** A filing count read off this
+    // ledger is `emitted && !intent`, and an intent claiming `emitted` would
+    // double every filing it reserved — #1344's overcount, reintroduced by
+    // the fix for the race.
+    expect(intents[0].emitted, "a reservation is not a receipt").toBe(false);
+    expect(intents[0].withheldBy).toBe(INTENT_PENDING);
+    // The two rows are one decision, and the key is the join.
+    expect(intents[0].key).toBe(`${decisions[0].key}${INTENT_KEY_SUFFIX}`);
+    expect(intents[0].run, "and the reservation names the run it spent").toBe(runIdFor(dir));
+
+    // CONTROL, one axis — the same hook, a filing that is REFUSED. It
+    // reserves nothing, which is what makes FG-147 true of the new counter
+    // as well as the old one.
+    writeFileSync(ledger, "", "utf-8");
+    expect(runHook(HOOK, DUPLICATE_FILING, {}, freshRun()).blocked, "the premise").toBe(true);
+    expect(ledgerIntents(), "a refusal reserves nothing").toHaveLength(0);
+    expect(ledgerRows(), "and still records its decision").toHaveLength(1);
+  });
+
+  test("FG-165: two hook PROCESSES racing one allowance file one issue", async () => {
+    // **The defect, in the only configuration it exists in.** One session
+    // runs parallel subagents and each Bash call spawns its own hook
+    // process; `filingGate` reads the ledger, calls the tracker, and returns,
+    // and the hook writes afterwards. Two processes inside that window both
+    // counted zero filings and both filed. `spawnSync` cannot reproduce it —
+    // the first process has exited before the second starts — so this is the
+    // one case in the file that spawns asynchronously.
+    const dir = freshRun();
+    const [a, b] = await Promise.all([
+      runHookAsync(NOVEL_FILING, dir),
+      runHookAsync(SECOND_NOVEL_FILING, dir),
+    ]);
+    const blocked = [a, b].filter(r => r.blocked);
+    const allowed = [a, b].filter(r => !r.blocked);
+    expect(allowed, "exactly one of the two racers is allowed").toHaveLength(1);
+    expect(blocked, "and exactly one is refused").toHaveLength(1);
+    expect(blocked[0].reason, "by the cap, and not by anything about the finding").toContain(
+      "OVER_CAP",
+    );
+    // The ledger is the other half: one filing landed, whatever the two
+    // processes were told. A pass here with two emitted rows would mean the
+    // refusal was composed and the row written anyway.
+    expect(
+      ledgerRows().filter(r => r.emitted),
+      "one filing on the ledger",
+    ).toHaveLength(1);
+    expect(ledgerIntents(), "and two reservations, because both asked").toHaveLength(2);
+  });
+
+  test("FG-166: the second racer loses on its ORDINAL, not on the pre-read", async () => {
+    // FG-165 spawns two real processes and cannot force the interleave: if
+    // the first finishes before the second reads, the second is refused by
+    // the pre-read and the ordinal is never exercised. This case IS the
+    // interleave, by construction — both gates read an EMPTY ledger before
+    // either appends, which is exactly the window — so it is the one that
+    // says the ordinal is what decides.
+    const dir = freshRun();
+    const sink: FilingLedgerRow[] = [];
+    // The first read of each call is the pre-read, taken before either
+    // racer wrote; every later read sees the live file.
+    const racing = () => {
+      let reads = 0;
+      return () => (reads++ === 0 ? [] : [...sink]);
+    };
+    // **Two racers are two PROCESSES, and `filingBatch` separates them by
+    // pid.** This fixture is one process, so the pid is held fixed and the
+    // keys would collide — both rows would be `${session}.${pid}/${at}/0`,
+    // the loser's `indexOf` would find the winner's position, and the case
+    // would go green reporting that the ordinal works. Varying `now` by a
+    // millisecond restores the property the real pair gets for free, and the
+    // premise is asserted below rather than assumed.
+    const race = (cmd: string, now: string) =>
+      filingGate(cmd, {
+        projectRoot: dir,
+        now,
+        readExisting: async () => measuredCorpus([]),
+        readLedger: racing(),
+        appendLedger: (row: FilingLedgerRow) => {
+          sink.push(row);
+          return true;
+        },
+        readTarget: async () => onPr,
+      });
+
+    const won = await race(first, AT);
+    const lost = await race(second, new Date(Date.parse(AT) + 1).toISOString());
+    expect(sink[0].key, "the premise: the two reservations are told apart").not.toBe(sink[1].key);
+    expect(won.rows[0].refusal, "the first in the queue files").toBeNull();
+    expect(won.rows[0].emitted).toBe(true);
+    expect(lost.rows[0].refusal, "the second is over the cap on its position").toBe("OVER_CAP");
+    expect(lost.rows[0].emitted).toBe(false);
+    expect(sink, "both reserved; only the positions differ").toHaveLength(2);
+    expect(
+      intentOrdinal(sink, sink[1].key, runIdFor(dir), Date.parse(AT)),
+      "and the loser's position is what says so",
+    ).toBe(2);
+  });
+
+  test("FG-167: the two ledger failures fail in opposite directions", async () => {
+    // `reserveAllowance` separates the WRITER failing from the STATE being
+    // unreadable, and they must not get the same answer. A single
+    // "something went wrong with the ledger" arm is how one of them ends up
+    // wrong, and which one depends on nothing but the order they were
+    // written in.
+    const dir = freshRun();
+    const run = runIdFor(dir);
+    const row = { ...landed(run), intent: false, emitted: true, withheldBy: null };
+
+    expect(
+      reserveAllowance(row, run, { now: Date.parse(AT), append: () => false, readLedger: () => [] })
+        .outcome,
+      "the WRITER failed, so no position was taken",
+    ).toBe("UNRESERVED");
+    expect(
+      reserveAllowance(row, run, { now: Date.parse(AT), append: () => true, readLedger: () => null })
+        .outcome,
+      "the STATE could not be read, which is the cap's own input",
+    ).toBe("UNCOUNTABLE");
+
+    // And the gate acts on each: one allows loudly, one refuses.
+    const unwritable = await filingGate(first, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => [],
+      appendLedger: () => false,
+      readTarget: async () => onPr,
+    });
+    expect(unwritable.rows[0].emitted, "a broken writer must not gag the tracker").toBe(true);
+    expect(unwritable.note ?? "", "but it says the cap did not hold").toContain(
+      "took no position in this run's queue",
+    );
+
+    // One axis apart: the pre-read succeeds and the VERIFY read does not, so
+    // this is the ordinal's own UNMEASURED and not the pre-read's.
+    let reads = 0;
+    const unreadable = await filingGate(first, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => (reads++ === 0 ? [] : null),
+      appendLedger: () => true,
+      readTarget: async () => onPr,
+    });
+    expect(unreadable.rows[0].refusal, "an allowance nobody can count is not spendable").toBe(
+      "UNMEASURED_CAP",
+    );
+  });
+
+  test("FG-168: a BLOCKED command reserves nothing", async () => {
+    // The reservation is taken after the command-level decision, and this is
+    // why. A clause that is clean inside a command the hook goes on to block
+    // files nothing — `markBlockedCommand` has said so since #1344 — so
+    // reserving for it would spend the run's allowance on a command that
+    // never reached the tracker, and the agent's corrected re-run would come
+    // back OVER_CAP. A reservation cannot be taken back, so the ordering is
+    // the whole defence.
+    const dir = freshRun();
+    const sink: FilingLedgerRow[] = [];
+    const mixed = `${first} && gh issue create --title "zqxjCapOne loses a sweep it started" --body "a second clause of the same class. Claim 4. ${DECLARED}"`;
+    const r = await filingGate(mixed, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => [],
+      appendLedger: (row: FilingLedgerRow) => {
+        sink.push(row);
+        return true;
+      },
+      readTarget: async () => onPr,
+    });
+    expect(r.refusal, "the premise: this command is blocked").not.toBeNull();
+    expect(sink, "so nothing was reserved").toHaveLength(0);
+    expect(
+      r.rows.filter(row => row.emitted),
+      "and nothing is recorded as filed",
+    ).toHaveLength(0);
+  });
+
   test("FG-147: a REFUSED filing does not consume the allowance", async () => {
     // A gate that counted its own refusals would cap a run out for having
     // been stopped, which is the fastest way to build one that refuses
-    // everything. `emitted` is the only field counted and this is why.
-    const refusedRow = { ...landed(runIdFor(runA)), emitted: false, refusal: "DUPLICATE" as const, disposition: "DROP" as const };
+    // everything. The intent is the only row counted and this is why: it is
+    // registered after the command-level decision, so a refused clause never
+    // writes one.
+    const refusedRow = {
+      ...landed(runIdFor(runA)),
+      intent: false,
+      emitted: false,
+      refusal: "DUPLICATE" as const,
+      disposition: "DROP" as const,
+    };
     const r = await gateIn(second, runA, [refusedRow]);
     expect(r.rows[0].refusal).toBeNull();
   });
@@ -3506,27 +3932,42 @@ describe("FG-143..FG-163: a numeric cap, which no argument defeats", () => {
     ).toBe("OVER_CAP");
   });
 
-  test("FG-149: `emittedInRun` is the one binding, and it counts what it says", () => {
+  test("FG-149: `intentsInRun` is the one binding, and it counts what it says", () => {
     const run = runIdFor(runA);
     const now = Date.parse(AT);
-    expect(emittedInRun([], run, now), "nothing filed").toBe(0);
-    expect(emittedInRun([landed(run)], run, now)).toBe(1);
-    expect(emittedInRun([landed(run), landed(run)], run, now)).toBe(2);
-    expect(emittedInRun([landed("elsewhere")], run, now), "another run").toBe(0);
+    expect(intentsInRun([], run, now), "nothing reserved").toBe(0);
+    expect(intentsInRun([landed(run)], run, now)).toBe(1);
+    expect(intentsInRun([landed(run), landed(run)], run, now)).toBe(2);
+    expect(intentsInRun([landed("elsewhere")], run, now), "another run").toBe(0);
     expect(
-      emittedInRun([{ ...landed(run), emitted: false }], run, now),
-      "a refusal costs nothing",
+      intentsInRun([{ ...landed(run), intent: false }], run, now),
+      "a refusal reserves nothing",
     ).toBe(0);
+    // **The outcome row is not counted, and this is the assertion that says
+    // so.** A landed filing leaves an intent AND an outcome, and counting
+    // both would halve the cap — a run allowed one filing would be refused
+    // its first. Counting the outcome INSTEAD is the defect the intent row
+    // exists to fix: it is written after the decision, so a filing in flight
+    // in another process is invisible.
+    expect(intentsInRun([outcome(run)], run, now), "an outcome row is not a reservation").toBe(0);
     // An unparseable timestamp is COUNTED, not skipped: it is a row this
     // writer appended, and skipping it would let a filing escape the count
     // by carrying a date nobody can read.
-    expect(emittedInRun([{ ...landed(run), at: "not a date" }], run, now)).toBe(1);
+    expect(intentsInRun([{ ...landed(run), at: "not a date" }], run, now)).toBe(1);
     // A legacy row written before the column existed has no `run` at all.
     // It must not be attributed to a real checkout.
     const legacy = { ...landed(run) } as Partial<FilingLedgerRow>;
     delete legacy.run;
-    expect(emittedInRun([legacy as FilingLedgerRow], run, now), "a row with no run is not this run")
+    expect(intentsInRun([legacy as FilingLedgerRow], run, now), "a row with no run is not this run")
       .toBe(0);
+    // And a row written before the column existed carries no `intent`
+    // either, so absent must read as false rather than as a reservation.
+    const beforeTheColumn = { ...landed(run) } as Partial<FilingLedgerRow>;
+    delete beforeTheColumn.intent;
+    expect(
+      intentsInRun([beforeTheColumn as FilingLedgerRow], run, now),
+      "absent is not a reservation",
+    ).toBe(0);
   });
 
   test("FG-150: the refusal names the cap, the run and the comment target", () => {

@@ -350,38 +350,191 @@ export function runIdFor(projectRoot: string): string {
 }
 
 /**
- * How many filings this run has already landed inside the window.
+ * The suffix that tells an intent row apart from the outcome row it reserves.
  *
- * Exported so a test reads the same answer the gate acts on — two spellings
- * of "has this run spent its allowance" would be the fourth shape in
- * `.claude/rules/checks-must-be-able-to-fail.md`.
+ * The two rows are one decision and the join between them matters, so the
+ * intent takes the outcome's key plus this rather than a key of its own.
+ * `summariseFindingOutcomes` refuses a corpus of repeated ids, so they cannot
+ * simply share one.
+ */
+export const INTENT_KEY_SUFFIX = "#intent";
+
+/**
+ * Every intent this run has registered inside the window, in ledger order.
  *
- * **`emitted` and nothing else.** A refused filing cost the tracker nothing,
- * so counting it would cap a run out for having been stopped — a gate that
- * punishes its own refusals, and the fastest way to make one that refuses
- * everything. `markBlockedCommand` has already cleared `emitted` on the
- * clean clauses of a blocked command by the time a row is written, so a
- * command that filed nothing consumes nothing.
+ * **One walk, two questions.** "How many has this run reserved" and "where in
+ * the queue is mine" are the same population read two ways, and two walks
+ * would be the fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`
+ * — a mutation of either leaves the other holding the case up.
+ *
+ * **Intents and not `emitted` rows, since the race fix.** An intent is
+ * appended before the gate decides and an `emitted` row after, so a counter
+ * reading `emitted` cannot see a filing that is in flight — which is exactly
+ * the window two parallel hook processes both read in. See
+ * `FilingLedgerRow.intent`.
+ *
+ * A refused filing still consumes nothing: an intent is only ever appended
+ * for a clause the command-level decision has already cleared, so a clause
+ * refused on its merits, and every clause of a blocked command, registers
+ * none.
  *
  * A row whose `at` cannot be parsed is **counted**, not skipped. It is a row
  * this writer appended; the alternative is a filing that escapes the count
  * by carrying a timestamp nobody can read.
  */
-export function emittedInRun(
+export function runIntents(
+  rows: readonly FilingLedgerRow[],
+  run: string,
+  now: number,
+  window: number = RUN_WINDOW_MS,
+): (string | null)[] {
+  const keys: (string | null)[] = [];
+  for (const row of rows) {
+    if (row.intent !== true) continue;
+    if ((row.run ?? null) !== run) continue;
+    const at = Date.parse(row.at);
+    if (Number.isFinite(at) && now - at > window) continue;
+    keys.push(row.key);
+  }
+  return keys;
+}
+
+/**
+ * How many filings this run has already registered inside the window.
+ *
+ * Exported so a test reads the same answer the gate acts on.
+ */
+export function intentsInRun(
   rows: readonly FilingLedgerRow[],
   run: string,
   now: number,
   window: number = RUN_WINDOW_MS,
 ): number {
-  let n = 0;
-  for (const row of rows) {
-    if (!row.emitted) continue;
-    if ((row.run ?? null) !== run) continue;
-    const at = Date.parse(row.at);
-    if (Number.isFinite(at) && now - at > window) continue;
-    n += 1;
-  }
-  return n;
+  return runIntents(rows, run, now, window).length;
+}
+
+/**
+ * Where one intent sits in its run's queue, 1-based. **The race verdict.**
+ *
+ * `key` is the intent row's own key — the outcome row's, plus
+ * `INTENT_KEY_SUFFIX`.
+ *
+ * **A key that is not found takes the LAST position, and that is the
+ * fail-closed direction.** Two things produce one: `filingBatch` returns
+ * `null` when `CLAUDE_CODE_SESSION_ID` is absent, so the row has no identity
+ * at all; or the re-read missed our own append. In both cases our intent is
+ * somewhere in this population and the only safe assumption is that it is
+ * last, because assuming it is first hands the allowance to every writer that
+ * cannot name itself. A filer cannot reach that branch deliberately without
+ * unsetting the session variable, which `unkeyedLedgerNote` already says out
+ * loud on every filing.
+ *
+ * Zero intents is `0`, which wins. That is the honest reading of an empty
+ * population — nothing has reserved anything — and it is the same answer an
+ * absent ledger gives.
+ *
+ * **`lastIndexOf`, so two rows sharing a key take the LATER position.**
+ * `filingBatch` makes the key unique across live writers by carrying the pid,
+ * so a collision should not happen — but if one ever does, `indexOf` hands
+ * the loser the winner's position and the loser files. Reading from the back
+ * costs nothing and fails in the direction a cap must fail in.
+ */
+export function intentOrdinal(
+  rows: readonly FilingLedgerRow[],
+  key: string | null,
+  run: string,
+  now: number,
+  window: number = RUN_WINDOW_MS,
+): number {
+  const queue = runIntents(rows, run, now, window);
+  const at = key === null ? -1 : queue.lastIndexOf(key);
+  return at === -1 ? queue.length : at + 1;
+}
+
+/**
+ * An intent row's `withheldBy`, between the append and the re-read.
+ *
+ * One exported constant for the same reason `COMMAND_BLOCKED` is one: a
+ * single declaring position for the string the ledger carries.
+ */
+export const INTENT_PENDING = "INTENT_PENDING" satisfies WithheldBy;
+
+/** What the queue said about one intent. */
+export type AllowanceReading =
+  | { outcome: "WON" }
+  /** `already` is how many intents preceded this one. */
+  | { outcome: "LOST"; already: number }
+  /** The intent could not be appended, so no position was taken. */
+  | { outcome: "UNRESERVED" }
+  /** The intent was appended and the queue could not be read back. */
+  | { outcome: "UNCOUNTABLE" };
+
+/**
+ * Take a position in this run's queue, then read it back. **The race fix.**
+ *
+ * ## The race
+ *
+ * `read the ledger → decide → write the row` has the decision in the middle,
+ * and the hook does the writing after `filingGate` returns. Two hook
+ * processes — one session, parallel subagents, a `gh issue create` each —
+ * that both read before either wrote both counted zero filings and both
+ * filed, and the ledger afterwards is indistinguishable from two filings a
+ * day apart. The window is the whole of `filingGate`, which makes a network
+ * call to the tracker, so it is hundreds of milliseconds wide and not a
+ * theoretical one.
+ *
+ * ## Append-then-verify, and why there is no lock
+ *
+ * The intent is appended FIRST and the verdict is read off its position
+ * afterwards. Appends to one file are serialised by the filesystem, so the
+ * positions are a total order every process agrees on without coordinating:
+ * the first `FILINGS_PER_RUN` intents in a run's window win and every later
+ * one is `OVER_CAP`. Both racers see the same file; they just see themselves
+ * in different places in it.
+ *
+ * A lock would need a second artefact, an owner, and an answer for the
+ * process that dies holding it — and a hook that blocks on a stale lock file
+ * is a gate that stops every filing on the machine. The ordering the ledger
+ * already has is free.
+ *
+ * ## The two failures, which fail in opposite directions
+ *
+ * - **The append failed** (`UNRESERVED`) — no position was taken and nothing
+ *   was recorded. The filing proceeds, loudly: this is the writer being
+ *   broken, and `recordAdjudication`'s own policy is that a measurement
+ *   apparatus must not block the thing it measures.
+ * - **The re-read failed** (`UNCOUNTABLE`) — the file is present and
+ *   unreadable, which is the ledger as the cap's STATE rather than its
+ *   apparatus, so it refuses exactly as `UNMEASURED_CAP` does everywhere else
+ *   in this file. The intent is already on the ledger and stays there.
+ */
+export function reserveAllowance(
+  row: FilingLedgerRow,
+  run: string,
+  io: {
+    now: number;
+    append: (row: FilingLedgerRow) => boolean;
+    readLedger: () => FilingLedgerRow[] | null;
+    window?: number;
+  },
+): AllowanceReading {
+  const intent: FilingLedgerRow = {
+    ...row,
+    key: row.key === null ? null : `${row.key}${INTENT_KEY_SUFFIX}`,
+    intent: true,
+    // A reservation is not a receipt and makes no judgement: the outcome row
+    // carries both. See `FilingLedgerRow.intent` for why `emitted` here would
+    // double every filing this reserves.
+    emitted: false,
+    withheldBy: INTENT_PENDING,
+    refusal: null,
+    overridden: false,
+  };
+  if (!io.append(intent)) return { outcome: "UNRESERVED" };
+  const after = io.readLedger();
+  if (after === null) return { outcome: "UNCOUNTABLE" };
+  const ordinal = intentOrdinal(after, intent.key, run, io.now, io.window);
+  return ordinal > FILINGS_PER_RUN ? { outcome: "LOST", already: ordinal - 1 } : { outcome: "WON" };
 }
 
 /** The refusal an agent reads when the run has spent its allowance. */
@@ -827,6 +980,40 @@ export interface FilingLedgerRow {
    * split would be a decider with a spare.
    */
   exemption: CommentExemption | null;
+  /**
+   * This row RESERVES the allowance; it does not record an outcome (#1595).
+   *
+   * **The whole of the race fix, written down as a column.** The cap used to
+   * read the ledger, decide, and let the hook write the outcome afterwards —
+   * three steps with the decision in the middle, so two hook processes that
+   * both read before either wrote both saw a spent count of zero and both
+   * filed. Nothing in the ledger could even show it afterwards: the two rows
+   * are indistinguishable from two filings a day apart.
+   *
+   * An intent row is appended BEFORE the gate decides, and the decision is
+   * then read off its POSITION among this run's intents in the window
+   * (`intentsInRun`). Appends to one file are ordered by the filesystem, so
+   * the position is a total order that needs no lock and no second file: the
+   * first `FILINGS_PER_RUN` intents win and every later one is `OVER_CAP`.
+   *
+   * **`emitted: false`, always, and that is not a technicality.** A filing
+   * count read off this ledger is `emitted && !intent`, and an intent row
+   * that claimed `emitted: true` would double every filing it reserved —
+   * #1344's overcount, reintroduced by the fix for the race. The outcome
+   * lands on its own row, written by the hook as it always was, sharing this
+   * row's key without the `INTENT_KEY_SUFFIX`.
+   *
+   * **A losing intent is never retracted, and it costs nothing.** It stays on
+   * the ledger holding its ordinal, so later reads count it. That cannot gag
+   * a run that has not spent its allowance: an intent can only lose when
+   * `FILINGS_PER_RUN` intents precede it, and by induction those all won — so
+   * a count at or above the cap always means the cap was genuinely reached.
+   *
+   * Absent on every row written before this existed, and on the rows
+   * `scripts/arbitrate-finding.ts` and `lib/ai-review-jury.ts` write, neither
+   * of which reserves anything. Absent reads as `false`.
+   */
+  intent?: boolean;
   /**
    * Which run filed it — the checkout, from `runIdFor` (#1595).
    *
@@ -1849,6 +2036,15 @@ export async function filingGate(
     /** The adjudications already on the ledger. `null` means unreadable. */
     readLedger?: () => FilingLedgerRow[] | null;
     /**
+     * Append one row, reporting whether it landed.
+     *
+     * The gate writes exactly one kind of row itself — the intent that
+     * reserves the allowance (`reserveAllowance`) — and the hook still writes
+     * every outcome row afterwards. Injectable so a test can drive the race
+     * without a filesystem, and so the two racers in `FG-165` can share one.
+     */
+    appendLedger?: (row: FilingLedgerRow) => boolean;
+    /**
      * Where a comment should go instead, when a filing is refused for having
      * declared no reason (#1595). Injectable for the same reason
      * `readExisting` is: the live one talks to GitHub.
@@ -1960,7 +2156,11 @@ export async function filingGate(
   const run = runIdFor(options.projectRoot);
   const nowMs = Date.parse(at);
   const uncountable = priorRows === null;
-  let spent = uncountable ? 0 : emittedInRun(priorRows, run, nowMs);
+  let spent = uncountable ? 0 : intentsInRun(priorRows, run, nowMs);
+  // The per-clause verdicts, kept so the race stage below can compose the
+  // same refusal message the loop composes. One array, written once per
+  // clause beside `rows`, so `rows[i]` and `verdicts[i]` are one clause.
+  const verdicts: FilingAdjudication[] = [];
 
   for (const [index, attempt] of attempts.entries()) {
     const read1 = await adjudicateFiling(
@@ -2100,6 +2300,7 @@ export async function filingGate(
     // refuse was recorded as having reached the tracker.
     const cleared = verdict.outcome !== "REFUSE" || overridden;
 
+    verdicts.push(verdict);
     rows.push({
       at,
       key: batch === null ? null : `${batch}/${index}`,
@@ -2198,6 +2399,52 @@ export async function filingGate(
   // them, and `clean` is read BEFORE it so the refusal still enumerates the
   // clauses an agent should re-run — see that function's header for why that
   // ordering is the whole of #1344's wrong fix.
+  // ── The cap again, this time against the clauses that will actually file
+  //    (#1595) ────────────────────────────────────────────────────────────
+  //
+  // Everything above decided from a snapshot READ BEFORE the decision, which
+  // is the race: `filingGate` calls the tracker in between, so the window is
+  // hundreds of milliseconds and two parallel hooks both counted zero.
+  // `reserveAllowance` closes it by appending first and reading the position
+  // back — see its header for why there is no lock.
+  //
+  // **Only when nothing else refuses, and that ordering is load-bearing.** A
+  // blocked command files nothing, so reserving for it would spend the run's
+  // allowance on a command that was never going to reach the tracker, and the
+  // agent's corrected re-run would then be `OVER_CAP`. It is the same rule
+  // `markBlockedCommand` applies to `emitted`, applied one step earlier
+  // because a reservation cannot be taken back.
+  if (refusals.length === 0) {
+    const append = options.appendLedger ?? ((r: FilingLedgerRow) => recordAdjudication(r));
+    const readAgain = options.readLedger ?? (() => readLedgerRows());
+    for (const [index, row] of rows.entries()) {
+      if (!row.emitted) continue;
+      const reading = reserveAllowance(row, run, { now: nowMs, append, readLedger: readAgain });
+      if (reading.outcome === "WON") continue;
+      if (reading.outcome === "UNRESERVED") {
+        notes.push(unreservedAllowanceNote());
+        continue;
+      }
+      const refusal = reading.outcome === "LOST" ? "OVER_CAP" : "UNMEASURED_CAP";
+      const target = await targetFor(attempts[index].repo);
+      const reason =
+        reading.outcome === "LOST"
+          ? overCapReason(run, reading.already, target)
+          : uncountableCapReason(run, target);
+      // `overridden: false`, because `waivableRefusal` says so for both of
+      // these — the same predicate the loop reads, not a second judgement.
+      rows[index] = {
+        ...row,
+        emitted: false,
+        disposition: "DROP",
+        refusal,
+        withheldBy: refusal,
+        overridden: false,
+      };
+      refusals.push(refusalMessage({ ...verdicts[index], outcome: "REFUSE", refusal, reason }));
+    }
+  }
+
   const blocking = refusals.length > 0;
   const clean = rows.filter(r => r.emitted);
   if (blocking && clean.length > 0) refusals.push(cleanClauseNote(clean, rows.length));
@@ -2400,6 +2647,29 @@ export function unkeyedLedgerNote(): string {
     "what is lost is the join to its outcome, and it is lost permanently, because the " +
     "identity exists only at the moment of writing. No key was invented to cover the gap: " +
     "a plausible one reads as a measurement that was taken."
+  );
+}
+
+/**
+ * The cap could not take a position in the queue, so it did not hold.
+ *
+ * Said out loud for the reason `unkeyedLedgerNote` is said out loud: the
+ * filing proceeds, and what proceeds is a filing nothing counted. A silent
+ * version of this is a cap that switches itself off whenever one file cannot
+ * be written, which is the shape `.claude/rules/config-access.md` calls
+ * Silent Default Substitution.
+ *
+ * It allows rather than refusing because this is the WRITER failing, not the
+ * state being unknown — `reserveAllowance` has the two apart, and the other
+ * one refuses.
+ */
+export function unreservedAllowanceNote(): string {
+  return (
+    "[FindingArbiter] UNMEASURED allowance — this filing's intent row could NOT be appended to " +
+    `${ledgerPath()}, so it took no position in this run's queue and the per-run cap of ` +
+    `${FILINGS_PER_RUN} did not hold for it. It is allowed through: a ledger that cannot be ` +
+    "written must not become a gag on the tracker. What is lost is the count, and a parallel " +
+    "filing in this same run would not have been seen."
   );
 }
 

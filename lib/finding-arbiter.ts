@@ -1184,6 +1184,14 @@ export const FILING_BUDGET_FINDINGS = 6;
  *   unmeasured, the sibling was measured and refused — and it is not the
  *   sibling's own `ArbiterRefusal`, because this clause was never refused and
  *   is the one an agent should re-run.
+ * - `INTENT_PENDING` — the row is an INTENT to file, appended by the cap
+ *   before it decides, and at the moment it is written nothing has reached
+ *   the tracker and nothing has refused it. It is not `COMMAND_BLOCKED`,
+ *   which is a decision, and not a refusal, which is a judgement: it is the
+ *   state a reservation is in for the microseconds between the append and the
+ *   re-read that resolves it. The outcome lands on a SECOND row sharing this
+ *   one's key without the `#intent` suffix. See `intentsInRun` in
+ *   `lib/issue-filing-gate.ts` for why the reservation is a separate row.
  * - `UNACCOUNTED` — the promoter returned this candidate in neither
  *   `promoted` nor `withheld`. It partitions its input, so this cannot
  *   happen; it is named instead of defaulted so that if the partition ever
@@ -1194,6 +1202,7 @@ export type WithheldBy =
   | WithheldReason
   | "BATCH_UNMEASURED"
   | "COMMAND_BLOCKED"
+  | "INTENT_PENDING"
   | "UNACCOUNTED";
 
 /**
