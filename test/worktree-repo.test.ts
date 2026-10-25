@@ -38,7 +38,7 @@
  * its inlined copy is how `computeACHash` drifted.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { execFileSync } from "child_process";
+import { execFileSync, spawnSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -428,6 +428,44 @@ describe("SC-1444: readWorktreeRemote reads a real checkout", () => {
     const reading = readWorktreeRemote(notARepo);
     expect(reading.url).toBeNull();
     expect(reading.error).not.toBeNull();
+  });
+
+  test("`missing` is a reading of THE REPOSITORY, not of the global config", () => {
+    // Advisory finding `84aa1ec8` on PR #1603, and it was right.
+    // `absentOrigin` answers *"was this read and found originless"*, which
+    // is the half `error` cannot express. Unqualified, `git config --get`
+    // does not require a repository and falls back to global and system, so
+    // it answers a different question with the same exit code.
+    //
+    // **The premise, measured here rather than assumed**, because the
+    // discriminating fact is a property of this machine's git and its
+    // ambient config: if the unqualified read did NOT exit 1 in a non-repo
+    // directory — a global `remote.origin.url` would make it exit 0 — the
+    // case below would pass without witnessing anything.
+    // late-env-ok: the child is `git`; every variable it reads is passed.
+    const probe = (...args: string[]) =>
+      spawnSync("git", ["-C", notARepo, "config", ...args, "remote.origin.url"], {
+        encoding: "utf-8",
+        env: { ...process.env },
+      });
+    expect(probe("--get").status, "the unqualified read must look like 'not set' here").toBe(1);
+    expect(probe("--local", "--get").status, "and the scoped one must refuse").toBe(128);
+
+    // So: a directory that was never a repository has not been READ and
+    // found originless. 128 is not 1, and nothing reports absence.
+    const never = readWorktreeRemote(notARepo);
+    expect(never.error, "the premise: the read failed").not.toBeNull();
+    expect(never.missing, "a non-repository reported as a checkout with no origin").toBe(false);
+
+    // CONTROL, one axis — a real `git init` with no origin. Both arms fail
+    // the `get-url`, both carry an `error`, and only this one is an absence.
+    // Without it the row above is satisfied by `return false`.
+    const read = readWorktreeRemote(noOrigin);
+    expect(read.error, "the same premise on the control").not.toBeNull();
+    expect(read.missing, "an observed absence stopped being observable").toBe(true);
+
+    // And the field stays false where the question was never asked at all.
+    expect(readWorktreeRemote(withOrigin).missing, "a successful read settles nothing").toBe(false);
   });
 
   test("a missing path and an empty path are errors with no subprocess at all", () => {
