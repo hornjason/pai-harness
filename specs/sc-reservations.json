@@ -74,11 +74,11 @@
       "note": "CRC-B4 phase 2. test/finding-arbiter.test.ts holds AR-1..AR-20 on main; AR has no allocator, so this is the eyeballed-headroom method the rule names, declared before any id is consumed. Delete when the PR merges."
     },
     {
-      "owner": "rg/1595-comment-default-unwaivable",
-      "from": 176,
+      "owner": "rg/1595-no-claim-recipe",
+      "from": 179,
       "to": 199,
       "namespace": "FG",
-      "note": "#1595 - the comment DEFAULT stops being waivable by a label the refusal itself spelled. FG-120..179 was this work's previous block and was deleted when rg/1595-run-reading merged, which is the rule; this is a NEW entry rather than a resurrection because FG-175 is now the highest id on main, so a block starting at 176 sits above everything consumed and above every other declared block (rg/1536 holds FG-100..119, rg/1344 holds FG-90..99). Declared before any id was consumed. FG-176..179 are consumed. Delete when the PR merges."
+      "note": "#1595 - the NO_CLAIM refusal stops printing the override recipe. RE-OWNED, not a new block: rg/1595-comment-default-unwaivable held 176-199 and merged as PR #1605, which by the rule means its entry goes - but FG-179 was still in flight on this branch when that happened, so deleting the whole entry would unreserve a consumed id. FG-176..178 are on main and need no reservation; the floor moves up to 179 and the owner moves to the branch that actually holds it. FG-179 is consumed. Delete when the PR merges."
     },
     {
       "owner": "rg/1536-arbiter-keys",
