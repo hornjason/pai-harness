@@ -222,15 +222,36 @@ export function readWorktreeRemote(worktreePath: string): RemoteReading {
  * **1 means the key is not set**, and every other non-zero code is a
  * failure. So the answer comes from the contract rather than from text.
  *
+ * **`--local`, and it is load-bearing.** Unqualified, `git config --get`
+ * does not require a repository and falls back to the global and system
+ * files, so it answers two questions this one must keep apart. Measured,
+ * both directions:
+ *
+ *   * In a directory that is **not a repository**, the unqualified read
+ *     exits **1** — "not set" — so a path that was never a checkout reports
+ *     as a checkout that was read and found originless. `--local` exits
+ *     **128** there instead, and 128 is not 1, so it reports nothing.
+ *   * In a real checkout with no origin and a global `remote.origin.url`
+ *     set, the unqualified read exits **0** with the GLOBAL url, so a
+ *     healthy originless checkout reports as a failed read — which in
+ *     `lib/issue-filing-gate.ts` is an `UNMEASURED_CAP` refusal instead of
+ *     the shared bucket. `--local` exits 1 there, correctly.
+ *
+ * `--local` reads the repository file, which a linked worktree shares with
+ * its main checkout, so this still answers for a worktree: measured against
+ * this repo's own linked worktree, which returns its origin and exits 0.
+ * Raised as an advisory finding (key `84aa1ec8`) on PR #1603.
+ *
  * Only ever called on the error path, so the ordinary read still costs one
  * command. False for anything that is not an unambiguous "the key is not
  * set", including a second failure: an unanswered question is not absence.
  */
 function absentOrigin(worktreePath: string): boolean {
-  const got = spawnSync("git", ["-C", worktreePath, "config", "--get", "remote.origin.url"], {
-    timeout: 10_000,
-    encoding: "utf-8",
-  });
+  const got = spawnSync(
+    "git",
+    ["-C", worktreePath, "config", "--local", "--get", "remote.origin.url"],
+    { timeout: 10_000, encoding: "utf-8" },
+  );
   if (got.error) return false;
   return got.status === 1 && String(got.stdout || "").trim() === "";
 }
