@@ -359,6 +359,9 @@ export function runIdFor(projectRoot: string): string {
  */
 export const INTENT_KEY_SUFFIX = "#intent";
 
+/** The suffix on the row that gives an intent back. See `releaseAllowance`. */
+export const RELEASE_KEY_SUFFIX = "#released";
+
 /**
  * Every intent this run has registered inside the window, in ledger order.
  *
@@ -388,15 +391,31 @@ export function runIntents(
   now: number,
   window: number = RUN_WINDOW_MS,
 ): (string | null)[] {
-  const keys: (string | null)[] = [];
+  // **One pass, in file order, and a release only cancels an intent that
+  // PRECEDES it.** Collecting released keys up front and filtering on the
+  // set is the shorter spelling and it is wrong: `filingBatch` mints the
+  // key from the session, the pid and the timestamp, so a retry inside the
+  // same millisecond reuses it — and a release written for the first
+  // attempt would free the second attempt's live reservation. Measured
+  // while building `FG-170`, where three calls shared a pinned `now`: the
+  // third filing was allowed against a spent allowance. Order is what tells
+  // a cancelled reservation from a later one wearing the same name, and
+  // this file is append-only, so order is the thing it always has.
+  const live: (string | null)[] = [];
   for (const row of rows) {
+    const gave = row.releases ?? null;
+    if (gave !== null) {
+      const at = live.lastIndexOf(gave);
+      if (at !== -1) live.splice(at, 1);
+      continue;
+    }
     if (row.intent !== true) continue;
     if ((row.run ?? null) !== run) continue;
     const at = Date.parse(row.at);
     if (Number.isFinite(at) && now - at > window) continue;
-    keys.push(row.key);
+    live.push(row.key);
   }
-  return keys;
+  return live;
 }
 
 /**
@@ -419,19 +438,29 @@ export function intentsInRun(
  * `key` is the intent row's own key — the outcome row's, plus
  * `INTENT_KEY_SUFFIX`.
  *
- * **A key that is not found takes the LAST position, and that is the
- * fail-closed direction.** Two things produce one: `filingBatch` returns
- * `null` when `CLAUDE_CODE_SESSION_ID` is absent, so the row has no identity
- * at all; or the re-read missed our own append. In both cases our intent is
- * somewhere in this population and the only safe assumption is that it is
- * last, because assuming it is first hands the allowance to every writer that
- * cannot name itself. A filer cannot reach that branch deliberately without
- * unsetting the session variable, which `unkeyedLedgerNote` already says out
- * loud on every filing.
+ * **Two different things produce "not found" and they take different
+ * positions.** Collapsing them to one answer is wrong in one direction or
+ * the other, and the first spelling of this function collapsed them:
  *
- * Zero intents is `0`, which wins. That is the honest reading of an empty
- * population — nothing has reserved anything — and it is the same answer an
- * absent ledger gives.
+ * - **`key === null`** — `filingBatch` returned `null` because
+ *   `CLAUDE_CODE_SESSION_ID` is absent, so the row has no identity. Our
+ *   intent **is** in this queue; we appended it and cannot point at it. The
+ *   safe position is `queue.length`: last among what is visible, and `1`
+ *   when ours is the only one. Reading `queue.length + 1` here would count
+ *   us twice and refuse **every** filing from an unkeyed session, which is a
+ *   gag and contradicts `unkeyedLedgerNote`'s stated policy that such a
+ *   filing proceeds.
+ * - **a key that is genuinely absent** — the re-read did not contain our own
+ *   append. Our intent is **not** in this queue, so every row in it precedes
+ *   us and the only safe position is `queue.length + 1`. Reading
+ *   `queue.length` here hands us the last EXISTING slot rather than the next
+ *   one, so with one other intent queued and a cap of 1 we would compute
+ *   ordinal 1 and win while genuinely second. Found by the security review
+ *   of `822d5d7d`.
+ *
+ * An empty queue with a null key is `0` — nothing has reserved anything,
+ * which is the same answer an absent ledger gives, and it cannot arise from
+ * our own append because that append put a row in the queue.
  *
  * **`lastIndexOf`, so two rows sharing a key take the LATER position.**
  * `filingBatch` makes the key unique across live writers by carrying the pid,
@@ -447,8 +476,9 @@ export function intentOrdinal(
   window: number = RUN_WINDOW_MS,
 ): number {
   const queue = runIntents(rows, run, now, window);
-  const at = key === null ? -1 : queue.lastIndexOf(key);
-  return at === -1 ? queue.length : at + 1;
+  if (key === null) return queue.length;
+  const at = queue.lastIndexOf(key);
+  return at === -1 ? queue.length + 1 : at + 1;
 }
 
 /**
@@ -459,15 +489,20 @@ export function intentOrdinal(
  */
 export const INTENT_PENDING = "INTENT_PENDING" satisfies WithheldBy;
 
-/** What the queue said about one intent. */
+/**
+ * What the queue said about one intent.
+ *
+ * Every outcome that APPENDED carries the row it appended, because the caller
+ * has to be able to release it. `UNRESERVED` is the one that did not.
+ */
 export type AllowanceReading =
-  | { outcome: "WON" }
+  | { outcome: "WON"; intent: FilingLedgerRow }
   /** `already` is how many intents preceded this one. */
-  | { outcome: "LOST"; already: number }
+  | { outcome: "LOST"; already: number; intent: FilingLedgerRow }
   /** The intent could not be appended, so no position was taken. */
   | { outcome: "UNRESERVED" }
   /** The intent was appended and the queue could not be read back. */
-  | { outcome: "UNCOUNTABLE" };
+  | { outcome: "UNCOUNTABLE"; intent: FilingLedgerRow };
 
 /**
  * Take a position in this run's queue, then read it back. **The race fix.**
@@ -497,16 +532,28 @@ export type AllowanceReading =
  * is a gate that stops every filing on the machine. The ordering the ledger
  * already has is free.
  *
- * ## The two failures, which fail in opposite directions
+ * ## Both ledger failures REFUSE, and the first spelling got one of them wrong
  *
- * - **The append failed** (`UNRESERVED`) — no position was taken and nothing
- *   was recorded. The filing proceeds, loudly: this is the writer being
- *   broken, and `recordAdjudication`'s own policy is that a measurement
- *   apparatus must not block the thing it measures.
  * - **The re-read failed** (`UNCOUNTABLE`) — the file is present and
- *   unreadable, which is the ledger as the cap's STATE rather than its
- *   apparatus, so it refuses exactly as `UNMEASURED_CAP` does everywhere else
- *   in this file. The intent is already on the ledger and stays there.
+ *   unreadable. The ledger is the cap's STATE rather than its apparatus, so
+ *   this refuses exactly as `UNMEASURED_CAP` does everywhere else here.
+ * - **The append failed** (`UNRESERVED`) — this ALLOWED, loudly, on
+ *   `recordAdjudication`'s policy that a measurement apparatus must not block
+ *   the thing it measures. That policy is right for the row that RECORDS a
+ *   decision and wrong for the row that MAKES one: a failure to update the
+ *   cap's state is indistinguishable from an attempt to disable it, so an
+ *   unwritable ledger switched the cap off. The two branches were written in
+ *   one commit and took opposite positions about the same file. Both refuse
+ *   now, and `unreservedCapReason` names the write so an operator knows which
+ *   half to repair.
+ *
+ * ## The caller must RELEASE what it reserved
+ *
+ * The intent is on the ledger from the moment `append` returns true, whatever
+ * the outcome. A command that goes on to file nothing has to give it back —
+ * `releaseAllowance` — or the ordinary two-clause command at a cap of one
+ * strands the run's allowance. The reading carries the row it appended so the
+ * caller has something to release.
  */
 export function reserveAllowance(
   row: FilingLedgerRow,
@@ -532,9 +579,41 @@ export function reserveAllowance(
   };
   if (!io.append(intent)) return { outcome: "UNRESERVED" };
   const after = io.readLedger();
-  if (after === null) return { outcome: "UNCOUNTABLE" };
+  if (after === null) return { outcome: "UNCOUNTABLE", intent };
   const ordinal = intentOrdinal(after, intent.key, run, io.now, io.window);
-  return ordinal > FILINGS_PER_RUN ? { outcome: "LOST", already: ordinal - 1 } : { outcome: "WON" };
+  return ordinal > FILINGS_PER_RUN
+    ? { outcome: "LOST", already: ordinal - 1, intent }
+    : { outcome: "WON", intent };
+}
+
+/**
+ * Give back a reservation, by appending rather than by rewriting.
+ *
+ * Nothing in this file rewrites a row: the total order that appends give is
+ * the property the race fix rests on, and a file being rewritten underneath a
+ * concurrent reader has no order at all. So a release is a row naming the key
+ * it gives back, and `runIntents` subtracts it.
+ *
+ * Returns whether the release landed. A release that fails leaves the
+ * reservation standing, which costs the run an allowance it did not spend —
+ * loud, and the same direction as every other failure here.
+ */
+export function releaseAllowance(
+  intent: FilingLedgerRow,
+  append: (row: FilingLedgerRow) => boolean,
+): boolean {
+  // A null-keyed intent cannot be named, so there is nothing to release and
+  // saying so is cheaper than appending a row that releases nothing.
+  if (intent.key === null) return false;
+  return append({
+    ...intent,
+    key: `${intent.key}${RELEASE_KEY_SUFFIX}`,
+    intent: false,
+    releases: intent.key,
+    emitted: false,
+    disposition: "DROP",
+    withheldBy: COMMAND_BLOCKED,
+  });
 }
 
 /** The refusal an agent reads when the run has spent its allowance. */
@@ -551,6 +630,30 @@ export function overCapReason(run: string, already: number, target: CommentTarge
     "  judgement about your finding, which may well be a good one — the cap exists because a",
     "  per-finding judgement drifts and a count does not. If several findings belong on the",
     "  tracker, they are one issue naming every instance, not several.",
+  ].join("\n");
+}
+
+/**
+ * The refusal when the allowance cannot be RESERVED (#1595).
+ *
+ * Separate text from `uncountableCapReason`, because an operator repairs a
+ * different half: that one is a file that cannot be read, this one a file
+ * that cannot be written. The refusal is the same because the consequence is
+ * the same — the cap's state did not change, so the cap did not hold.
+ */
+export function unreservedCapReason(run: string, target: CommentTarget): string {
+  return [
+    `this run's allowance could not be RESERVED: the intent row could not be appended to ` +
+      `${ledgerPath()}. The cap is ${FILINGS_PER_RUN} per run and it is not measurable right now.`,
+    "",
+    `  ${commentTargetSentence(target)}`,
+    "",
+    `  run: ${run}`,
+    "",
+    "  This refuses rather than allowing, and the symmetry is deliberate: a ledger that cannot",
+    "  be WRITTEN is not a broken instrument beside the gate, it is the gate's own state failing",
+    "  to change. Allowing here would mean anything able to make one file unwritable switches the",
+    "  cap off. Repair or move the file — an operator's job, not a re-draft of this filing.",
   ].join("\n");
 }
 
@@ -1014,6 +1117,35 @@ export interface FilingLedgerRow {
    * of which reserves anything. Absent reads as `false`.
    */
   intent?: boolean;
+  /**
+   * The `key` of an intent row this row gives back (#1595).
+   *
+   * **An intent that reserved an allowance for a command that then filed
+   * nothing has to be released, and an append-only file releases by
+   * appending.** The reservation is taken after the command-level decision
+   * so a command already refused reserves nothing — but a refusal GENERATED
+   * by the reservation loop, which is what a two-clause command at a cap of
+   * one produces every time, arrives after clause 0 has already reserved.
+   * Without this column that command files nothing and spends the run's only
+   * allowance, and the corrected re-run is `OVER_CAP`: the exact outcome the
+   * ordering exists to prevent, reached by the ordinary multi-clause path.
+   *
+   * `runIntents` subtracts released keys, so a released intent holds no
+   * position. It is not retracted in place — nothing in this file rewrites a
+   * row, because the total order appends give is the property the whole race
+   * fix rests on.
+   *
+   * **A `null`-keyed intent cannot be released**, because nothing can name
+   * it. That session's blocked multi-clause command does strand its
+   * allowance for the window, and `unkeyedLedgerNote` already tells it that
+   * its rows cannot be told apart. Fail-closed, stated rather than fixed by
+   * inventing an identity.
+   *
+   * A release is visible only to reads that happen after it, so a racer that
+   * already lost against a since-released intent stays lost and re-runs.
+   * Conservative in the direction a cap must be conservative in.
+   */
+  releases?: string | null;
   /**
    * Which run filed it — the checkout, from `runIdFor` (#1595).
    *
@@ -1998,9 +2130,14 @@ export function priorRefusalFor(
   title: string,
   rows: readonly FilingLedgerRow[],
 ): FilingLedgerRow | null {
+  // Bounded on the way in, because it was bounded on the way out: a title
+  // over `MAX_LEDGER_TITLE` is stored truncated, so comparing the raw one
+  // would never match its own prior row and the #1536 override would stop
+  // surviving a re-draft for exactly the longest titles.
+  const wanted = ledgerTitle(title);
   let best: FilingLedgerRow | null = null;
   for (const row of rows) {
-    if (row.title !== title) continue;
+    if (row.title !== wanted) continue;
     if (row.refusal === null || row.refusal === "UNMEASURED") continue;
     if (row.emitted || row.overridden) continue;
     if (row.withheldBy !== row.refusal) continue;
@@ -2305,7 +2442,7 @@ export async function filingGate(
       at,
       key: batch === null ? null : `${batch}/${index}`,
       id: UNFILED_ID,
-      title: attempt.title,
+      title: ledgerTitle(attempt.title),
       symptomHash: verdict.symptomHash,
       category: verdict.category,
       severity: null,
@@ -2414,15 +2551,32 @@ export async function filingGate(
   // agent's corrected re-run would then be `OVER_CAP`. It is the same rule
   // `markBlockedCommand` applies to `emitted`, applied one step earlier
   // because a reservation cannot be taken back.
+  //
+  // **Everything reserved is released if the command ends up filing
+  // nothing**, and the guard above is not enough for that. `refusals.length
+  // === 0` tests the refusals that existed BEFORE this stage; the stage
+  // generates its own, and at `FILINGS_PER_RUN = 1` every command with two
+  // emitting clauses generates one — clause 0 wins, clause 1 loses, the
+  // refusal blocks the command, and clause 0's reservation sits on the
+  // ledger holding the run's only allowance for a command that filed
+  // nothing. That is the ordinary multi-clause path, not an edge case, and
+  // the comment above was right about the invariant while the code guarded
+  // it against the wrong population. Found by the security review of
+  // `822d5d7d`.
+  //
+  // So: stop at the first clause that does not win, and give back every
+  // reservation this command took. `releaseAllowance` appends rather than
+  // rewriting, because the order appends give is what the whole fix rests
+  // on.
   if (refusals.length === 0) {
     const append = options.appendLedger ?? ((r: FilingLedgerRow) => recordAdjudication(r));
     const readAgain = options.readLedger ?? (() => readLedgerRows());
+    const reserved: FilingLedgerRow[] = [];
     for (const [index, row] of rows.entries()) {
       if (!row.emitted) continue;
       const reading = reserveAllowance(row, run, { now: nowMs, append, readLedger: readAgain });
-      if (reading.outcome === "WON") continue;
-      if (reading.outcome === "UNRESERVED") {
-        notes.push(unreservedAllowanceNote());
+      if (reading.outcome === "WON") {
+        reserved.push(reading.intent);
         continue;
       }
       const refusal = reading.outcome === "LOST" ? "OVER_CAP" : "UNMEASURED_CAP";
@@ -2430,19 +2584,35 @@ export async function filingGate(
       const reason =
         reading.outcome === "LOST"
           ? overCapReason(run, reading.already, target)
-          : uncountableCapReason(run, target);
-      // `overridden: false`, because `waivableRefusal` says so for both of
-      // these — the same predicate the loop reads, not a second judgement.
+          : reading.outcome === "UNRESERVED"
+            ? unreservedCapReason(run, target)
+            : uncountableCapReason(run, target);
+      if (reading.outcome === "UNRESERVED") notes.push(unreservedAllowanceNote());
+      // The intent this clause took is released with the rest below: it won
+      // no position, and a losing reservation that is never given back is
+      // the same stranded allowance by a rarer route.
+      if (reading.outcome !== "UNRESERVED") reserved.push(reading.intent);
+      // **`waivableRefusal` is READ here, not restated.** Writing
+      // `overridden: false` with a comment saying the predicate agrees makes
+      // this a third place that decides whether a label waives something,
+      // and a mutation of the predicate would leave this one holding the
+      // case up — the fourth shape in
+      // `.claude/rules/checks-must-be-able-to-fail.md`. It evaluates false
+      // for both of these refusals; the point is that it evaluates.
       rows[index] = {
         ...row,
         emitted: false,
         disposition: "DROP",
         refusal,
         withheldBy: refusal,
-        overridden: false,
+        overridden: row.overridden && waivableRefusal(refusal),
       };
       refusals.push(refusalMessage({ ...verdicts[index], outcome: "REFUSE", refusal, reason }));
+      // Nothing after this clause can file — the refusal blocks the command
+      // — so reserving for it would strand another allowance.
+      break;
     }
+    if (refusals.length > 0) for (const intent of reserved) releaseAllowance(intent, append);
   }
 
   const blocking = refusals.length > 0;
@@ -2667,10 +2837,38 @@ export function unreservedAllowanceNote(): string {
   return (
     "[FindingArbiter] UNMEASURED allowance — this filing's intent row could NOT be appended to " +
     `${ledgerPath()}, so it took no position in this run's queue and the per-run cap of ` +
-    `${FILINGS_PER_RUN} did not hold for it. It is allowed through: a ledger that cannot be ` +
-    "written must not become a gag on the tracker. What is lost is the count, and a parallel " +
-    "filing in this same run would not have been seen."
+    `${FILINGS_PER_RUN} could not hold for it. The filing is REFUSED, not allowed: see ` +
+    "`unreservedCapReason`. This note names the writer so an operator repairs the file rather " +
+    "than the filing."
   );
+}
+
+/**
+ * How long a title may be on a ledger row. **An atomicity bound, not a
+ * cosmetic one.**
+ *
+ * The whole race fix rests on appends to one file being serialised, and that
+ * holds for a write small enough to reach the filesystem as one. A row large
+ * enough to be split can tear, and a torn row is a reservation that took no
+ * position while its writer believes it did — the one failure this design
+ * has no reading for. `readLedgerRows` already treats a torn final line as
+ * expected and skips it, which is exactly the silent slot loss.
+ *
+ * The title is the one field on the row a FILER sets and nothing else
+ * bounds: `--title` takes whatever the command line carries. So it is bounded
+ * here, and `ledgerTitle` is the single binding — the lookup in
+ * `priorRefusalFor` joins on this field, so a title bounded when written and
+ * not when read would stop matching its own prior row.
+ *
+ * 200 is comfortably inside any plausible single-write limit with the rest of
+ * the row, and about twice the longest title on the live ledger. Do not raise
+ * it without saying what makes the larger write atomic.
+ */
+export const MAX_LEDGER_TITLE = 200;
+
+/** A title bounded for the ledger. One binding — see `MAX_LEDGER_TITLE`. */
+export function ledgerTitle(title: string): string {
+  return title.length <= MAX_LEDGER_TITLE ? title : `${title.slice(0, MAX_LEDGER_TITLE)}…`;
 }
 
 /**

@@ -74,6 +74,9 @@ import {
   intentsInRun,
   intentOrdinal,
   reserveAllowance,
+  releaseAllowance,
+  ledgerTitle,
+  MAX_LEDGER_TITLE,
   overCapReason,
   runIdFor,
   INTENT_KEY_SUFFIX,
@@ -2876,8 +2879,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
   /** `M5` — the cap stops seeing filings the label would carry through. */
   const M5 = "|| overrideOf(read2)";
   /** `M6` — the reservation is taken and its position is never read. */
-  const M6 =
-    'return ordinal > FILINGS_PER_RUN ? { outcome: "LOST", already: ordinal - 1 } : { outcome: "WON" };';
+  const M6 = "ordinal > FILINGS_PER_RUN";
 
   const UNDECLARED =
     'gh issue create --title "zqxjMutantProbe abandons a sweep it started" ' +
@@ -2991,12 +2993,16 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
       'gh issue create --title "zqxjMutantCap loses a sweep" ' +
       `--body "\`zqxjMutantCap\` in lib/zqxj-mutant-cap.ts drops 19 of 37 commands over 8803 runs. Claim 4. ${DECLARED}"`;
 
-    const runOn = (gate: Gate, prior: unknown[]) =>
+    const runOn = (gate: Gate, prior: unknown[], wrote: unknown[] = []) =>
       gate.filingGate(filing, {
         projectRoot: dir,
         now: at,
         readExisting: async () => gate.measuredCorpus([]),
         readLedger: () => prior as never,
+        appendLedger: ((r: unknown) => {
+          wrote.push(r);
+          return true;
+        }) as never,
         readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
       });
 
@@ -3010,12 +3016,27 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
     ).toBeNull();
     expect((await runOn(real, [])).rows[0].refusal, "as does the real gate").toBeNull();
 
+    // **This row said "with the cap unable to bind, a run files without
+    // limit" and that stopped being true when the race fix landed.** The
+    // reservation stage reads the queue AFTER appending, so it refuses an
+    // over-cap filing whatever the pre-read decided: M3 no longer produces
+    // a bypass, and a mutant that kills nothing is a row that certifies
+    // nothing. Restated to the difference that remains, and reported rather
+    // than quietly weakened — the pre-read is now a fast path and the
+    // ordinal is the decider, which is a design question for the loop
+    // refactor and not something to settle by editing an assertion.
     const spent = [{ ...spentRow, run: real.runIdFor(dir) }];
-    expect((await runOn(real, spent)).rows[0].refusal).toBe("OVER_CAP");
+    const realWrote: unknown[] = [];
+    const mutantWrote: unknown[] = [];
+    expect((await runOn(real, spent, realWrote)).rows[0].refusal).toBe("OVER_CAP");
     expect(
-      (await runOn(mutant, spent)).rows[0].refusal,
-      "with the cap unable to bind, a run files without limit",
-    ).toBeNull();
+      (await runOn(mutant, spent, mutantWrote)).rows[0].refusal,
+      "the ordinal refuses it too, so the verdict cannot tell the two apart",
+    ).toBe("OVER_CAP");
+    // What CAN tell them apart: the real gate refuses before touching the
+    // file, and the mutant reserves a slot it has to give straight back.
+    expect(realWrote, "the real cap binds before any write").toHaveLength(0);
+    expect(mutantWrote.length, "the mutant writes, then releases").toBeGreaterThan(0);
   });
 
   test("FG-156: M4 — one predicate decides both the waiver and the sentence", async () => {
@@ -3079,7 +3100,17 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
     expect(realLabelled.rows[0].emitted).toBe(false);
     const mutantLabelled = await runOn(mutant, spent, labelled);
     expect(mutantLabelled.rows[0].overridden, "the label now waives the cap").toBe(true);
-    expect(mutantLabelled.refusal, "and the command is allowed through").toBeNull();
+    // **Not `refusal === null` any more.** It was, and the race fix changed
+    // it: the reservation stage reads the queue after appending and refuses
+    // regardless, so the command is still blocked. The LEDGER is what M4
+    // still moves — a row recording that a label waived a cap no label can
+    // waive, which is the measurement #1261 asks this change to expose.
+    // Restated rather than deleted: an assertion that stops discriminating
+    // is a row that certifies nothing.
+    expect(
+      mutantLabelled.rows[0].refusal,
+      "the ordinal refuses it either way, so the verdict is not the discriminator",
+    ).toBe("OVER_CAP");
 
     // Half two, the sentence. Same mutation, the OTHER reader: with no label
     // at all the refusal stops saying the label is no use here and starts
@@ -3155,12 +3186,23 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
     expect(realRow.refusal).toBe("OVER_CAP");
     expect(realRow.emitted, "nothing reached the tracker").toBe(false);
 
+    // **The bypass this modelled is now closed twice, so the row no longer
+    // reaches the tracker under M5 either.** The pre-read cap never looks at
+    // a clause it thinks is refused — that is the mutation, and it still
+    // happens — but the clause is then `emitted` and the reservation stage
+    // reads every emitted row, so the ordinal refuses it. What M5 still
+    // moves is WHICH refusal the ledger records and whether the run paid a
+    // write for it.
     const mutantRow = (await runOn(mutant, spent, undeclared)).rows[0];
-    expect(mutantRow.refusal, "the cap never looked at a clause it thought was refused").toBe(
-      "COMMENT_INSTEAD",
-    );
-    expect(mutantRow.overridden, "and the label waived that refusal instead").toBe(true);
-    expect(mutantRow.emitted, "so an over-cap run filed anyway — the bypass, restored").toBe(true);
+    expect(
+      mutantRow.refusal,
+      "the ordinal catches what the pre-read was mutated into skipping",
+    ).toBe("OVER_CAP");
+    expect(mutantRow.emitted, "so the bypass does not reopen").toBe(false);
+    expect(
+      mutantRow.overridden,
+      "and no label waived it, because the stage that refused reads the same predicate",
+    ).toBe(false);
   });
 
   test("FG-169: M6 — the ORDINAL is what stops the second racer, not the pre-read", async () => {
@@ -3171,7 +3213,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
     // nothing else, so the real gate and this one differ in exactly the
     // reading under test.
     const real: Gate = await import("../lib/issue-filing-gate");
-    const mutant: Gate = await import(buildMutant("unordered", M6, 'return { outcome: "WON" };'));
+    const mutant: Gate = await import(buildMutant("unordered", M6, "false"));
     const dir = join(scratch, "mut-race-run");
     mkdirSync(dir, { recursive: true });
     const at = "2026-10-24T12:00:00.000Z";
@@ -3215,8 +3257,11 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
     // Both reserved either way: the mutation is in what the position MEANS,
     // not in whether one was taken. Without this the row above could be an
     // append that silently stopped happening.
-    expect(mutantSink, "both took a position").toHaveLength(2);
-    expect(realSink, "and so did both of the real gate's").toHaveLength(2);
+    expect(mutantSink, "both took a position and neither gave one back").toHaveLength(2);
+    // Three on the real gate: two reservations and the loser's release. The
+    // mutant has nothing to release because it never loses, which is the
+    // same mutation observed on the other channel.
+    expect(realSink, "and the real gate's loser released its slot").toHaveLength(3);
   });
 
   test("FG-140: a directory that is not a git repository is UNMEASURED, naming it", async () => {
@@ -3298,7 +3343,7 @@ describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case 
  * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
  * the half FG-91 surrendered. Nothing else in the file moved.
  */
-describe("FG-143..FG-168: a numeric cap, which no argument defeats", () => {
+describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
   const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
   const AT = "2026-10-24T12:00:00.000Z";
 
@@ -3836,19 +3881,33 @@ describe("FG-143..FG-168: a numeric cap, which no argument defeats", () => {
     expect(won.rows[0].emitted).toBe(true);
     expect(lost.rows[0].refusal, "the second is over the cap on its position").toBe("OVER_CAP");
     expect(lost.rows[0].emitted).toBe(false);
-    expect(sink, "both reserved; only the positions differ").toHaveLength(2);
+    // Three rows, not two: both reserved, and the loser GAVE ITS SLOT BACK.
+    // A losing reservation left on the file is the stranded allowance by a
+    // rarer route than the two-clause one FG-170 holds.
+    expect(sink, "both reserved, and the loser released").toHaveLength(3);
+    expect(sink[2].releases, "the release names the slot it returns").toBe(sink[1].key);
     expect(
-      intentOrdinal(sink, sink[1].key, runIdFor(dir), Date.parse(AT)),
-      "and the loser's position is what says so",
+      intentOrdinal(sink.slice(0, 2), sink[1].key, runIdFor(dir), Date.parse(AT)),
+      "and the loser's position before the release is what refused it",
     ).toBe(2);
+    expect(
+      intentsInRun(sink, runIdFor(dir), Date.parse(AT)),
+      "after it, the run has spent exactly the one filing that landed",
+    ).toBe(1);
   });
 
-  test("FG-167: the two ledger failures fail in opposite directions", async () => {
-    // `reserveAllowance` separates the WRITER failing from the STATE being
-    // unreadable, and they must not get the same answer. A single
-    // "something went wrong with the ledger" arm is how one of them ends up
-    // wrong, and which one depends on nothing but the order they were
-    // written in.
+  test("FG-167: both ledger failures refuse, and each names its own half", async () => {
+    // **This case asserted the opposite for one round, and the round was
+    // wrong.** The write failure ALLOWED, on `recordAdjudication`'s policy
+    // that a measurement apparatus must not block the thing it measures.
+    // That policy is right for the row which RECORDS a decision and wrong
+    // for the row which MAKES one: a failure to update the cap's state
+    // cannot be told apart from an attempt to disable it, so an unwritable
+    // ledger switched the cap off. The read path had already settled this
+    // in the same commit, and the two branches disagreed about one file.
+    //
+    // The readings stay separate even though the verdict is now shared,
+    // because an operator repairs a different half of the same file.
     const dir = freshRun();
     const run = runIdFor(dir);
     const row = { ...landed(run), intent: false, emitted: true, withheldBy: null };
@@ -3873,8 +3932,14 @@ describe("FG-143..FG-168: a numeric cap, which no argument defeats", () => {
       appendLedger: () => false,
       readTarget: async () => onPr,
     });
-    expect(unwritable.rows[0].emitted, "a broken writer must not gag the tracker").toBe(true);
-    expect(unwritable.note ?? "", "but it says the cap did not hold").toContain(
+    expect(unwritable.rows[0].refusal, "an allowance nobody can reserve is not spendable").toBe(
+      "UNMEASURED_CAP",
+    );
+    expect(unwritable.rows[0].emitted).toBe(false);
+    expect(unwritable.refusal ?? "", "and the refusal names the WRITE, not the read").toContain(
+      "could not be appended",
+    );
+    expect(unwritable.note ?? "", "with the note naming the file an operator repairs").toContain(
       "took no position in this run's queue",
     );
 
@@ -3922,6 +3987,178 @@ describe("FG-143..FG-168: a numeric cap, which no argument defeats", () => {
       r.rows.filter(row => row.emitted),
       "and nothing is recorded as filed",
     ).toHaveLength(0);
+  });
+
+  test("FG-170: a reservation whose command then refuses is given back", async () => {
+    // **A reservation is taken and the command files nothing anyway.** The
+    // clause clears the pre-read, appends its intent, and the verify read
+    // fails — so it is refused `UNMEASURED_CAP` holding a slot for a filing
+    // that never happened. Without the release the run is charged for it
+    // and the re-run, once the file is readable again, is `OVER_CAP`.
+    //
+    // **The two-clause command is NOT this case, and the walk that says it
+    // is does not reproduce.** `spent` is incremented inside the clause loop
+    // on every cleared clause, so at a cap of one, clause 1 is refused by
+    // the pre-read before the reservation stage runs at all — `refusals` is
+    // already non-empty and the stage is skipped, reserving nothing.
+    // Measured: a version of this case built on `first && second` stays
+    // GREEN with the release removed, because nothing was ever reserved. At
+    // most one clause per command reaches the stage while the cap is 1, so
+    // the reachable strandings are the concurrent loser (`FG-166`) and this
+    // one.
+    const dir = freshRun();
+    const run = runIdFor(dir);
+    const sink: FilingLedgerRow[] = [];
+    const append = (row: FilingLedgerRow) => {
+      sink.push(row);
+      return true;
+    };
+    let reads = 0;
+    const stranded = await filingGate(first, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readTarget: async () => onPr,
+      // One axis: the pre-read succeeds and the VERIFY read does not.
+      readLedger: () => (reads++ === 0 ? [...sink] : null),
+      appendLedger: append,
+    });
+    expect(stranded.rows[0].refusal, "the premise: it reserved, then could not verify").toBe(
+      "UNMEASURED_CAP",
+    );
+    expect(stranded.rows[0].emitted, "and filed nothing").toBe(false);
+    expect(sink, "one reservation and one release").toHaveLength(2);
+    expect(sink[1].releases, "which names the slot it returns").toBe(sink[0].key);
+    expect(
+      intentsInRun(sink, run, Date.parse(AT)),
+      "so the run was not charged for a filing that never happened",
+    ).toBe(0);
+
+    // The half that makes it a property rather than a count: the re-run,
+    // against a ledger that reads again, files.
+    const retry = await filingGate(first, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readTarget: async () => onPr,
+      readLedger: () => [...sink],
+      appendLedger: append,
+    });
+    expect(retry.rows[0].refusal, "the re-run is not punished for the failed attempt").toBeNull();
+    expect(retry.rows[0].emitted).toBe(true);
+
+    // CONTROL, one axis: the allowance is still finite. A second re-run is
+    // over the cap, so the row above is not passing under a gate that
+    // releases everything it reserves.
+    const third = await filingGate(second, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readTarget: async () => onPr,
+      readLedger: () => [...sink],
+      appendLedger: append,
+    });
+    expect(third.rows[0].refusal, "and a filing that DID land still spends it").toBe("OVER_CAP");
+  });
+
+  test("FG-171: an intent absent from the re-read takes the NEXT position, not the last", async () => {
+    // `queue.length` for a not-found key hands us the last EXISTING slot
+    // rather than the one after it: with one intent queued and a cap of 1,
+    // ordinal 1, `1 > 1` false, WON — while we are genuinely second.
+    const run = "/wt/x";
+    const now = Date.parse(AT);
+    const queued = { ...landed(run), key: "someone-else#intent" };
+    expect(
+      intentOrdinal([queued], "mine#intent", run, now),
+      "our row is not in this reading, so everything in it precedes us",
+    ).toBe(2);
+    expect(
+      intentOrdinal([], "mine#intent", run, now),
+      "and an empty queue still makes us first",
+    ).toBe(1);
+
+    // **The other not-found cause, which must NOT take the next position.**
+    // A null key means `CLAUDE_CODE_SESSION_ID` was absent, so our row IS in
+    // the queue and cannot be pointed at. Counting us after it would count
+    // us twice and refuse every filing from an unkeyed session — a gag, and
+    // a contradiction of `unkeyedLedgerNote`'s stated policy.
+    const mine = { ...landed(run), key: null };
+    expect(intentOrdinal([mine], null, run, now), "ours is the one in there").toBe(1);
+    expect(
+      intentOrdinal([queued, mine], null, run, now),
+      "and with another ahead of it, last place among what is visible",
+    ).toBe(2);
+  });
+
+  test("FG-172: a released intent holds no position", async () => {
+    const run = "/wt/x";
+    const now = Date.parse(AT);
+    const taken = { ...landed(run), key: "a#intent" };
+    expect(intentsInRun([taken], run, now), "the premise: it counts while held").toBe(1);
+
+    const sink: FilingLedgerRow[] = [taken];
+    expect(
+      releaseAllowance(taken, row => {
+        sink.push(row);
+        return true;
+      }),
+      "the release landed",
+    ).toBe(true);
+    expect(sink[1].releases, "naming the key it returns").toBe("a#intent");
+    expect(sink[1].intent, "and a release is not itself a reservation").not.toBe(true);
+    expect(intentsInRun(sink, run, now), "so the slot is free again").toBe(0);
+
+    // A null-keyed intent cannot be named, so it cannot be released, and
+    // the function says so instead of appending a row that releases nothing.
+    const unkeyed = { ...landed(run), key: null };
+    expect(
+      releaseAllowance(unkeyed, () => true),
+      "nothing can name it, so nothing can give it back",
+    ).toBe(false);
+  });
+
+  test("FG-173: a title too long for one write is bounded before it is recorded", async () => {
+    // The whole race fix rests on an append reaching the filesystem as ONE
+    // write. A row large enough to be split can tear, and `readLedgerRows`
+    // treats a torn line as expected and skips it — so a torn intent is a
+    // reservation that took no position while its writer believes it did.
+    // `title` is the one field on the row a FILER sets and nothing else
+    // bounds.
+    const long = "z".repeat(MAX_LEDGER_TITLE + 50);
+    expect(ledgerTitle(long).length, "bounded, with one character marking the cut").toBe(
+      MAX_LEDGER_TITLE + 1,
+    );
+    expect(ledgerTitle("short"), "and a title inside the bound is untouched").toBe("short");
+
+    const r = await filingGate(
+      `gh issue create --title "${long}" --body "\`zqxjLongTitle\` in lib/zqxj-long.ts drops 11 of 29 commands over 5503 runs. Claim 4. ${DECLARED}"`,
+      {
+        projectRoot: freshRun(),
+        now: AT,
+        readExisting: async () => measuredCorpus([]),
+        readTarget: async () => onPr,
+        ...noCap,
+      },
+    );
+    expect(r.rows[0].title.length, "the row carries the bounded one").toBe(MAX_LEDGER_TITLE + 1);
+
+    // **The lookup is bounded too, or the bound breaks #1536.**
+    // `priorRefusalFor` joins on this field, so a raw title compared against
+    // a stored truncated one would never match its own prior refusal and the
+    // override would stop surviving a re-draft for exactly the longest
+    // titles. One binding, both ends.
+    const priorRow = {
+      ...landed("/wt/x"),
+      intent: false,
+      title: ledgerTitle(long),
+      refusal: "DUPLICATE" as const,
+      withheldBy: "DUPLICATE" as const,
+      emitted: false,
+    };
+    expect(
+      priorRefusalFor(long, [priorRow])?.title,
+      "the raw title still finds the row written under the bounded one",
+    ).toBe(ledgerTitle(long));
   });
 
   test("FG-147: a REFUSED filing does not consume the allowance", async () => {

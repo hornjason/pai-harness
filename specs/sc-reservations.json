@@ -85,7 +85,7 @@
       "from": 120,
       "to": 179,
       "namespace": "FG",
-      "note": "#1595 - a filing declares why it cannot be a comment, and a numeric cap decides. FG-100..119 is the highest declared block and FG-103 the highest id on main, so this sits above every declared block, which is what the allocator hands an owner who has none. Declared before any id was consumed rather than eyeballing headroom. Widened from 120-149 to 120-179 when scope item 4 (the cap) was added, declared again before the new ids were consumed; FG-97..99 were deliberately NOT used to fill the gap because rg/1344 still declares FG-90..99. NOT pushed to main ahead of the branch: main requires the `test` and `ai-review` status checks with enforce_admins on, so a reservation-only push is refused and the entry can only reach main through this PR. FG-120..169 are consumed. Delete when the PR merges."
+      "note": "#1595 - a filing declares why it cannot be a comment, and a numeric cap decides. FG-100..119 is the highest declared block and FG-103 the highest id on main, so this sits above every declared block, which is what the allocator hands an owner who has none. Declared before any id was consumed rather than eyeballing headroom. Widened from 120-149 to 120-179 when scope item 4 (the cap) was added, declared again before the new ids were consumed; FG-97..99 were deliberately NOT used to fill the gap because rg/1344 still declares FG-90..99. NOT pushed to main ahead of the branch: main requires the `test` and `ai-review` status checks with enforce_admins on, so a reservation-only push is refused and the entry can only reach main through this PR. FG-120..173 are consumed. Delete when the PR merges."
     },
     {
       "owner": "rg/1536-arbiter-keys",
