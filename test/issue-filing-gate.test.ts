@@ -4386,6 +4386,10 @@ describe("FG-143..FG-175: a numeric cap, which no argument defeats", () => {
     // `NON_CHECKOUT` into the row — the failed one as a fallback on a row
     // that was refused and counts towards nothing. A later case reaching for
     // this field to tell the two apart would be reading a value that cannot.
+    // The same bound is written on `FilingLedgerRow.run` itself, because an
+    // assertion here tells whoever changes this test and a sentence on the
+    // field tells whoever reads the field — and it is the second one who
+    // writes the first aggregation keyed on `run`.
     expect(bucketed.rows[0].run).toBe(NON_CHECKOUT_RUN);
     expect(unreadable.rows[0].run, "the same value, for a different reason").toBe(NON_CHECKOUT_RUN);
   });

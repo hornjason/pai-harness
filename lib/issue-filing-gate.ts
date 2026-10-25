@@ -1267,6 +1267,30 @@ export interface FilingLedgerRow {
    * direction: a row that cannot name its run cannot be attributed to one,
    * and attributing it to all of them would cap every run on this machine
    * out of the backlog the column was added to measure.
+   *
+   * ## On an `UNMEASURED_CAP` row this field is a PLACEHOLDER, not a reading
+   *
+   * The gate writes `reading.run ?? NON_CHECKOUT_RUN`, and `runIdFor`
+   * returns `null` when the remote read FAILED — a git timeout, a git that
+   * vanished. So a row refused `UNMEASURED_CAP` for an unreadable run says
+   * `NON_CHECKOUT`, which is a different fact: *"this is not a checkout"*
+   * and *"I could not tell"* spelled identically, in the field that is the
+   * cap's denominator. The same value, for two reasons — exactly the
+   * conflation `RemoteReading.missing` exists to end one level down.
+   *
+   * It is harmless **today and only today**, for a reason that is a property
+   * of the current readers rather than of the value: nothing aggregates by
+   * `run`, and the two counters that read it (`intentsInRun`,
+   * `emittedInRun`) key off `intent`/`emitted`, which are both false on an
+   * `UNMEASURED_CAP` row. **The first reader that groups rows by `run` will
+   * silently fold unreadable runs into the non-checkout bucket**, and it
+   * will do so without touching this file.
+   *
+   * So: do not read this field off a refused row, and do not reach for it as
+   * a discriminator between the two states — `FG-174` asserts that both
+   * arms write the same value precisely so that a later case cannot. The fix
+   * is a third sentinel, deliberately deferred to the decision-loop refactor
+   * rather than added as a fifth patch to `runIdFor` (#1595, PR #1603).
    */
   run: string | null;
 }
