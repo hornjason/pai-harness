@@ -109,7 +109,7 @@ import {
   type OpenIssuePage,
 } from "./github";
 import { branchOf, toplevel } from "./launch-base";
-import { readWorktreeRemote, repoSlug } from "./worktree-repo";
+import { readWorktreeRemote, repoSlug, type RemoteReading } from "./worktree-repo";
 import {
   duplicateCollisions,
   symptomHash,
@@ -267,6 +267,23 @@ export const RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const NON_CHECKOUT_RUN = "NON_CHECKOUT";
 
 /**
+ * Which run a directory belongs to, or why that could not be read.
+ *
+ * **Three readings, because collapsing the third into the second is a
+ * fact-collapse in the cap's denominator.** `run` is a checkout's toplevel,
+ * or `NON_CHECKOUT_RUN` for the shared bucket — both of them ANSWERS. `null`
+ * is not an answer: the remote could not be read at all, and a gate that
+ * spelled that the same as "no origin" would move a real checkout into the
+ * shared allowance whenever git timed out.
+ */
+export interface RunReading {
+  /** The run, or `null` when the reading failed. */
+  run: string | null;
+  /** Why it failed. Present only when `run` is null. */
+  why?: string;
+}
+
+/**
  * Which RUN a filing belongs to — the checkout it was filed from.
  *
  * **Not the session, and the measurement is why.** `filingBatch` mints
@@ -294,18 +311,38 @@ export const NON_CHECKOUT_RUN = "NON_CHECKOUT";
  * `lib/launch-base.ts` reads, so there is one opinion about what a
  * repository is.
  *
- * **What this does NOT close, stated rather than left to be discovered.**
- * `git worktree add` is one command, carries the parent's origin, and mints
- * a fresh allowance. So does `git init` followed by `git remote add origin`.
- * No identity derived from the filer's working directory can resist either,
- * because the filer owns the directory — the only key that resists is one
- * the filer cannot choose, and the target repository is the only such key in
- * this gate's hand. It is not usable as the UNIT: 284 registered worktrees
- * against a measured 64 issues a day makes one allowance per repository a
- * 98% refusal rate, which is a gag and not a cap. As a SECOND key with its
- * own measured ceiling, refusing when either is over, it would close the
- * remaining routes — that is a number to pick from measurement, and it is
- * deliberately not invented here.
+ * ## The bound. This is a DEFAULT, not a boundary — four routes stand open
+ *
+ * Stated so a reader knows the shape of what is not covered, rather than
+ * rediscovering it one route at a time. Three fixes narrowed this predicate
+ * — `resolve()` → `toplevel()` → `toplevel()` + a real origin — and each
+ * left a cheaper route, because **the thing being defended against is not
+ * reachable from here at all.** A filer owns its own directory; no identity
+ * derived from that directory can resist one.
+ *
+ * | route | cost | still open |
+ * |---|---|---|
+ * | `git worktree add /tmp/y` | 1 command, carries the parent's origin | **yes** |
+ * | `git init` + `git remote add origin <real url>` | 2 commands | **yes** |
+ * | `git remote remove origin` | 1 command, re-keys an EXISTING checkout out of its own run and into the bucket | **yes** |
+ * | a sub-group checkout (`host:group/sub/name`) | not a bypass — `normaliseSlug` wants exactly two segments, so a legitimate unit is bucketed with the nowheres | **false negative** |
+ *
+ * `git worktree add` is the one that should NOT be read as a hole: one
+ * agent, one worktree, one piece of work is exactly the unit the cap is
+ * meant to meter, so a new worktree getting a new allowance is the unit
+ * working. What separates it from `git init /tmp/x` is not cost — it is
+ * that one is a unit of work and the other is a directory made to obtain a
+ * number. The residual exposure is an agent that creates a real worktree in
+ * order to launder a filing, and nothing in this function can see that.
+ *
+ * **The defence is a SECOND key with its own ceiling, keyed on the TARGET
+ * repository** — the one value in this gate's hand that the filer does not
+ * pick — refusing when either key is over. Not usable as the unit on its
+ * own: 284 registered worktrees against a measured 64 issues a day makes
+ * one allowance per repository a 98% refusal rate, which is a gag and not a
+ * cap, and with no `--repo` the target derives from origin, so as an
+ * admission test it is circular. Its number has to come from measurement
+ * and is deliberately not invented here.
  *
  * **Every directory that is not a checkout is ONE run, `NON_CHECKOUT_RUN`.**
  * This read `resolve(projectRoot)` first, so each non-checkout directory was
@@ -340,13 +377,58 @@ export const NON_CHECKOUT_RUN = "NON_CHECKOUT";
  * several agents hosted by one session, working in different worktrees, can
  * share one allowance. Recorded as a stated limit rather than left implicit
  * (#1595, after the security review of PR #1597).
+ *
+ * `read` is injectable **only so the failed-read state can be driven**: with
+ * a real git on PATH that state is a timeout or a git that vanished between
+ * two commands, and neither is producible in a test. It defaults to the real
+ * reader, and `worktreeDiskIdentity` takes the same parameter for the same
+ * reason — a gate whose default reader is a stub is the check that never
+ * looked, so the default is asserted rather than assumed.
  */
-export function runIdFor(projectRoot: string): string {
+export function runIdFor(
+  projectRoot: string,
+  read: (worktreePath: string) => RemoteReading = readWorktreeRemote,
+): RunReading {
   const top = toplevel(projectRoot);
-  if (top === null) return NON_CHECKOUT_RUN;
+  if (top === null) return { run: NON_CHECKOUT_RUN };
+  const remote = read(top);
+  // **The read failing is not the same fact as there being no origin.**
+  // `readWorktreeRemote` sets `error` for a timeout, a missing git and a
+  // healthy checkout with no remote alike; `missing` is the half that was
+  // observed. Without this split a ten-second git timeout re-buckets a real
+  // checkout into the shared allowance — one value carrying two facts, in
+  // the field that decides the cap's denominator, which is the shape this
+  // file already refuses for the ledger.
+  if (remote.error !== null && !remote.missing) {
+    return { run: null, why: remote.error };
+  }
   // A checkout nobody can name is not a run. `git init` makes a toplevel in
   // one command; it does not make an origin.
-  return repoSlug(readWorktreeRemote(top).url) === null ? NON_CHECKOUT_RUN : top;
+  return { run: namesARepository(remote.url) ? top : NON_CHECKOUT_RUN };
+}
+
+/**
+ * Is this remote a URL or scp form naming a repository?
+ *
+ * **Narrower than `repoSlug` on purpose, and the extra condition is the
+ * point.** `repoSlug` accepts a bare `owner/name` as its last branch,
+ * because that is how a run's own `repo` ARGUMENT arrives — a different
+ * caller answering a different question. Reused here it makes
+ * `git remote add origin a/b` mint an allowance: two words, no URL, no
+ * repository, a fresh run. Found by the security review of `377e3a06`.
+ *
+ * So the transport form is required first and `repoSlug` still decides what
+ * a slug is. That is one reader per question rather than two informally
+ * aligned ones: this says *"is this a remote"*, `repoSlug` says *"which
+ * repository"*, and neither restates the other.
+ */
+export function namesARepository(url: string | null): boolean {
+  if (url === null) return false;
+  const s = url.trim();
+  // `scheme://…` or scp-style `user@host:path`. A bare slug matches neither,
+  // and a filesystem path has no authority, so neither does it.
+  const transported = /^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(s) || /^[^/\s]*@[^/:\s]+:\S+$/.test(s);
+  return transported && repoSlug(s) !== null;
 }
 
 /**
@@ -665,6 +747,20 @@ export function unreservedCapReason(run: string, target: CommentTarget): string 
  * it, and the remedy is to repair or move the file. Says so, so the agent
  * does not spend a turn re-drafting a body that was never the problem.
  */
+export function unreadableRunReason(why: string, target: CommentTarget): string {
+  return [
+    `this filing's RUN could not be read, so there is no denominator to count against:`,
+    `${why}. The cap is ${FILINGS_PER_RUN} per run and this directory's run is unknown.`,
+    "",
+    `  ${commentTargetSentence(target)}`,
+    "",
+    "  This is NOT the same as filing from somewhere that is not a checkout — that is an",
+    "  answer, and it shares one allowance with every other such directory. A read that",
+    "  failed is not an answer, and treating it as one would move a real checkout into the",
+    "  shared allowance every time git timed out. Nothing about your finding is in question.",
+  ].join("\n");
+}
+
 export function uncountableCapReason(run: string, target: CommentTarget): string {
   return [
     `the filing ledger at ${ledgerPath()} is present and could not be read, so this run's`,
@@ -1171,6 +1267,30 @@ export interface FilingLedgerRow {
    * direction: a row that cannot name its run cannot be attributed to one,
    * and attributing it to all of them would cap every run on this machine
    * out of the backlog the column was added to measure.
+   *
+   * ## On an `UNMEASURED_CAP` row this field is a PLACEHOLDER, not a reading
+   *
+   * The gate writes `reading.run ?? NON_CHECKOUT_RUN`, and `runIdFor`
+   * returns `null` when the remote read FAILED — a git timeout, a git that
+   * vanished. So a row refused `UNMEASURED_CAP` for an unreadable run says
+   * `NON_CHECKOUT`, which is a different fact: *"this is not a checkout"*
+   * and *"I could not tell"* spelled identically, in the field that is the
+   * cap's denominator. The same value, for two reasons — exactly the
+   * conflation `RemoteReading.missing` exists to end one level down.
+   *
+   * It is harmless **today and only today**, for a reason that is a property
+   * of the current readers rather than of the value: nothing aggregates by
+   * `run`, and the two counters that read it (`intentsInRun`,
+   * `emittedInRun`) key off `intent`/`emitted`, which are both false on an
+   * `UNMEASURED_CAP` row. **The first reader that groups rows by `run` will
+   * silently fold unreadable runs into the non-checkout bucket**, and it
+   * will do so without touching this file.
+   *
+   * So: do not read this field off a refused row, and do not reach for it as
+   * a discriminator between the two states — `FG-174` asserts that both
+   * arms write the same value precisely so that a later case cannot. The fix
+   * is a third sentinel, deliberately deferred to the decision-loop refactor
+   * rather than added as a fifth patch to `runIdFor` (#1595, PR #1603).
    */
   run: string | null;
 }
@@ -2187,6 +2307,11 @@ export async function filingGate(
      * `readExisting` is: the live one talks to GitHub.
      */
     readTarget?: (projectRoot: string, repo: string | null) => Promise<CommentTarget>;
+    /**
+     * The checkout's `origin`, for `runIdFor`. Injectable only so a FAILED
+     * read can be driven — see `runIdFor`, where the default lives.
+     */
+    readRemote?: (worktreePath: string) => RemoteReading;
   },
 ): Promise<FilingGateReading> {
   const attempts = filingAttempts(cmd);
@@ -2290,10 +2415,24 @@ export async function filingGate(
   // machine that has never filed has spent nothing — and it allows. `null`
   // is not an answer, and it refuses as `UNMEASURED_CAP`, which
   // `waivableRefusal` excludes so the label cannot clear it either.
-  const run = runIdFor(options.projectRoot);
+  // **A run that could not be READ is a third state and rides the same
+  // conversion as an unreadable ledger.** `runIdFor` returns `null` only for
+  // a remote read that failed — a git timeout, git missing — never for a
+  // directory that simply has no origin, which is an answer and buckets.
+  // Without the split the timeout silently re-keys a real checkout into the
+  // shared allowance, which is the denominator changing underneath the count.
+  const reading = runIdFor(options.projectRoot, options.readRemote);
+  const run = reading.run ?? NON_CHECKOUT_RUN;
   const nowMs = Date.parse(at);
-  const uncountable = priorRows === null;
-  let spent = uncountable ? 0 : intentsInRun(priorRows, run, nowMs);
+  const uncountable = priorRows === null || reading.run === null;
+  let spent = uncountable ? 0 : intentsInRun(priorRows ?? [], run, nowMs);
+  // One binding for the UNMEASURED_CAP sentence, because there are now two
+  // ways to be uncountable and they name different things to repair: a
+  // ledger nobody can read, and a run nobody could resolve.
+  const uncountableReason = (target: CommentTarget) =>
+    reading.run === null
+      ? unreadableRunReason(reading.why ?? "the remote could not be read", target)
+      : uncountableCapReason(run, target);
   // The per-clause verdicts, kept so the race stage below can compose the
   // same refusal message the loop composes. One array, written once per
   // clause beside `rows`, so `rows[i]` and `verdicts[i]` are one clause.
@@ -2424,7 +2563,7 @@ export async function filingGate(
             outcome: "REFUSE",
             refusal: uncountable ? "UNMEASURED_CAP" : "OVER_CAP",
             reason: uncountable
-              ? uncountableCapReason(run, await targetFor(attempt.repo))
+              ? uncountableReason(await targetFor(attempt.repo))
               : overCapReason(run, spent, await targetFor(attempt.repo)),
           }
         : read2;
@@ -2586,7 +2725,7 @@ export async function filingGate(
           ? overCapReason(run, reading.already, target)
           : reading.outcome === "UNRESERVED"
             ? unreservedCapReason(run, target)
-            : uncountableCapReason(run, target);
+            : uncountableReason(target);
       if (reading.outcome === "UNRESERVED") notes.push(unreservedAllowanceNote());
       // The intent this clause took is released with the rest below: it won
       // no position, and a losing reservation that is never given back is
