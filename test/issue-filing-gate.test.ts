@@ -262,7 +262,7 @@ function checkoutAt(dir: string): void {
   // file writes — RUNGATE_OPEN_FINDINGS and the ledger session id are read by
   // the gate under test, in this process, never by a git subprocess.
   const git = (...args: string[]) =>
-    spawnSync("git", ["-C", dir, ...args], { encoding: "utf-8" });
+    spawnSync("git", ["-C", dir, ...args], { encoding: "utf-8", env: { ...process.env } });
   expect(git("init", "-q", "-b", "main").status, `${dir} must be a real checkout`).toBe(0);
   expect(git("remote", "add", "origin", FIXTURE_ORIGIN).status, `${dir} must have an origin`).toBe(
     0,
@@ -441,6 +441,14 @@ beforeAll(() => {
   // filed 25 issues". Setting it here is also the only thing that makes
   // those cases deterministic.
   process.env.RUNGATE_FINDING_LEDGER = ledger;
+  // Pinned in THIS process for the same reason `runHook` pins it in the
+  // children: `filingBatch` returns `null` without it, so every row an
+  // in-process `filingGate` call writes carries `key: null` and no two rows
+  // can be told apart. CI sets no session id, so `FG-166`'s premise — two
+  // reservations with different keys — held on a developer's machine and
+  // failed on the runner. The absent case is exercised deliberately, by
+  // `withSession(undefined, …)` in FG-70, which saves and restores this.
+  process.env[LEDGER_SESSION_ENV] = "f9a1c0de-0000-4000-8000-000000000000";
   issuesFile = join(scratch, "open-issues.json");
   writeFileSync(issuesFile, JSON.stringify(OPEN_ISSUES), "utf-8");
   // An empty work dir, so `findActiveWorkflow` reads no VERIFY phase and gate
@@ -3665,7 +3673,10 @@ describe("FG-143..FG-168: a numeric cap, which no argument defeats", () => {
       // late-env-ok: the child is `git`, which reads no variable this file
       // writes — the gate reads them in this process, never a subprocess.
       expect(
-        spawnSync("git", ["-C", dir, "init", "-q", "-b", "main"], { encoding: "utf-8" }).status,
+        spawnSync("git", ["-C", dir, "init", "-q", "-b", "main"], {
+          encoding: "utf-8",
+          env: { ...process.env },
+        }).status,
       ).toBe(0);
     }
     // `checkoutTop` refuses a non-checkout, so these two lines are the
@@ -3696,6 +3707,7 @@ describe("FG-143..FG-168: a numeric cap, which no argument defeats", () => {
     expect(
       spawnSync("git", ["-C", two, "remote", "add", "origin", FIXTURE_ORIGIN], {
         encoding: "utf-8",
+        env: { ...process.env },
       }).status,
     ).toBe(0);
     expect(runIdFor(two), "an origin is what makes a checkout nameable").toBe(checkoutTop(two));
@@ -3770,7 +3782,16 @@ describe("FG-143..FG-168: a numeric cap, which no argument defeats", () => {
       ledgerRows().filter(r => r.emitted),
       "one filing on the ledger",
     ).toHaveLength(1);
-    expect(ledgerIntents(), "and two reservations, because both asked").toHaveLength(2);
+    // **Not `toHaveLength(2)`, and the reason is the point of FG-166.**
+    // Whether BOTH processes reserve depends on whether they overlapped: if
+    // the first finishes before the second reads, the second is refused by
+    // the pre-read and never reserves. That is a true outcome, not a weaker
+    // one — but it means this case cannot witness the ordinal. Measured: two
+    // reservations on this machine, one on the CI runner, same assertion.
+    // FG-166 forces the interleave instead of hoping for it.
+    const reserved = ledgerIntents().length;
+    expect(reserved, "whoever got far enough reserved").toBeGreaterThanOrEqual(1);
+    expect(reserved, "and nobody reserved twice").toBeLessThanOrEqual(2);
   });
 
   test("FG-166: the second racer loses on its ORDINAL, not on the pre-read", async () => {
