@@ -108,8 +108,15 @@ export type LaunchBaseReading =
    */
   | { reading: "UNMEASURED"; cwd: string; projectRoot: string; refusal: string };
 
-/** `git -C <dir> rev-parse --show-toplevel`, or `null`. */
-function toplevel(dir: string): string | null {
+/**
+ * `git -C <dir> rev-parse --show-toplevel`, or `null`.
+ *
+ * Exported since #1595 so the filing chokepoint identifies the RUN a filing
+ * came from through this binding rather than a second `rev-parse` of its
+ * own. Two spellings of "which checkout is this" would be two deciders for
+ * one question, and the cap's whole content is a count over that answer.
+ */
+export function toplevel(dir: string): string | null {
   if (typeof dir !== "string" || !dir.trim()) return null;
   const got = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
     timeout: 10_000,
@@ -120,8 +127,16 @@ function toplevel(dir: string): string | null {
   return out === "" ? null : out;
 }
 
-/** `git -C <dir> rev-parse --abbrev-ref HEAD`, or `null`. */
-function branchOf(dir: string): string | null {
+/**
+ * `git -C <dir> rev-parse --abbrev-ref HEAD`, or `null`.
+ *
+ * Exported since #1595 so the filing chokepoint names the branch a comment
+ * should go on through this binding rather than a second `rev-parse` of its
+ * own. `HEAD` — a detached checkout — is a real answer here and is filtered
+ * by the caller that cares, because "which branch" and "is this a branch"
+ * are different questions and only one of them belongs in a git wrapper.
+ */
+export function branchOf(dir: string): string | null {
   const got = spawnSync("git", ["-C", dir, "rev-parse", "--abbrev-ref", "HEAD"], {
     timeout: 10_000,
     encoding: "utf-8",

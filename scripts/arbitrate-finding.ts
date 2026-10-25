@@ -399,6 +399,16 @@ export function ledgerRow(finding: Finding, verdict: Verdict, at: string): Filin
     // no earlier refusal of this title for it to waive. The chokepoint in
     // `lib/issue-filing-gate.ts` is the writer that performs that lookup.
     refiledAfter: null,
+    // #1595's declaration is read off a `gh issue create` command line and
+    // this path has none. The same question IS answered on this path — it is
+    // `Finding.outOfScope`, which routes the verdict to `ISSUE` at stage 6 —
+    // so `disposition` already carries it and a second encoding here would be
+    // a decider with a spare.
+    exemption: null,
+    // #1595's cap counts filings per CHECKOUT, and this path adjudicates a
+    // candidate inside a review round rather than a `gh issue create` from
+    // one. `null` is the reading: there is no run to attribute it to.
+    run: null,
   };
 }
 

@@ -797,6 +797,66 @@ export type ArbiterRefusal =
    * against a diff rather than filed by hand, and have no title to carry one.
    */
   | "NO_CLAIM"
+  /**
+   * Nobody declared a reason this finding cannot be a comment (#1595).
+   *
+   * The refusal this file's own header has asked for since it was written —
+   * *"`Disposition` defaults to `COMMENT`, `ISSUE` requires an explicit
+   * declared reason from the caller (`Finding.outOfScope`)"*. `arbitrate`
+   * enforces it at stage 6 and the `gh issue create` chokepoint did not,
+   * because its header lists the three stages that genuinely cannot run at a
+   * PreToolUse hook and `outOfScope` was quietly carried along with them. It
+   * is not one of them: a declaration is readable from the command line the
+   * hook already has.
+   *
+   * A chokepoint refusal only, for the same reason `NO_CLAIM` is: on the
+   * `arbitrate` path the same question is the `COMMENT` disposition, which
+   * is an outcome rather than a refusal.
+   */
+  | "COMMENT_INSTEAD"
+  /**
+   * An earlier clause of the SAME command already files this finding's class
+   * (#1595, CRC-N3's hook-side half).
+   *
+   * *"Flag the class of bug, so the author fixes every instance, not one
+   * line"* — so two findings that share a class are one item saying *every
+   * instance*, never two issues. Distinct from `DUPLICATE`, which is about
+   * the TRACKER: a duplicate names an issue a reader can go and read, and
+   * this names a clause in a command that has not run yet.
+   */
+  | "SAME_CLASS_IN_RUN"
+  /**
+   * The run has already filed its allowance of issues (#1595, scope item 4).
+   *
+   * **The only refusal here that requires no reasoning to apply, which is
+   * why it is the one that holds.** The declared-reason check it stands
+   * beside is a per-finding judgement, and a per-finding judgement drifts:
+   * applied to the three issues filed on 2026-10-24 all three cleared it on
+   * individually sound arguments, which is not a result a bar produces. A
+   * count has no clause to argue into.
+   *
+   * So it takes no argument and no label. `arbiter-override` waives a claim
+   * about a FINDING; this is an accounting of a RUN, and there is nothing
+   * about the finding for a waiver to address.
+   */
+  | "OVER_CAP"
+  /**
+   * The ledger is present and unreadable, so the allowance cannot be counted
+   * (#1595, scope item 4).
+   *
+   * **Distinct from `UNMEASURED`, and fails in the opposite direction from
+   * every other unreadable input in this gate.** Elsewhere an unreadable
+   * input allows loudly, because a measurement apparatus must not block the
+   * thing it measures. The ledger is not the apparatus here — it is the
+   * cap's STATE, so "unreadable" means the cap does not exist, and allowing
+   * on it is not a loud note but a silent removal of the gate.
+   *
+   * `readLedgerRows` already separates the two readings this turns on:
+   * `[]` for a genuinely absent file, `null` for present-and-unreadable. An
+   * empty population is a legitimate answer and allows; UNMEASURED is not an
+   * answer at all and refuses, naming the path so an operator can act.
+   */
+  | "UNMEASURED_CAP"
   /** Something could not be evaluated. Fails; never skips. */
   | "UNMEASURED";
 
@@ -1124,6 +1184,14 @@ export const FILING_BUDGET_FINDINGS = 6;
  *   unmeasured, the sibling was measured and refused — and it is not the
  *   sibling's own `ArbiterRefusal`, because this clause was never refused and
  *   is the one an agent should re-run.
+ * - `INTENT_PENDING` — the row is an INTENT to file, appended by the cap
+ *   before it decides, and at the moment it is written nothing has reached
+ *   the tracker and nothing has refused it. It is not `COMMAND_BLOCKED`,
+ *   which is a decision, and not a refusal, which is a judgement: it is the
+ *   state a reservation is in for the microseconds between the append and the
+ *   re-read that resolves it. The outcome lands on a SECOND row sharing this
+ *   one's key without the `#intent` suffix. See `intentsInRun` in
+ *   `lib/issue-filing-gate.ts` for why the reservation is a separate row.
  * - `UNACCOUNTED` — the promoter returned this candidate in neither
  *   `promoted` nor `withheld`. It partitions its input, so this cannot
  *   happen; it is named instead of defaulted so that if the partition ever
@@ -1134,6 +1202,7 @@ export type WithheldBy =
   | WithheldReason
   | "BATCH_UNMEASURED"
   | "COMMAND_BLOCKED"
+  | "INTENT_PENDING"
   | "UNACCOUNTED";
 
 /**

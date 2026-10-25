@@ -29,9 +29,9 @@
  * stopped reporting (`.claude/rules/parallel-sessions.md`).
  */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { spawnSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { spawn, spawnSync } from "child_process";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
@@ -54,6 +54,7 @@ import {
   measuredCorpus,
   namedClaim,
   openFindings,
+  openPrForBranch,
   priorRefusalFor,
   readBodyFile,
   readLedgerRows,
@@ -64,8 +65,30 @@ import {
   FILING_OVERRIDE_LABEL,
   LEDGER_SESSION_ENV,
   MAX_KEYS_PER_EXISTING_ISSUE,
+  COMMENT_EXEMPTIONS,
+  EXEMPTION_PREFIX,
+  commentTargetSentence,
+  declaredExemption,
+  exemptionReason,
+  filingFinding,
+  intentsInRun,
+  intentOrdinal,
+  reserveAllowance,
+  releaseAllowance,
+  ledgerTitle,
+  MAX_LEDGER_TITLE,
+  overCapReason,
+  runIdFor,
+  INTENT_KEY_SUFFIX,
+  INTENT_PENDING,
+  NON_CHECKOUT_RUN,
+  RUN_WINDOW_MS,
+  type CommentExemption,
+  type CommentTarget,
   type FilingLedgerRow,
 } from "../lib/issue-filing-gate";
+import { DROPPED_CATEGORIES } from "../lib/finding-jury";
+import { toplevel } from "../lib/launch-base";
 import {
   readFindingOutcomes,
   summariseFindingOutcomes,
@@ -135,16 +158,45 @@ const DROPPED_FILING =
   '--body "`legalValues` in lib/config-loader.ts is not printed when the check refuses."';
 
 /**
+ * What every ALLOW fixture in this file must now say, as the caller types it.
+ *
+ * One constant, built from the library's own prefix and one of its own
+ * tokens, so a fixture cannot declare something `declaredExemption` does not
+ * accept and no spelling of the declaration lives in two places.
+ */
+const DECLARED = `${EXEMPTION_PREFIX} out-of-pr-diff`;
+
+/**
  * A novel correctness finding. Must be allowed.
  *
- * It names a claim because every ALLOW now has to: the last stage of
- * `adjudicateFiling` converts a claimless ALLOW into `NO_CLAIM`. Measured when
- * that stage landed — 17 of this file's cases went red, all of them ALLOW
- * controls, which is the population it was built to catch.
+ * It names a claim because every ALLOW has to: `adjudicateFiling` converts a
+ * claimless ALLOW into `NO_CLAIM`. Measured when that stage landed — 17 of
+ * this file's cases went red, all of them ALLOW controls.
+ *
+ * It declares an exemption for the same reason, since #1595: a filing that
+ * declares no reason it cannot be a comment is `COMMENT_INSTEAD`. Measured
+ * when THAT stage landed — **25** of this file's cases went red, every one an
+ * ALLOW control and not one of them for an unrelated reason, which is the
+ * population it was built to catch.
  */
+const NOVEL_BODY =
+  `\`pullRequestCache\` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4. ${DECLARED}`;
+
 const NOVEL_FILING =
   'gh issue create --title "pullRequestCache is never invalidated" ' +
-  '--body "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4."';
+  `--body ${JSON.stringify(NOVEL_BODY)}`;
+
+/**
+ * A SECOND novel filing, sharing nothing with the first.
+ *
+ * `FG-165`'s two racers must differ in the finding as well as the process,
+ * or the loser could be refused as a duplicate of the winner and the case
+ * would go green having measured the dedupe.
+ */
+const SECOND_NOVEL_FILING =
+  'gh issue create --title "branchIndex rebuilds on every read" ' +
+  '--body "`branchIndex` in lib/branch-index.ts rescans 418 refs on each of 9120 reads. ' +
+  `Claim 4. ${DECLARED}"`;
 
 /**
  * The differential control the DUPLICATE row needs.
@@ -158,7 +210,7 @@ const NOVEL_FILING =
 const SAME_SYMBOL_NEW_READING =
   'gh issue create --title "retryBudget retries too often on a short sweep" ' +
   '--body "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts ' +
-  'completes 88 of 97. Claim 4."';
+  `completes 88 of 97. Claim 4. ${DECLARED}"`;
 
 interface HookReading {
   /** The parsed stdout payload, or `null` when the hook printed nothing. */
@@ -173,11 +225,78 @@ let ledger: string;
 let issuesFile: string;
 let mutantHook: string;
 
-function runHook(hook: string, command: string, extraEnv: Record<string, string> = {}): HookReading {
+/**
+ * A directory of its own for each hook invocation, unless one is named.
+ *
+ * **The cap counts per RUN and `runIdFor` reads the working directory**, so
+ * every spawn sharing `scratch` would share one allowance: the first case in
+ * this file to file an issue would spend it and every later case would be
+ * `OVER_CAP` — a whole suite reddened by a mechanism none of it is about.
+ * One directory per call makes each spawn its own run, which is what an
+ * agent is in production, and the cap cases below pin a directory on
+ * purpose so accumulation is something a case ASKS for rather than
+ * something it inherits.
+ */
+let runSeq = 0;
+function freshRun(): string {
+  const dir = join(scratch, `run-${runSeq++}`);
+  mkdirSync(dir, { recursive: true });
+  checkoutAt(dir);
+  return dir;
+}
+
+/** The origin a fixture checkout carries, so it is a run and not a bucket. */
+const FIXTURE_ORIGIN = "https://github.com/hornjason/pai-harness.git";
+
+/**
+ * Make `dir` a checkout `runIdFor` will treat as its own run.
+ *
+ * **`git init` alone is deliberately not enough, and the fixture says so
+ * rather than relying on it.** `runIdFor` buckets a checkout with no origin
+ * into `NON_CHECKOUT_RUN`, because `git init /tmp/x` is one command and
+ * would otherwise mint a fresh allowance — the bypass the security review
+ * of PR #1597 found in the first spelling of this fixture, where `git init`
+ * alone separated runs and the suite therefore ASSERTED that a scratch repo
+ * is a run. The contract these fixtures encode is *a checkout of a
+ * repository*, which is what an agent has in production.
+ */
+function checkoutAt(dir: string): void {
+  // late-env-ok: the child is `git`, which reads none of the variables this
+  // file writes — RUNGATE_OPEN_FINDINGS and the ledger session id are read by
+  // the gate under test, in this process, never by a git subprocess.
+  const git = (...args: string[]) =>
+    spawnSync("git", ["-C", dir, ...args], { encoding: "utf-8", env: { ...process.env } });
+  expect(git("init", "-q", "-b", "main").status, `${dir} must be a real checkout`).toBe(0);
+  expect(git("remote", "add", "origin", FIXTURE_ORIGIN).status, `${dir} must have an origin`).toBe(
+    0,
+  );
+}
+
+/**
+ * `toplevel(dir)`, refusing rather than returning `null`.
+ *
+ * A case comparing a run id against `toplevel(dir)` is comparing against
+ * `string | null`, and `null === null` would hold for a directory that is not
+ * a checkout at all — i.e. the assertion would pass on a fixture that never
+ * ran `git init`. Refusing here keeps the premise of the fixture separate
+ * from the claim of the case.
+ */
+function checkoutTop(dir: string): string {
+  const top = toplevel(dir);
+  if (top === null) throw new Error(`${dir} is not a checkout, so the case proves nothing`);
+  return top;
+}
+
+function runHook(
+  hook: string,
+  command: string,
+  extraEnv: Record<string, string> = {},
+  cwd: string = freshRun(),
+): HookReading {
   const r = spawnSync("bun", [hook], {
     input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }),
     encoding: "utf-8",
-    cwd: scratch,
+    cwd,
     env: {
       ...process.env,
       RUNGATE_WORK_DIR: join(scratch, "work"),
@@ -211,7 +330,59 @@ function runHook(hook: string, command: string, extraEnv: Record<string, string>
   };
 }
 
-function ledgerRows(): FilingLedgerRow[] {
+/**
+ * The same hook, spawned so that two of them can be in flight at once.
+ *
+ * `runHook` is `spawnSync`, which cannot race anything: the first process has
+ * exited before the second starts, so the second reads a ledger the first
+ * already wrote and the TOCTOU window never opens. Two REAL processes is the
+ * only configuration in which the defect exists at all — one process calling
+ * `filingGate` twice is serialised by `await` — so `FG-165` needs this and
+ * nothing else in the file does.
+ */
+function runHookAsync(
+  command: string,
+  cwd: string,
+  extraEnv: Record<string, string> = {},
+): Promise<HookReading> {
+  return new Promise(done => {
+    // late-env-ok: every variable this child reads is passed explicitly
+    // below. Nothing is inherited from an assignment made after startup.
+    const child = spawn("bun", [HOOK], {
+      cwd,
+      env: {
+        ...process.env,
+        RUNGATE_WORK_DIR: join(scratch, "work"),
+        RUNGATE_OPEN_FINDINGS: issuesFile,
+        RUNGATE_FINDING_LEDGER: ledger,
+        CLAUDE_CODE_SESSION_ID: "f9a1c0de-0000-4000-8000-000000000000",
+        ...extraEnv,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", (d: Buffer) => {
+      out += d.toString();
+    });
+    child.on("close", code => {
+      let payload: HookReading["payload"] = null;
+      try {
+        payload = JSON.parse(out.trim());
+      } catch {
+        payload = null;
+      }
+      done({
+        payload,
+        blocked: payload?.decision === "block",
+        reason: payload?.reason ?? payload?.systemMessage ?? "",
+        exit: code,
+      });
+    });
+    child.stdin.end(JSON.stringify({ tool_name: "Bash", tool_input: { command } }));
+  });
+}
+
+function everyLedgerRow(): FilingLedgerRow[] {
   let text = "";
   try {
     text = readFileSync(ledger, "utf-8");
@@ -224,9 +395,63 @@ function ledgerRows(): FilingLedgerRow[] {
     .map(l => JSON.parse(l) as FilingLedgerRow);
 }
 
+/**
+ * The DECISION rows — one per adjudicated clause, which is what almost every
+ * case here means by "a row".
+ *
+ * A filing the gate allows also leaves an INTENT row, appended before the
+ * decision to reserve the run's allowance (`FilingLedgerRow.intent`). It is a
+ * second row about the same clause and it is not a decision, so counting it
+ * here would turn "one clause, one countable row" into "one clause, one or
+ * two depending on the verdict" everywhere in this file.
+ *
+ * Read `ledgerIntents()` for that population. It is asserted directly rather
+ * than left to this filter — `FG-164` holds the intent row's shape, and
+ * `FG-166` holds that an allowed filing writes exactly one of each.
+ */
+function ledgerRows(): FilingLedgerRow[] {
+  return everyLedgerRow().filter(r => r.intent !== true);
+}
+
+/** The reservations — see `ledgerRows()`. */
+function ledgerIntents(): FilingLedgerRow[] {
+  return everyLedgerRow().filter(r => r.intent === true);
+}
+
+/**
+ * The cap, held fixed for a case that is measuring something else.
+ *
+ * An empty allowance on every read and an intent that lands nowhere, so one
+ * case can file repeatedly from one directory without its second filing
+ * being `OVER_CAP`. Spread it into a `filingGate` call that is about another
+ * stage; the cap's own cases inject neither of these.
+ */
+const noCap = {
+  readLedger: () => [] as FilingLedgerRow[],
+  appendLedger: () => true,
+};
+
 beforeAll(() => {
   scratch = mkdtempSync(join(tmpdir(), "rg-filing-gate-"));
   ledger = join(scratch, "finding-ledger.jsonl");
+  // **In THIS process too, not only in the hook children.** `runHook` has
+  // always passed the temp ledger in the child's environment, so the cases
+  // that call `filingGate` directly without injecting `readLedger` were
+  // reading the developer's live `~/.rungate/finding-ledger.jsonl` — which
+  // was invisible while the gate only read it, and stopped being invisible
+  // the moment it started appending intent rows: a suite run put 57 fixture
+  // rows into the live file and the next case read "this run has already
+  // filed 25 issues". Setting it here is also the only thing that makes
+  // those cases deterministic.
+  process.env.RUNGATE_FINDING_LEDGER = ledger;
+  // Pinned in THIS process for the same reason `runHook` pins it in the
+  // children: `filingBatch` returns `null` without it, so every row an
+  // in-process `filingGate` call writes carries `key: null` and no two rows
+  // can be told apart. CI sets no session id, so `FG-166`'s premise — two
+  // reservations with different keys — held on a developer's machine and
+  // failed on the runner. The absent case is exercised deliberately, by
+  // `withSession(undefined, …)` in FG-70, which saves and restores this.
+  process.env[LEDGER_SESSION_ENV] = "f9a1c0de-0000-4000-8000-000000000000";
   issuesFile = join(scratch, "open-issues.json");
   writeFileSync(issuesFile, JSON.stringify(OPEN_ISSUES), "utf-8");
   // An empty work dir, so `findActiveWorkflow` reads no VERIFY phase and gate
@@ -255,6 +480,21 @@ beforeAll(() => {
     source.replace(WIRING, "const gate = { refusal: null, note: null, rows: [] };"),
     "utf-8",
   );
+});
+
+/**
+ * One case, one ledger. **Required since the cap writes to it (#1595).**
+ *
+ * The ledger used to be read-only to this process and append-only across the
+ * file, so a case could ignore what earlier cases had left in it. The cap
+ * reserves an allowance by appending an intent row, and every case that does
+ * not name a checkout files from `scratch`, which is one `NON_CHECKOUT` run
+ * — so without this the FIRST filing in the file spends the allowance and
+ * every later case reads `OVER_CAP`. Measured: 5 cases red, each of them
+ * green when run alone, which is the worst way to find this.
+ */
+beforeEach(() => {
+  if (ledger !== undefined) writeFileSync(ledger, "", "utf-8");
 });
 
 afterAll(() => {
@@ -405,7 +645,7 @@ describe("#1261 the parts the decision is built from", () => {
     const v = await adjudicateFiling(
       fromFile("/planted/body.md"),
       tracker,
-      () => "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4.",
+      () => NOVEL_BODY,
     );
     expect(v.outcome).toBe("ALLOW");
   });
@@ -538,7 +778,7 @@ describe("#1261 the hook reaches the adjudication — read on stdout, not on the
    */
   test("FG-22 CONTROL: a NOVEL finding arriving by --body-file is allowed", () => {
     const at = join(scratch, "fg22-body.md");
-    writeFileSync(at, "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4.", "utf-8");
+    writeFileSync(at, NOVEL_BODY, "utf-8");
     const r = runHook(HOOK, `gh issue create --title "pullRequestCache is never invalidated" --body-file ${at}`);
     expect(r.blocked).toBe(false);
   });
@@ -593,7 +833,7 @@ describe("#1261 the four suppression classes", () => {
   // nothing.
   const STYLE_TITLE = "Typo in the retry comment";
   const REAL_TITLE = "retryBudget drops frames on resume";
-  const BODY = '--body "`retryBudget` in lib/pr-cache.ts holds 72 entries. Claim 4."';
+  const BODY = `--body "\`retryBudget\` in lib/pr-cache.ts holds 72 entries. Claim 4. ${DECLARED}"`;
 
   test("FG-28 BASELINE: the LAST --title decides, so a trailing style title blocks", () => {
     const [a] = filingAttempts(`gh issue create --title "${REAL_TITLE}" --title "${STYLE_TITLE}" ${BODY}`);
@@ -802,12 +1042,31 @@ describe("a refused filing does not ride through on a clean sibling", () => {
     expect(r.reason).toContain("DUPLICATE");
   });
 
-  test("FG-48 CONTROL: a command whose filings are ALL clean is still allowed", () => {
+  test("FG-48 CONTROL: a clean filing is still allowed, and a second is capped BY NAME", () => {
     // The control against the cheapest wrong fix for the three rows above —
     // block whenever there is more than one clause, or block unconditionally.
-    const r = runHook(HOOK, `${NOVEL_FILING} && ${SAME_SYMBOL_NEW_READING}`);
-    expect(r.blocked, "two novel findings in one command must still run").toBe(false);
-    expect(r.payload?.systemMessage ?? null, "and with nothing to say about them").toBe(null);
+    //
+    // **This row changed shape when the cap landed (#1595), and the subject
+    // survived it.** `FILINGS_PER_RUN` is 1, so a run's second clean filing
+    // IS now refused and the old assertion was measuring a property the
+    // project deliberately gave up. What it was really guarding is that a
+    // clean filing is not refused for being in company — so the halves are
+    // now asserted apart: one clean filing runs with nothing to say, and in
+    // a two-clause command the first clause still clears on its own merits
+    // while the second is refused by a NAMED mechanism rather than by a
+    // blanket rule about clause counts.
+    const alone = runHook(HOOK, NOVEL_FILING);
+    expect(alone.blocked, "a clean filing runs").toBe(false);
+    expect(alone.payload?.systemMessage ?? null, "with nothing to say about it").toBe(null);
+
+    const start = ledgerRows().length;
+    const pair = runHook(HOOK, `${NOVEL_FILING} && ${SAME_SYMBOL_NEW_READING}`);
+    const added = ledgerRows().slice(start);
+    expect(added.map(x => x.refusal), "the first clause is clean on its own merits").toEqual([
+      null,
+      "OVER_CAP",
+    ]);
+    expect(pair.reason, "and the refusal names the cap, never the clause count").toContain("cap is 1");
   });
 
   test("FG-49 CONTROL: an UNMEASURED filing ALONE is allowed, loudly", () => {
@@ -818,15 +1077,26 @@ describe("a refused filing does not ride through on a clean sibling", () => {
     expect(r.payload?.systemMessage ?? "").toContain("UNMEASURED");
   });
 
-  test("FG-50 CONTROL: an overridden duplicate beside a novel finding still allows", () => {
+  test("FG-50 CONTROL: an overridden duplicate still clears its own clause", () => {
     // An override is a decision somebody made and recorded. It must survive
     // the stricter predicate, or the label stops meaning anything.
-    const r = runHook(
-      HOOK,
-      `${DUPLICATE_FILING} --label ${FILING_OVERRIDE_LABEL} && ${NOVEL_FILING}`,
-    );
-    expect(r.blocked).toBe(false);
-    expect(r.payload?.systemMessage ?? "").toContain(FILING_OVERRIDE_LABEL);
+    //
+    // The command no longer runs, and the reason is the SIBLING being over
+    // the cap rather than anything about the override (#1595) — so the
+    // assertion moved from the command's verdict to the overridden clause's
+    // own row, which is where the property always lived. A row that is
+    // `overridden` with `emitted` cleared by `markBlockedCommand` is a
+    // waiver that worked inside a command that was stopped for another
+    // reason, and that is exactly the state this row exists to protect.
+    const start = ledgerRows().length;
+    runHook(HOOK, `${DUPLICATE_FILING} --label ${FILING_OVERRIDE_LABEL} && ${NOVEL_FILING}`);
+    const added = ledgerRows().slice(start);
+    expect(added.map(x => x.overridden), "the label still waives the duplicate").toEqual([
+      true,
+      false,
+    ]);
+    expect(added.map(x => x.refusal)).toEqual(["DUPLICATE", "OVER_CAP"]);
+    expect(added[0].disposition, "and the waived clause is still routed to the tracker").toBe("ISSUE");
   });
 
 });
@@ -1175,17 +1445,35 @@ describe("FG-90..FG-96: a blocked command filed nothing (#1344)", () => {
     expect(refused?.emitted, "the refused clause was already right").toBe(false);
   });
 
-  test("FG-91 POSITIVE CONTROL: a fully clean command still records emitted rows", () => {
+  test("FG-91 POSITIVE CONTROL: a clean command still records an emitted row", () => {
     // Without this, a fix that marked every row `emitted: false` would pass
     // FG-90 and zero the ledger, and no case in this file would see it.
+    //
+    // ONE clause since the cap landed (#1595): `ALL_CLEAN` is two clean
+    // filings and `FILINGS_PER_RUN` is 1, so the second is now `OVER_CAP`
+    // and the command no longer runs. The property this row guards needs a
+    // row that IS emitted, not two of them — a zeroing fix still fails it.
     const start = ledgerRows().length;
-    const r = runHook(HOOK, ALL_CLEAN);
-    expect(r.blocked, "two novel findings in one command must still run").toBe(false);
+    const r = runHook(HOOK, NOVEL_FILING);
+    expect(r.blocked, "a clean filing in a fresh run must still run").toBe(false);
+    const added = ledgerRows().slice(start);
+    expect(added).toHaveLength(1);
+    expect(added.map(x => x.emitted)).toEqual([true]);
+    expect(added.map(x => x.withheldBy)).toEqual([null]);
+    expect(added.map(x => x.disposition)).toEqual(["ISSUE"]);
+  });
+
+  test("FG-142: ALL_CLEAN is two clean filings, and the cap is what stops it", () => {
+    // The half FG-91 gave up, kept rather than deleted: `ALL_CLEAN` really
+    // is two clauses neither of which is refused on its own merits, and the
+    // only thing standing between it and two issues is `FILINGS_PER_RUN`.
+    // Without this row, FG-91 narrowing to one clause would look like the
+    // fixture having always been one.
+    const start = ledgerRows().length;
+    runHook(HOOK, ALL_CLEAN);
     const added = ledgerRows().slice(start);
     expect(added).toHaveLength(2);
-    expect(added.map(x => x.emitted)).toEqual([true, true]);
-    expect(added.map(x => x.withheldBy)).toEqual([null, null]);
-    expect(added.map(x => x.disposition)).toEqual(["ISSUE", "ISSUE"]);
+    expect(added.map(x => x.refusal)).toEqual([null, "OVER_CAP"]);
   });
 
   test("FG-92: the two withholdings are distinguishable inside one command", () => {
@@ -1276,6 +1564,8 @@ describe("FG-90..FG-96: a blocked command filed nothing (#1344)", () => {
       duplicateOf: [],
       overridden: false,
       refiledAfter: null,
+      exemption: null,
+      run: null,
       ...over,
     });
     const refused = row({
@@ -1570,8 +1860,13 @@ describe("FG-60..FG-65: the --repo parser differential", () => {
   test("FG-64 CONTROL: the same filing with a resolvable --repo is allowed", async () => {
     // Against "refuse any --repo", which passes FG-63 and switches the
     // cross-tracker path off entirely.
+    //
+    // `noCap` because this case files three times from one directory, which
+    // is one run: without it the second spelling is OVER_CAP and the case
+    // would be measuring the cap it is not about. The three spellings are
+    // the axis; the allowance is held fixed.
     for (const spelling of [SLUG, ...HOST_BEARING]) {
-      const r = await filingGate(withRepo(spelling), { projectRoot: scratch, readExisting: allow });
+      const r = await filingGate(withRepo(spelling), { projectRoot: scratch, readExisting: allow, ...noCap });
       expect(r.rows, spelling).toHaveLength(1);
       expect(r.refusal, spelling).toBeNull();
     }
@@ -1924,7 +2219,7 @@ describe("FG-79..FG-89: a filing names the claim it moves", () => {
     // refused" rather than "a claimless filing is refused".
     const withClaim = claimless(
       "pullRequestCache is never invalidated",
-      "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4.",
+      `\`pullRequestCache\` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4. ${DECLARED}`,
     );
     const v = await adjudicateFiling(filingAttempts(withClaim)[0], async () => measuredCorpus([]));
     expect(v.outcome).toBe("ALLOW");
@@ -1936,7 +2231,7 @@ describe("FG-79..FG-89: a filing names the claim it moves", () => {
       filingAttempts(
         claimless(
           "Claim 4: pullRequestCache is never invalidated",
-          "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours.",
+          `\`pullRequestCache\` in lib/pr-cache.ts holds 72 entries for 36 hours. ${DECLARED}`,
         ),
       )[0],
       async () => measuredCorpus([]),
@@ -2077,7 +2372,7 @@ describe("FG-100..FG-103: an override is a claim about a prior refusal", () => {
   const REDRAFT =
     `gh issue create --title ${JSON.stringify(TITLE)} ` +
     '--body "Overriding the arbiter: the issue it named is a different defect, about a cache. ' +
-    'This one is about a sweep abandoning work it had already started. Claim 4."';
+    `This one is about a sweep abandoning work it had already started. Claim 4. ${DECLARED}"`;
 
   const rowsFor = (title: string) => ledgerRows().filter(r => r.title === title);
 
@@ -2173,6 +2468,8 @@ describe("FG-100..FG-103: an override is a claim about a prior refusal", () => {
       duplicateOf: ["900"],
       overridden: false,
       refiledAfter: null,
+      exemption: null,
+      run: null,
     };
     const older = { ...base, at: "2026-10-24T09:00:00.000Z" };
     // The most recent wins, and the walk must not depend on file order.
@@ -2200,5 +2497,1811 @@ describe("FG-100..FG-103: an override is a claim about a prior refusal", () => {
       priorRefusalFor(TITLE, [{ ...base, withheldBy: COMMAND_BLOCKED }]),
       "and nor was a clause the command blocked before its own verdict landed",
     ).toBeNull();
+  });
+});
+
+/**
+ * FG-120..FG-139: not filing is the default, and the gate asks (#1595).
+ *
+ * `lib/finding-arbiter.ts` decided this in its own docblock — *"THE DEFAULT
+ * IS A COMMENT, NOT AN ISSUE … `Disposition` defaults to `COMMENT`, `ISSUE`
+ * requires an explicit declared reason from the caller"* — and the decision
+ * never reached the path agents use. The hook ran category, dedupe and
+ * `NO_CLAIM`, and none of the three asks *should this have been a comment?*
+ *
+ * Measured when #1595 was filed: 772 issues ever, 48 open, 3 older than three
+ * days, and 70–85% of everything closed each day since 2026-10-20 had been
+ * filed under six hours before it closed. Filing tracked closing almost
+ * exactly — 57 filed against 53 closed that day, 125 against 109 two days
+ * earlier — while `open` stayed flat. The hook-side half of the CRC-N3 item
+ * about flagging a class rather than an instance is the second block below.
+ *
+ * ## This gate's failure mode is SILENCE, so the controls are the deliverable
+ *
+ * A declaration check that always passes refuses nothing and looks exactly
+ * like a declaration check everybody satisfies. Four properties, and the
+ * third is the one a careless version of this file would miss:
+ *
+ * 1. undeclared is REFUSED, and the refusal names the comment target;
+ * 2. declared is ALLOWED — a gate that refuses everything is not a bar, and
+ *    `lib/issue-filing-gate.ts`'s own header warns against exactly that;
+ * 3. a mutant that makes the reason check ALWAYS PASS turns a case red.
+ *    **The mutant a parse-only test misses is `M1`**: `adjudicateFiling`
+ *    still calls `declaredExemption`, still gets the right answer out of it,
+ *    and never acts on it. Every assertion about parsing stays green under
+ *    M1 — only an assertion about the VERDICT moves, which is why FG-136
+ *    reads `outcome` and not `exemption`;
+ * 4. the population is asserted: N filings in, N rows on the ledger. An
+ *    absent row is UNMEASURED, never an empty population.
+ *
+ * ## Predicted before running, as values
+ *
+ * Every row below carries its predicted value in its assertion rather than a
+ * direction, because "I expect this to fail" cannot be wrong. The one
+ * prediction that was WRONG when this block was first run is recorded at
+ * FG-133, and it is kept rather than quietly corrected.
+ */
+describe("FG-120..FG-135: a filing declares why it cannot be a comment", () => {
+  /** The three readings of a comment target, as the gate may be handed them. */
+  const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
+  const noPr: CommentTarget = { reading: "NO_PR", branch: "rg/1595-filing-default" };
+  const unknownTarget: CommentTarget = { reading: "UNMEASURED", why: "the API said 403" };
+
+  /**
+   * A novel, claim-naming correctness finding that declares NOTHING.
+   *
+   * Every stage before the new one must clear it, or this block would be
+   * measuring the stage it shares an input with rather than the new one.
+   */
+  const UNDECLARED =
+    'gh issue create --title "zqxjSweepBudget abandons a sweep it started" ' +
+    '--body "`zqxjSweepBudget` in lib/zqxj-sweep.ts drops 31 of 44 commands, over 9107 runs. Claim 4."';
+
+  /** The same filing, declaring one of the three. The only axis that moves. */
+  const DECLARED_FILING = `${UNDECLARED.slice(0, -1)} ${DECLARED}"`;
+
+  const allow = async () => measuredCorpus([]);
+  const gateOn = (cmd: string, target: CommentTarget = onPr) =>
+    filingGate(cmd, {
+      projectRoot: scratch,
+      readExisting: allow,
+      readLedger: () => [],
+      readTarget: async () => target,
+    });
+
+  test("FG-120: a filing declaring no reason it cannot be a comment is REFUSED", async () => {
+    const v = await adjudicateFiling(filingAttempts(UNDECLARED)[0], allow);
+    expect(v.outcome).toBe("REFUSE");
+    expect(v.refusal).toBe("COMMENT_INSTEAD");
+    // The premise, asserted rather than assumed: no EARLIER stage is what
+    // refused it. Without this the row could be witnessing the dedupe.
+    //
+    // Through `DROPPED_CATEGORIES` and not against a literal category name:
+    // the first spelling asserted `"correctness"` and the classifier returns
+    // `"unclassified"` for this fixture, which is a true statement about the
+    // classifier and NOT the property being claimed here. The property is
+    // that the category stage did not drop it.
+    expect(DROPPED_CATEGORIES.has(v.category), `the category stage cleared it (${v.category})`).toBe(false);
+    expect(v.duplicateOf, "and nothing collided, so the dedupe cleared it").toEqual([]);
+    expect(namedClaim(UNDECLARED), "and it names a claim, so NO_CLAIM is not what fired").toBe(4);
+  });
+
+  test("FG-121 CONTROL: the same filing WITH a declaration is ALLOWED", async () => {
+    // A gate that refuses everything is not a bar. This is the row that
+    // separates "the declaration is read" from "this fixture is refused",
+    // and the declaration sentence is the only thing that differs.
+    const v = await adjudicateFiling(filingAttempts(DECLARED_FILING)[0], allow);
+    expect(v.outcome).toBe("ALLOW");
+    expect(v.refusal).toBeNull();
+    expect(v.exemption).toBe("out-of-pr-diff");
+  });
+
+  test("FG-122: the refusal NAMES the comment target and says which", async () => {
+    const r = await gateOn(UNDECLARED, onPr);
+    expect(r.refusal ?? "", "the command is blocked and the refusal is what the agent reads")
+      .toContain("PR #1595");
+    expect(r.refusal ?? "").toContain("Post it as a comment");
+  });
+
+  test("FG-123: the three target readings produce three different sentences", () => {
+    // `NO_PR` is a READING and not a gap: a branch with no open PR is a state
+    // an agent can act on. Collapsing it into UNMEASURED would be the Silent
+    // Default Substitution `.claude/rules/config-access.md` forbids, in the
+    // one sentence the agent actually reads.
+    expect(commentTargetSentence(onPr)).toContain("PR #1595");
+    expect(commentTargetSentence(noPr)).toContain("no open PR");
+    expect(commentTargetSentence(noPr)).not.toContain("UNMEASURED");
+    expect(commentTargetSentence(unknownTarget)).toContain("UNMEASURED");
+    expect(commentTargetSentence(unknownTarget), "and the reading's OWN why, never one composed here")
+      .toContain("the API said 403");
+  });
+
+  test("FG-124: the list is CLOSED — a token outside it is not a declaration", () => {
+    // The hole every format-only check has, closed the way `namedClaim`
+    // closes it: by bounding the value rather than by shaping it. Free text
+    // here would be the same bar as NO_CLAIM, which three of four filings on
+    // 2026-10-23 cleared in one sentence each.
+    for (const token of Object.keys(COMMENT_EXEMPTIONS) as CommentExemption[]) {
+      expect(declaredExemption(`${EXEMPTION_PREFIX} ${token}`), token).toBe(token);
+    }
+    for (const miss of [
+      `${EXEMPTION_PREFIX} because I need it tracked`,
+      `${EXEMPTION_PREFIX} out-of-scope`,
+      `${EXEMPTION_PREFIX} important`,
+      "out-of-pr-diff",
+      "This cannot be a comment.",
+    ]) {
+      expect(declaredExemption(miss), miss).toBeNull();
+    }
+  });
+
+  test("FG-125: the spellings a person actually types all read", () => {
+    for (const text of [
+      "Cannot be a comment: green-check-lies",
+      "cannot be a comment: green-check-lies",
+      "CANNOT BE A COMMENT: GREEN-CHECK-LIES",
+      "Cannot be a comment:  `green-check-lies`",
+      "…and so: Cannot be a comment: green-check-lies — the required check goes green.",
+      "Cannot be a comment: not-a-token\nCannot be a comment: green-check-lies",
+    ]) {
+      expect(declaredExemption(text), text).toBe("green-check-lies");
+    }
+  });
+
+  test("FG-126: the refusal's own text does NOT satisfy the gate", () => {
+    // An agent that re-files after a refusal pastes the refusal. An allowlist
+    // that names what it exempts becomes evidence those things were named —
+    // so the gate's own words must not clear the gate. Measured by feeding
+    // the string back through the reader rather than by trusting the layout.
+    for (const target of [onPr, noPr, unknownTarget]) {
+      const text = exemptionReason(target);
+      expect(text, "the refusal does list the tokens, or it is not actionable")
+        .toContain("out-of-pr-diff");
+      expect(declaredExemption(text), "and listing them does not declare one").toBeNull();
+    }
+  });
+
+  test("FG-127: a DUPLICATE is still DUPLICATE, not COMMENT_INSTEAD", async () => {
+    // "Already filed as #900" is actionable; "declare why this cannot be a
+    // comment" about a finding that should not be filed at all sends the
+    // agent to do the wrong work. The ordering, asserted rather than said.
+    const v = await adjudicateFiling(filingAttempts(DUPLICATE_FILING)[0], async () =>
+      measuredCorpus([{ id: "900", title: "retryBudget gives up early", body: DUPLICATE_BODY }]),
+    );
+    expect(v.refusal).toBe("DUPLICATE");
+  });
+
+  test("FG-128: a claimless, undeclared filing is NO_CLAIM — the order is deliberate", async () => {
+    // The one ordering choice in #1595 worth defending. Putting this stage
+    // before `NO_CLAIM` makes NO_CLAIM unreachable for the common filing —
+    // a shipped gate deleted as a side effect of adding one — and the round
+    // trip it would save does not exist: `refusalMessage` already tells
+    // every refused filing to fix it in the PR or answer it in a comment.
+    const claimless = UNDECLARED.replace(" Claim 4.", "");
+    expect(namedClaim(claimless), "the fixture really does name no claim").toBeNull();
+    const v = await adjudicateFiling(filingAttempts(claimless)[0], allow);
+    expect(v.refusal).toBe("NO_CLAIM");
+  });
+
+  test("FG-129: an UNMEASURED tracker outranks the declaration test", async () => {
+    // A policy refusal that outranks a reading failure is a reading failure
+    // nobody ever sees.
+    const v = await adjudicateFiling(filingAttempts(UNDECLARED)[0], async () =>
+      unmeasuredCorpus("the open-issue set could not be read"),
+    );
+    expect(v.outcome).toBe("UNMEASURED");
+    expect(v.refusal).toBe("UNMEASURED");
+  });
+
+  test("FG-130: the override label posts an undeclared filing, and it is counted", async () => {
+    const r = await gateOn(`${UNDECLARED} --label ${FILING_OVERRIDE_LABEL}`);
+    expect(r.refusal, "an exception somebody declared is still postable").toBeNull();
+    expect(r.rows[0].refusal, "and the refusal it waived is recorded, not erased")
+      .toBe("COMMENT_INSTEAD");
+    expect(r.rows[0].overridden).toBe(true);
+  });
+
+  test("FG-131: N filings in, N dispositions recorded — on the real ledger", async () => {
+    // The POPULATION, read off the file the hook appends to rather than off
+    // a return value. An absent row is UNMEASURED, never an empty
+    // population, so the count is asserted before anything about its
+    // contents — and the three clauses are deliberately three DIFFERENT
+    // outcomes, because three rows that agree cannot show a missing one.
+    const before = ledgerRows().length;
+    const r = runHook(HOOK, `${DECLARED_FILING} && ${UNDECLARED} && ${DROPPED_FILING}`);
+    expect(r.blocked, "the command is blocked, and every clause is still recorded").toBe(true);
+    const mine = ledgerRows().slice(before);
+    expect(mine, "three clauses in, three rows out").toHaveLength(3);
+    expect(
+      mine.map(x => x.disposition),
+      "and a disposition on every one of them, kept and dropped alike",
+    ).toEqual(["ISSUE", "DROP", "DROP"]);
+    expect(mine.map(x => x.refusal)).toEqual([null, "COMMENT_INSTEAD", "DROPPED_CATEGORY"]);
+  });
+
+  test("FG-132: the declared reason is on the row, allowed and refused alike", async () => {
+    // Scope item 3. The rate #1595 wants computable is per CLASS and its
+    // denominator is EVERY row in the class, so a column carried only on the
+    // refusals could never supply one. `symptomHash` is the class key and
+    // has been on the row since #1261, so this needs one new column.
+    const r = await gateOn(`${DECLARED_FILING} && ${UNDECLARED}`);
+    expect(r.rows.map(x => x.exemption)).toEqual(["out-of-pr-diff", null]);
+    expect(
+      r.rows.every(x => typeof x.symptomHash === "string" && x.symptomHash !== ""),
+      "and the class key the rate groups by is on both",
+    ).toBe(true);
+  });
+
+  test("FG-133: two clauses of one class in one command — the second is refused", async () => {
+    // **The prediction that was wrong.** Before running this block I
+    // predicted FG-66 and FG-71 — both of which file `NOVEL_FILING` twice in
+    // one command — would go red when this stage landed. They did not: they
+    // assert on row identity and row count, which a refusal does not move.
+    // So the in-run class check had to be asserted here, on the verdict,
+    // rather than inferred from a suite that stayed green.
+    const r = await gateOn(`${DECLARED_FILING} && ${DECLARED_FILING}`);
+    expect(r.rows.map(x => x.refusal)).toEqual([null, "SAME_CLASS_IN_RUN"]);
+    expect(r.refusal ?? "", "and the refusal names the clause to fold it into").toContain("clause 1");
+    expect(r.refusal ?? "").toContain("every instance");
+  });
+
+  test("FG-134 CONTROL: two clauses of DIFFERENT classes are capped, not class-refused", async () => {
+    // Without this row FG-133 would be witnessing "the second clause of a
+    // command is refused", which is a gate on the `&&` and not on the class.
+    //
+    // Under `FILINGS_PER_RUN = 1` the second clause is refused either way,
+    // so the control is no longer *allowed vs refused* — it is WHICH
+    // refusal, and that is the stronger form: the only axis that moves
+    // between this row and FG-133 is whether the two clauses share a class,
+    // and the refusal value follows it exactly.
+    const r = await gateOn(`${DECLARED_FILING} && ${NOVEL_FILING}`);
+    expect(r.rows.map(x => x.refusal)).toEqual([null, "OVER_CAP"]);
+  });
+
+  test("FG-135: a clause never collides with ITSELF", async () => {
+    // The cheapest wrong implementation compares each clause against a list
+    // it has already been added to, which refuses every single-clause filing
+    // in the tree and reads exactly like a gate that works.
+    const r = await gateOn(DECLARED_FILING);
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0].refusal).toBeNull();
+  });
+
+  test("FG-136: `filingFinding` is the one binding both readers use", () => {
+    // Two spellings of "what finding is this command filing" would be two
+    // deciders for one question, and the second always agrees with the first
+    // until the day it does not.
+    const [attempt] = filingAttempts(DECLARED_FILING);
+    const { finding, body } = filingFinding(attempt);
+    expect(finding.title).toBe(attempt.title);
+    expect(body).toBe(attempt.body);
+    // A body-file that cannot be read: `body` is null, the finding still
+    // carries the inline text. Different fields, different facts.
+    const unreadable = filingFinding({ ...attempt, bodyFile: "/nope.md" }, () => null);
+    expect(unreadable.body).toBeNull();
+    expect(unreadable.finding.body).toBe(attempt.body);
+  });
+});
+
+/**
+ * FG-137..FG-139: the reason check, removed and observed (#1595).
+ *
+ * The mutant is a real copy of `lib/issue-filing-gate.ts`, not a predicate
+ * re-spelled in this file. `FG-68` records why that was not possible there —
+ * *"a mutant copy … in a scratch directory cannot resolve its own relative
+ * imports and would fail to LOAD, which on a count reads exactly like a guard
+ * that held"* — and `buildMutant` is the answer to it: every sibling of the
+ * real module is symlinked beside the mutant, so each relative import
+ * resolves to the code under test and nothing is rewritten.
+ *
+ * ## Four things the builder asserts rather than assumes
+ *
+ * - **the anchor appears exactly once**, or a mutation that did not apply
+ *   reads exactly like one that did;
+ * - **every relative import of the mutant source has a sibling in its
+ *   directory**, so a module-resolution death cannot be mistaken for a
+ *   refusal. Type-only imports are erased at transpile and need no sibling
+ *   at runtime; they are asserted anyway, because the cost is nothing and
+ *   the alternative is a rule about which imports count;
+ * - **each mutant gets its OWN directory.** Bun resolves a dynamic
+ *   `import()` against a cached listing of the containing directory, so two
+ *   mutants written into one scratch dir give row one a load and row two a
+ *   miss, with `existsSync` true for both — byte-identical to the mutant
+ *   being rejected on the merits;
+ * - **the mutant LOADS and still allows the declared filing**, read before
+ *   any mutation row below it.
+ *
+ * ## The two mutants, and which one a careless test misses
+ *
+ * | id | mutation | what it models |
+ * |---|---|---|
+ * | `M1` | `declared === null` → `false` | the gate PARSES the declaration and never acts on it |
+ * | `M2` | the closed-list membership test is dropped | the list is open: any word declares |
+ *
+ * **M1 is the one requiring care.** Under it `declaredExemption` is still
+ * called, still returns the right value, and still reaches the ledger row —
+ * so every assertion about parsing, and every assertion about `exemption`,
+ * stays green. Only an assertion on the VERDICT moves. FG-137 reads
+ * `outcome`, and FG-139 states the miss by measuring it: the field a
+ * parse-only test would have asserted is shown to be identical across the
+ * real gate and M1.
+ */
+describe("FG-137..FG-139, FG-153, FG-156, FG-158, FG-169: a mutant turns a case red", () => {
+  const LIB = join(REPO, "lib");
+  const UNIT = "issue-filing-gate.ts";
+
+  /**
+   * A real mutant of the module, in a directory of its own, built once.
+   *
+   * Memoised so a later row can reach an earlier row's mutant without
+   * depending on execution order and without a second `symlinkSync` over the
+   * same names — and so the directory-per-mutant property above holds by
+   * construction rather than by every caller remembering it.
+   */
+  const built = new Map<string, string>();
+  function buildMutant(name: string, anchor: string, replacement: string): string {
+    const already = built.get(name);
+    if (already !== undefined) return already;
+    const dir = join(scratch, `mut-${name}`);
+    mkdirSync(dir, { recursive: true });
+    const src = readFileSync(join(LIB, UNIT), "utf-8");
+    expect(src.split(anchor).length - 1, `the ${name} anchor must appear exactly once in ${UNIT}`).toBe(1);
+
+    const carried = new Set<string>();
+    for (const file of readdirSync(LIB)) {
+      if (file === UNIT) continue;
+      symlinkSync(join(LIB, file), join(dir, file));
+      carried.add(file);
+    }
+    // Asserted, not assumed: a missing sibling is a load failure, and a load
+    // failure reads as a refusal on every channel this battery watches.
+    const wanted = [...src.matchAll(/from "\.\/([A-Za-z0-9._-]+)"/g)].map(m => `${m[1]}.ts`);
+    expect(wanted.length, "the mutant really does import siblings").toBeGreaterThan(0);
+    expect(
+      wanted.filter(f => !carried.has(f)),
+      `every relative import of the mutant must have a sibling in ${dir}`,
+    ).toEqual([]);
+
+    const at = join(dir, UNIT);
+    writeFileSync(at, src.replace(anchor, replacement), "utf-8");
+    built.set(name, at);
+    return at;
+  }
+
+  /** `M1` — the declaration is read and never acted on. */
+  const M1 = "declared === null";
+  /** `M2` — the closed list stops being closed. */
+  const M2 = "if (token in COMMENT_EXEMPTIONS) return token as CommentExemption;";
+  /** `M3` — the cap never binds, however much the run has filed. */
+  const M3 = "spent >= FILINGS_PER_RUN";
+  /** `M4` — every refusal becomes waivable, including the cap. */
+  const M4 = 'return refusal !== "OVER_CAP" && refusal !== "UNMEASURED_CAP";';
+  /** `M5` — the cap stops seeing filings the label would carry through. */
+  const M5 = "|| overrideOf(read2)";
+  /** `M6` — the reservation is taken and its position is never read. */
+  const M6 = "ordinal > FILINGS_PER_RUN";
+
+  const UNDECLARED =
+    'gh issue create --title "zqxjMutantProbe abandons a sweep it started" ' +
+    '--body "`zqxjMutantProbe` in lib/zqxj-mutant.ts drops 23 of 58 commands, over 7731 runs. Claim 4."';
+  const DECLARED_FILING = `${UNDECLARED.slice(0, -1)} ${DECLARED}"`;
+  const NONSENSE = `${UNDECLARED.slice(0, -1)} ${EXEMPTION_PREFIX} i-just-want-it-tracked"`;
+
+  type Gate = typeof import("../lib/issue-filing-gate");
+  const verdictOf = async (gate: Gate, cmd: string) =>
+    gate.adjudicateFiling(gate.filingAttempts(cmd)[0], async () => gate.measuredCorpus([]));
+
+  test("FG-137: M1 — the real gate REFUSES the undeclared filing and M1 allows it", async () => {
+    const mutant: Gate = await import(buildMutant("always-declared", M1, "false"));
+
+    // BASELINE FIRST. A mutant that failed to load throws above; a mutant
+    // that loaded but refuses everything would make the row below pass for
+    // the wrong reason, so the declared control is read before the mutation.
+    expect(
+      (await verdictOf(mutant, DECLARED_FILING)).outcome,
+      "the mutant must load and still ALLOW a declared filing",
+    ).toBe("ALLOW");
+
+    expect((await verdictOf(await import("../lib/issue-filing-gate"), UNDECLARED)).outcome).toBe("REFUSE");
+    expect(
+      (await verdictOf(mutant, UNDECLARED)).outcome,
+      "with the reason check removed, the undeclared filing sails through",
+    ).toBe("ALLOW");
+  });
+
+  test("FG-138: M2 — the closed list is what refuses an invented reason", async () => {
+    const mutant: Gate = await import(buildMutant("open-list", M2, "return token as CommentExemption;"));
+
+    expect(
+      (await verdictOf(mutant, DECLARED_FILING)).outcome,
+      "the mutant must load and still ALLOW a real declaration",
+    ).toBe("ALLOW");
+
+    const real = await import("../lib/issue-filing-gate");
+    expect(
+      (await verdictOf(real, NONSENSE)).refusal,
+      "an invented token is not a declaration",
+    ).toBe("COMMENT_INSTEAD");
+    expect(
+      (await verdictOf(mutant, NONSENSE)).outcome,
+      "and with the membership test gone, any word somebody types is one",
+    ).toBe("ALLOW");
+  });
+
+  test("FG-139: the field a PARSE-only test would assert is identical under M1", async () => {
+    // The miss, measured rather than described. `exemption` is what a test
+    // written to "check the reason was read" would assert, and it is the
+    // same value on the real gate and on a gate that ignores the reason
+    // entirely. A battery that only varied the input would never see it.
+    const mutant: Gate = await import(buildMutant("always-declared", M1, "false"));
+    const real = await import("../lib/issue-filing-gate");
+
+    const realV = await verdictOf(real, UNDECLARED);
+    const mutantV = await verdictOf(mutant, UNDECLARED);
+    expect(mutantV.exemption, "the parse agrees, so a parse assertion cannot tell them apart")
+      .toBe(realV.exemption);
+    expect(mutantV.outcome, "and the verdict does not, which is the only axis that moves")
+      .not.toBe(realV.outcome);
+  });
+
+  /**
+   * FG-140..FG-141: the live target resolver's two local arms.
+   *
+   * Only the arms that need no credential are asserted, and that is the
+   * point rather than a limitation: both of them are states that would
+   * otherwise be reported as `NO_PR`, which is a claim about the tracker.
+   * The `PR` arm needs a token and is measured by hand — against this
+   * worktree on 2026-10-24 `openPrForBranch` returned
+   * `{reading:"NO_PR",branch:"rg/1595-filing-default"}`, a real API call for
+   * a branch that had no PR open yet.
+   */
+  test("FG-153: M3 — the cap is what refuses the second filing of a run", async () => {
+    // Property 3 of the four #1595 names: a mutant that makes the cap never
+    // bind must turn a case red. `spent >= FILINGS_PER_RUN` is the whole
+    // decision, and the mutant is that expression forced to `false`.
+    const mutant: Gate = await import(buildMutant("uncapped", M3, "false"));
+    const dir = join(scratch, "mut-cap-run");
+    mkdirSync(dir, { recursive: true });
+
+    const at = "2026-10-24T12:00:00.000Z";
+    // The row a spent allowance leaves is the INTENT, not the outcome — the
+    // cap counts reservations so that a filing in flight in another process
+    // is visible. A fixture built as an emitted row would be a spent
+    // allowance the gate cannot see, and every mutant below would go green
+    // against a cap that was never loaded.
+    const spentRow = {
+      at,
+      key: `b.1/${at}/0${INTENT_KEY_SUFFIX}`,
+      id: "new",
+      title: "already filed by this run",
+      symptomHash: "h",
+      category: "correctness" as const,
+      severity: null,
+      disposition: "ISSUE" as const,
+      refusal: null,
+      emitted: false,
+      withheldBy: INTENT_PENDING,
+      jury: null,
+      duplicateOf: [],
+      overridden: false,
+      refiledAfter: null,
+      exemption: "out-of-pr-diff" as const,
+      intent: true,
+      run: null as string | null,
+    };
+    const filing =
+      'gh issue create --title "zqxjMutantCap loses a sweep" ' +
+      `--body "\`zqxjMutantCap\` in lib/zqxj-mutant-cap.ts drops 19 of 37 commands over 8803 runs. Claim 4. ${DECLARED}"`;
+
+    const runOn = (gate: Gate, prior: unknown[], wrote: unknown[] = []) =>
+      gate.filingGate(filing, {
+        projectRoot: dir,
+        now: at,
+        readExisting: async () => gate.measuredCorpus([]),
+        readLedger: () => prior as never,
+        appendLedger: ((r: unknown) => {
+          wrote.push(r);
+          return true;
+        }) as never,
+        readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
+      });
+
+    // BASELINE FIRST: the mutant loaded, and on an EMPTY ledger it agrees
+    // with the real gate. A mutant that refused or allowed everything would
+    // make the row below pass for the wrong reason.
+    const real: Gate = await import("../lib/issue-filing-gate");
+    expect(
+      (await runOn(mutant, [])).rows[0].refusal,
+      "the mutant must load and still allow a first filing",
+    ).toBeNull();
+    expect((await runOn(real, [])).rows[0].refusal, "as does the real gate").toBeNull();
+
+    // **This row said "with the cap unable to bind, a run files without
+    // limit" and that stopped being true when the race fix landed.** The
+    // reservation stage reads the queue AFTER appending, so it refuses an
+    // over-cap filing whatever the pre-read decided: M3 no longer produces
+    // a bypass, and a mutant that kills nothing is a row that certifies
+    // nothing. Restated to the difference that remains, and reported rather
+    // than quietly weakened — the pre-read is now a fast path and the
+    // ordinal is the decider, which is a design question for the loop
+    // refactor and not something to settle by editing an assertion.
+    const spent = [{ ...spentRow, run: real.runIdFor(dir) }];
+    const realWrote: unknown[] = [];
+    const mutantWrote: unknown[] = [];
+    expect((await runOn(real, spent, realWrote)).rows[0].refusal).toBe("OVER_CAP");
+    expect(
+      (await runOn(mutant, spent, mutantWrote)).rows[0].refusal,
+      "the ordinal refuses it too, so the verdict cannot tell the two apart",
+    ).toBe("OVER_CAP");
+    // What CAN tell them apart: the real gate refuses before touching the
+    // file, and the mutant reserves a slot it has to give straight back.
+    expect(realWrote, "the real cap binds before any write").toHaveLength(0);
+    expect(mutantWrote.length, "the mutant writes, then releases").toBeGreaterThan(0);
+  });
+
+  test("FG-156: M4 — one predicate decides both the waiver and the sentence", async () => {
+    // `waivableRefusal` is read twice — by `filingGate` to decide whether the
+    // label overrides, and by `refusalMessage` to decide whether to offer it.
+    // Forcing it to `true` must move BOTH, or they are not one binding and
+    // the pair can drift again exactly as it did: for one review round the
+    // gate refused OVER_CAP unwaivably while the message closed by telling
+    // the agent to re-run with the label.
+    const mutant: Gate = await import(buildMutant("cap-waivable", M4, "return true;"));
+    const real: Gate = await import("../lib/issue-filing-gate");
+    const dir = join(scratch, "mut-waivable-run");
+    mkdirSync(dir, { recursive: true });
+
+    const at = "2026-10-24T12:00:00.000Z";
+    const filing =
+      'gh issue create --title "zqxjWaiverProbe loses a sweep it started" ' +
+      `--body "\`zqxjWaiverProbe\` in lib/zqxj-waiver.ts drops 11 of 43 commands over 5207 runs. Claim 4. ${DECLARED}"`;
+    const runOn = (gate: Gate, prior: unknown[], cmd: string = filing) =>
+      gate.filingGate(cmd, {
+        projectRoot: dir,
+        now: at,
+        readExisting: async () => gate.measuredCorpus([]),
+        readLedger: () => prior as never,
+        readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
+      });
+
+    // BASELINE FIRST, on both: an empty ledger allows, so neither gate is
+    // refusing or allowing everything when the mutation rows are read.
+    expect((await runOn(mutant, [])).rows[0].refusal, "the mutant loaded").toBeNull();
+    expect((await runOn(real, [])).rows[0].refusal, "as did the real gate").toBeNull();
+
+    const spent = [
+      {
+        at,
+        key: `b.1/${at}/0${INTENT_KEY_SUFFIX}`,
+        id: "new",
+        title: "already filed by this run",
+        symptomHash: "h",
+        category: "correctness" as const,
+        severity: null,
+        disposition: "ISSUE" as const,
+        refusal: null,
+        emitted: false,
+        withheldBy: INTENT_PENDING,
+        jury: null,
+        duplicateOf: [],
+        overridden: false,
+        refiledAfter: null,
+        exemption: "out-of-pr-diff" as const,
+        intent: true,
+        run: real.runIdFor(dir),
+      },
+    ];
+    const labelled = `${filing} --label ${FILING_OVERRIDE_LABEL}`;
+
+    // Half one, the waiver. The real gate ignores the label; the mutant
+    // honours it and the filing reaches the tracker.
+    const realLabelled = await runOn(real, spent, labelled);
+    expect(realLabelled.rows[0].overridden).toBe(false);
+    expect(realLabelled.rows[0].emitted).toBe(false);
+    const mutantLabelled = await runOn(mutant, spent, labelled);
+    expect(mutantLabelled.rows[0].overridden, "the label now waives the cap").toBe(true);
+    // **Not `refusal === null` any more.** It was, and the race fix changed
+    // it: the reservation stage reads the queue after appending and refuses
+    // regardless, so the command is still blocked. The LEDGER is what M4
+    // still moves — a row recording that a label waived a cap no label can
+    // waive, which is the measurement #1261 asks this change to expose.
+    // Restated rather than deleted: an assertion that stops discriminating
+    // is a row that certifies nothing.
+    expect(
+      mutantLabelled.rows[0].refusal,
+      "the ordinal refuses it either way, so the verdict is not the discriminator",
+    ).toBe("OVER_CAP");
+
+    // Half two, the sentence. Same mutation, the OTHER reader: with no label
+    // at all the refusal stops saying the label is no use here and starts
+    // recommending it. A test asserting only the waiver would leave this
+    // half of the predicate unmeasured.
+    expect((await runOn(real, spent)).refusal ?? "").toContain("does NOT waive this one");
+    expect(
+      (await runOn(mutant, spent)).refusal ?? "",
+      "the message follows the predicate rather than deciding again",
+    ).toContain(`re-run with --label ${FILING_OVERRIDE_LABEL}`);
+  });
+
+  test("FG-158: M5 — the cap sees what the LABEL would carry through, not what is clean", async () => {
+    // The round-4 bypass, as a mutation. `wouldEmit` is what makes the cap
+    // read the clause's fate after any override; dropping the override term
+    // restores the shape the review found, where a waivable refusal plus the
+    // label walks straight past the allowance.
+    const mutant: Gate = await import(buildMutant("cap-blind-to-override", M5, "|| false"));
+    const real: Gate = await import("../lib/issue-filing-gate");
+    const dir = join(scratch, "mut-bypass-run");
+    mkdirSync(dir, { recursive: true });
+
+    const at = "2026-10-24T12:00:00.000Z";
+    // UNDECLARED on purpose: the cheapest route to the bypass is to make the
+    // filing worse, because `COMMENT_INSTEAD` is waivable and `OVER_CAP` is
+    // not. The declared twin is the baseline below.
+    const body =
+      "`zqxjBypass` in lib/zqxj-bypass.ts drops 13 of 61 commands over 4703 runs. Claim 4.";
+    const undeclared =
+      `gh issue create --title "zqxjBypass abandons a sweep it started" --body "${body}" ` +
+      `--label ${FILING_OVERRIDE_LABEL}`;
+    const declared =
+      `gh issue create --title "zqxjBypass abandons a sweep it started" --body "${body} ${DECLARED}"`;
+
+    const runOn = (gate: Gate, prior: unknown[], cmd: string) =>
+      gate.filingGate(cmd, {
+        projectRoot: dir,
+        now: at,
+        readExisting: async () => gate.measuredCorpus([]),
+        readLedger: () => prior as never,
+        readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
+      });
+
+    // BASELINE FIRST, both gates, empty ledger: a declared filing is allowed,
+    // so neither is refusing everything when the rows below are read.
+    expect((await runOn(mutant, [], declared)).rows[0].refusal, "the mutant loaded").toBeNull();
+    expect((await runOn(real, [], declared)).rows[0].refusal, "as did the real gate").toBeNull();
+
+    const spent = [
+      {
+        at,
+        key: `b.1/${at}/0${INTENT_KEY_SUFFIX}`,
+        id: "new",
+        title: "already filed by this run",
+        symptomHash: "h",
+        category: "correctness" as const,
+        severity: null,
+        disposition: "ISSUE" as const,
+        refusal: null,
+        emitted: false,
+        withheldBy: INTENT_PENDING,
+        jury: null,
+        duplicateOf: [],
+        overridden: false,
+        refiledAfter: null,
+        exemption: "out-of-pr-diff" as const,
+        intent: true,
+        run: real.runIdFor(dir),
+      },
+    ];
+
+    const realRow = (await runOn(real, spent, undeclared)).rows[0];
+    expect(realRow.refusal).toBe("OVER_CAP");
+    expect(realRow.emitted, "nothing reached the tracker").toBe(false);
+
+    // **The bypass this modelled is now closed twice, so the row no longer
+    // reaches the tracker under M5 either.** The pre-read cap never looks at
+    // a clause it thinks is refused — that is the mutation, and it still
+    // happens — but the clause is then `emitted` and the reservation stage
+    // reads every emitted row, so the ordinal refuses it. What M5 still
+    // moves is WHICH refusal the ledger records and whether the run paid a
+    // write for it.
+    const mutantRow = (await runOn(mutant, spent, undeclared)).rows[0];
+    expect(
+      mutantRow.refusal,
+      "the ordinal catches what the pre-read was mutated into skipping",
+    ).toBe("OVER_CAP");
+    expect(mutantRow.emitted, "so the bypass does not reopen").toBe(false);
+    expect(
+      mutantRow.overridden,
+      "and no label waived it, because the stage that refused reads the same predicate",
+    ).toBe(false);
+  });
+
+  test("FG-169: M6 — the ORDINAL is what stops the second racer, not the pre-read", async () => {
+    // `FG-166` asserts the second of two interleaved racers is refused. On
+    // its own that is not evidence the ORDINAL did it: a cap that still
+    // decided from the pre-read would refuse the second too, as soon as the
+    // two stopped being simultaneous. M6 removes the position check and
+    // nothing else, so the real gate and this one differ in exactly the
+    // reading under test.
+    const real: Gate = await import("../lib/issue-filing-gate");
+    const mutant: Gate = await import(buildMutant("unordered", M6, "false"));
+    const dir = join(scratch, "mut-race-run");
+    mkdirSync(dir, { recursive: true });
+    const at = "2026-10-24T12:00:00.000Z";
+    const other = new Date(Date.parse(at) + 1).toISOString();
+
+    const two = 'gh issue create --title "zqxjRaceTwo rebuilds an index it just built" ' +
+      `--body "\`zqxjRaceTwo\` in lib/zqxj-race-two.ts rescans 418 refs on 9120 reads. Claim 4. ${DECLARED}"`;
+    const one = 'gh issue create --title "zqxjRaceOne loses a sweep it started" ' +
+      `--body "\`zqxjRaceOne\` in lib/zqxj-race-one.ts drops 19 of 37 commands over 8803 runs. Claim 4. ${DECLARED}"`;
+
+    /** Both racers read an EMPTY ledger first, then the live one. */
+    const raceOn = (gate: Gate, sink: unknown[]) => (cmd: string, now: string) => {
+      let reads = 0;
+      return gate.filingGate(cmd, {
+        projectRoot: dir,
+        now,
+        readExisting: async () => gate.measuredCorpus([]),
+        readLedger: (() => (reads++ === 0 ? [] : [...sink])) as never,
+        appendLedger: ((row: unknown) => {
+          sink.push(row);
+          return true;
+        }) as never,
+        readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
+      });
+    };
+
+    const realSink: unknown[] = [];
+    const realRace = raceOn(real, realSink);
+    expect((await realRace(one, at)).rows[0].emitted, "the real gate's first racer files").toBe(true);
+    const realSecond = (await realRace(two, other)).rows[0];
+    expect(realSecond.refusal, "and its second is refused on its position").toBe("OVER_CAP");
+
+    const mutantSink: unknown[] = [];
+    const mutantRace = raceOn(mutant, mutantSink);
+    // BASELINE: the mutant loaded and still allows a first filing, so the row
+    // below is not a module that failed to import.
+    expect((await mutantRace(one, at)).rows[0].emitted, "the mutant loaded").toBe(true);
+    const mutantSecond = (await mutantRace(two, other)).rows[0];
+    expect(mutantSecond.refusal, "with no position check, nothing refuses it").toBeNull();
+    expect(mutantSecond.emitted, "so both racers file — the race, reopened").toBe(true);
+    // Both reserved either way: the mutation is in what the position MEANS,
+    // not in whether one was taken. Without this the row above could be an
+    // append that silently stopped happening.
+    expect(mutantSink, "both took a position and neither gave one back").toHaveLength(2);
+    // Three on the real gate: two reservations and the loser's release. The
+    // mutant has nothing to release because it never loses, which is the
+    // same mutation observed on the other channel.
+    expect(realSink, "and the real gate's loser released its slot").toHaveLength(3);
+  });
+
+  test("FG-140: a directory that is not a git repository is UNMEASURED, naming it", async () => {
+    const notARepo = join(scratch, "not-a-repo");
+    mkdirSync(notARepo, { recursive: true });
+    const t = await openPrForBranch(notARepo);
+    expect(t.reading, "nobody looked — that is not the same as no PR existing").toBe("UNMEASURED");
+    expect(t.reading === "UNMEASURED" ? t.why : "").toContain(notARepo);
+  });
+
+  test("FG-141: a DETACHED checkout is UNMEASURED, not a branch with no PR", async () => {
+    // The two states one observable would collapse: `head=owner:HEAD` returns
+    // an empty list, which is byte-identical to a branch nobody has opened a
+    // PR for. Only one of them is a reading.
+    const repo = join(scratch, "detached");
+    mkdirSync(repo, { recursive: true });
+    const git = (...args: string[]) =>
+      // late-env-ok: the child is `git`, which reads neither of the variables
+      // this file writes late — RUNGATE_OPEN_FINDINGS and the ledger session
+      // id are both read by the gate under test, in this process, and never
+      // by a git subprocess. The detach below is asserted rather than
+      // assumed, so a child that somehow lost its environment fails the row.
+      spawnSync("git", ["-C", repo, ...args], { encoding: "utf-8" });
+    git("init", "-q", "-b", "main");
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x");
+    const detach = git("checkout", "-q", "--detach");
+    expect(detach.status, "the fixture must really detach, or this row proves nothing").toBe(0);
+
+    const t = await openPrForBranch(repo);
+    expect(t.reading).toBe("UNMEASURED");
+    expect(t.reading === "UNMEASURED" ? t.why : "").toContain("detached");
+  });
+});
+
+/**
+ * FG-143..FG-154: the cap, which is the gate (#1595, scope item 4).
+ *
+ * ## Why the declaration above it is not the bar
+ *
+ * It was written as one and it is not. Applied on 2026-10-24 to the three
+ * issues filed that day by the author of the bar — #1591, #1592, #1595 —
+ * **all three cleared it**, each on an individually sound argument, through
+ * the clause *it makes a green check lie*, which in a repository whose
+ * subject is checks that lie admits any true finding. Three for three is
+ * not a result a bar produces, and the research predicted it: *"a bar an
+ * agent applies by asking 'does this block a goal criterion?' re-decides
+ * 100 times a day and will drift."*
+ *
+ * A count has no clause to argue into. That is the whole of why it is here.
+ *
+ * ## The number, and the two readings it came from
+ *
+ * `FILINGS_PER_RUN = 1`, from two independent directions that converge:
+ *
+ * - Cloudflare, 131,246 reviews: **1.2 findings per review**, deliberately
+ *   low. The only published per-unit figure, and `runIdFor` makes our unit
+ *   the same unit. Floored, because that number counts an inline comment
+ *   and this counts a tracker issue.
+ * - This machine on 2026-10-24: **64 issues created in 24h across 284
+ *   registered worktrees — 0.23 filings per run per day.** A cap of 1 sits
+ *   4.4x above the mean, so it cannot bind the ordinary run and binds only
+ *   where a run files a SECOND.
+ *
+ * ## The four properties, and the one that decides whether this is a gate
+ *
+ * 1. over the cap is refused **even with a perfect declaration** (FG-143).
+ *    If a good reason could defeat it, the cap would be the per-finding
+ *    judgement it replaces;
+ * 2. under the cap is allowed, so it is a bar and not a ban (FG-144);
+ * 3. a mutant that makes the cap never bind turns a case red (FG-153);
+ * 4. no label waives it (FG-146) — `arbiter-override` answers claims ABOUT
+ *    a finding, and the cap makes none.
+ *
+ * ## What changed elsewhere, measured
+ *
+ * Landing this reddened **4** cases in this file, every one of them
+ * asserting that two clean filings in ONE command are both allowed —
+ * FG-48, FG-50, FG-91 and FG-134. That property is exactly what a cap of 1
+ * gives up, so all four were reshaped rather than relaxed, and FG-142 keeps
+ * the half FG-91 surrendered. Nothing else in the file moved.
+ */
+describe("FG-143..FG-173: a numeric cap, which no argument defeats", () => {
+  const onPr: CommentTarget = { reading: "PR", number: 1595, branch: "rg/1595-filing-default" };
+  const AT = "2026-10-24T12:00:00.000Z";
+
+  /** Two filings that are novel, claim-naming and perfectly declared. */
+  const first =
+    'gh issue create --title "zqxjCapOne loses a sweep it started" ' +
+    `--body "\`zqxjCapOne\` in lib/zqxj-cap-one.ts drops 17 of 29 commands over 6301 runs. Claim 4. ${DECLARED}"`;
+  const second =
+    'gh issue create --title "zqxjCapTwo miscounts its own retries" ' +
+    `--body "\`zqxjCapTwo\` in lib/zqxj-cap-two.ts reports 51 of 83 retries across 4409 sweeps. Claim 4. ${DECLARED}"`;
+
+  /** The same filing with its declaration removed — refused, and waivable. */
+  const undeclaredSecond = second.replace(` ${DECLARED}`, "");
+
+  /**
+   * The row a filing leaves that the cap counts — its INTENT.
+   *
+   * A real landed filing leaves two rows: the intent that reserved the
+   * allowance, and the outcome the hook writes afterwards. The outcome is
+   * deliberately NOT what the cap counts (`FilingLedgerRow.intent` says why
+   * counting `emitted` cannot see a filing that is in flight), so a fixture
+   * that built one would be a spent allowance the gate does not see — and
+   * every cap case here would pass for the wrong reason. `FG-149` holds the
+   * counter's population directly.
+   */
+  const landed = (run: string, at: string = AT): FilingLedgerRow => ({
+    at,
+    key: `b.1/${at}/0${INTENT_KEY_SUFFIX}`,
+    id: "new",
+    title: "something this run already filed",
+    symptomHash: "h",
+    category: "correctness",
+    severity: null,
+    disposition: "ISSUE",
+    refusal: null,
+    emitted: false,
+    withheldBy: INTENT_PENDING,
+    jury: null,
+    duplicateOf: [],
+    overridden: false,
+    refiledAfter: null,
+    exemption: "out-of-pr-diff",
+    intent: true,
+    run,
+  });
+
+  /** The OUTCOME row the hook writes after a filing is allowed. */
+  const outcome = (run: string, at: string = AT): FilingLedgerRow => ({
+    ...landed(run, at),
+    key: `b.1/${at}/0`,
+    emitted: true,
+    withheldBy: null,
+    intent: false,
+  });
+
+  const gateIn = (cmd: string, projectRoot: string, prior: FilingLedgerRow[]) =>
+    filingGate(cmd, {
+      projectRoot,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => prior,
+      readTarget: async () => onPr,
+    });
+
+  /**
+   * Two CHECKOUTS, so "a different run" is an input and not an argument.
+   *
+   * Real `git init`s rather than bare directories: since `runIdFor` buckets
+   * every non-checkout into one `NON_CHECKOUT` allowance, two bare temp dirs
+   * would be the SAME run and FG-145 would be asserting the opposite of what
+   * it says. A checkout is also what a run is in production.
+   */
+  let runA: string;
+  let runB: string;
+  beforeAll(() => {
+    runA = join(scratch, "cap-run-a");
+    runB = join(scratch, "cap-run-b");
+    for (const dir of [runA, runB]) {
+      mkdirSync(dir, { recursive: true });
+      checkoutAt(dir);
+    }
+    expect(runIdFor(runA), "two checkouts, two runs").not.toBe(runIdFor(runB));
+  });
+
+  test("FG-143: over the cap is REFUSED even with a perfect declaration", async () => {
+    // **The row that decides whether this is a gate.** The filing is novel,
+    // names a claim, declares a reason from the closed list and collides
+    // with nothing. Every judgement in this file clears it. The count does
+    // not, and no sentence it could carry would change that.
+    const r = await gateIn(second, runA, [landed(runIdFor(runA))]);
+    expect(r.rows[0].refusal).toBe("OVER_CAP");
+    expect(r.rows[0].exemption, "the declaration was READ, and did not help").toBe("out-of-pr-diff");
+    expect(r.refusal ?? "", "and the refusal says so in as many words").toContain(
+      "no argument against this",
+    );
+  });
+
+  test("FG-144 CONTROL: under the cap, the same filing is ALLOWED", async () => {
+    // A gate that refuses everything is not a bar. The only axis that moves
+    // between this row and FG-143 is whether the run has already filed.
+    const r = await gateIn(second, runA, []);
+    expect(r.rows[0].refusal).toBeNull();
+    expect(r.refusal).toBeNull();
+  });
+
+  test("FG-145 CONTROL: a DIFFERENT run has its own allowance", async () => {
+    // Pins FG-143 to the RUN rather than to the ledger having any row in
+    // it at all. Same ledger, same filing, different directory.
+    const spent = [landed(runIdFor(runA))];
+    expect((await gateIn(second, runA, spent)).rows[0].refusal).toBe("OVER_CAP");
+    expect((await gateIn(second, runB, spent)).rows[0].refusal, "runB has filed nothing").toBeNull();
+  });
+
+  test("FG-146: `arbiter-override` does NOT waive the cap", async () => {
+    // The label waives a claim ABOUT a finding — duplicate, no claim, should
+    // have been a comment — and the cap makes no claim about the finding, so
+    // there is nothing for a waiver to answer. A label that waived it would
+    // hand back exactly the per-finding judgement the cap exists to replace.
+    const r = await gateIn(
+      `${second} --label ${FILING_OVERRIDE_LABEL}`,
+      runA,
+      [landed(runIdFor(runA))],
+    );
+    expect(r.rows[0].overridden, "the label is read and it waives nothing here").toBe(false);
+    expect(r.rows[0].emitted).toBe(false);
+    expect(r.refusal, "the command is still blocked").not.toBeNull();
+  });
+
+  test("FG-155: the cap's refusal does not advertise the label it ignores", async () => {
+    // Found by the AI review of PR #1597, and the contradiction sat inside
+    // ONE message: `overCapReason` says "no label waives it" and the closing
+    // stanza said "re-run with --label arbiter-override", four lines below
+    // it. FG-146 did not move, because the cap held either way — what a
+    // refusal SAYS and what it DOES were separate readings, and the thing
+    // the agent acts on is the sentence at the bottom.
+    const over = (await gateIn(second, runA, [landed(runIdFor(runA))])).refusal ?? "";
+    expect(over).toContain(`--label ${FILING_OVERRIDE_LABEL} does NOT waive this one`);
+    expect(over, "and nothing in it tells the agent to re-run with the label").not.toContain(
+      `re-run with --label ${FILING_OVERRIDE_LABEL}`,
+    );
+
+    // CONTROL, one axis: a refusal the label DOES waive still offers it. A
+    // message that offered it to nobody passes the assertion above and
+    // deletes the escape hatch from every other refusal in this file.
+    const waivable = await gateIn(undeclaredSecond, runA, []);
+    expect(waivable.rows[0].refusal, "under the cap, and refused for a waivable reason").toBe(
+      "COMMENT_INSTEAD",
+    );
+    expect(waivable.refusal ?? "").toContain(`re-run with --label ${FILING_OVERRIDE_LABEL}`);
+  });
+
+  test("FG-157: the label does not carry an over-cap filing past the cap", async () => {
+    // Found by the AI review of PR #1597 at round 4, and the cheapest route
+    // to it is to make the filing WORSE. An undeclared filing is refused
+    // `COMMENT_INSTEAD`, which IS waivable — so with the cap reading only
+    // clauses that were already clean, the label waived the declaration
+    // refusal and the filing landed with the run over its allowance. Delete
+    // one line, add one flag, beat the gate.
+    const cmd = `${undeclaredSecond} --label ${FILING_OVERRIDE_LABEL}`;
+    const over = (await gateIn(cmd, runA, [landed(runIdFor(runA))])).rows[0];
+    expect(over.refusal).toBe("OVER_CAP");
+    expect(over.overridden, "the label waives nothing once the cap has converted").toBe(false);
+    expect(over.emitted).toBe(false);
+
+    // CONTROL, and ONE axis moves — the run has filed nothing. Same command,
+    // same waivable refusal, same label. The override must still work where
+    // the cap is not what is being argued with, or this row would pass under
+    // a gate that had simply stopped honouring the label at all.
+    const under = (await gateIn(cmd, runA, [])).rows[0];
+    expect(under.refusal).toBe("COMMENT_INSTEAD");
+    expect(under.overridden).toBe(true);
+    expect(under.emitted).toBe(true);
+  });
+
+  test("FG-159: the cap survives EVERY other refusal, not just the ones I thought of", async () => {
+    // **The invariant, as a population rather than an instance.** FG-157
+    // proved it for `COMMENT_INSTEAD` and that is one member of a set: the
+    // security review named `DUPLICATE`, `NO_CLAIM`, `COMMENT_INSTEAD`,
+    // `DROPPED_CATEGORY` and `SAME_CLASS_IN_RUN`, and a fix verified against
+    // one of five is a conjunction with four untested arms. Each row is the
+    // same shape — allowance spent, the clause independently refused for a
+    // WAIVABLE reason, `--label arbiter-override` attached — and each must
+    // be refused and must not reach the tracker.
+    const L = `--label ${FILING_OVERRIDE_LABEL}`;
+    const dup =
+      'gh issue create --title "retryBudget misbehaves on a long sweep" ' +
+      '--body "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234."';
+    const noClaim =
+      'gh issue create --title "zqxjNoClaim loses a sweep it started" ' +
+      `--body "\`zqxjNoClaim\` in lib/zqxj-no-claim.ts drops 17 of 29 commands over 6301 runs. ${DECLARED}"`;
+
+    const corpus = async () =>
+      measuredCorpus(OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body })));
+    const run = async (cmd: string, prior: FilingLedgerRow[], readExisting = corpus) =>
+      filingGate(cmd, {
+        projectRoot: runA,
+        now: AT,
+        readExisting,
+        readLedger: () => prior,
+        readTarget: async () => onPr,
+      });
+
+    const spent = [landed(runIdFor(runA))];
+    for (const [why, cmd] of [
+      ["DUPLICATE", `${dup} ${L}`],
+      ["NO_CLAIM", `${noClaim} ${L}`],
+      ["COMMENT_INSTEAD", `${undeclaredSecond} ${L}`],
+      ["DROPPED_CATEGORY", `${DROPPED_FILING} ${L}`],
+    ] as const) {
+      const row = (await run(cmd, spent)).rows[0];
+      expect(row.refusal, `${why} + the label, over the cap, must still be refused`).toBe("OVER_CAP");
+      expect(row.overridden, `${why}: the label waives nothing here`).toBe(false);
+      expect(row.emitted, `${why}: nothing reaches the tracker`).toBe(false);
+    }
+
+    // CONTROL for the four rows above, and one axis moves: with the
+    // allowance UNSPENT each of those commands is refused for its OWN
+    // reason, and the label waives it. Without this the rows above would
+    // pass against a gate that had stopped honouring the label entirely.
+    for (const [why, cmd] of [
+      ["DUPLICATE", `${dup} ${L}`],
+      ["NO_CLAIM", `${noClaim} ${L}`],
+      ["COMMENT_INSTEAD", `${undeclaredSecond} ${L}`],
+      ["DROPPED_CATEGORY", `${DROPPED_FILING} ${L}`],
+    ] as const) {
+      const row = (await run(cmd, [])).rows[0];
+      expect(row.refusal, `${why}: under the cap it is still the clause's own refusal`).toBe(why);
+      expect(row.overridden, `${why}: and the label waives it there`).toBe(true);
+    }
+
+    // The fifth member needs the allowance spent BY THIS COMMAND, because a
+    // sibling only exists once a clause has cleared and a clause can only
+    // clear under the cap. Clause 1 lands; clause 2 shares its class and
+    // carries the label, and is refused OVER_CAP rather than waived.
+    const twoClauses = `${second} ${L} && ${second.replace("miscounts its own retries", "miscounts its retries")} ${L}`;
+    const pair = await run(twoClauses, []);
+    // Clause 1 CLEARS and spends the allowance. It is not `emitted`, and the
+    // reason is #1344 rather than the cap: a hook's one lever is the whole
+    // Bash command, so a refusal anywhere marks every row `COMMAND_BLOCKED`.
+    // I predicted `emitted: true` here and was wrong about which field says
+    // "this clause was clean" on a blocked command.
+    expect(pair.rows[0].refusal, "clause 1 cleared on its own merits").toBeNull();
+    expect(pair.rows[0].withheldBy, "and lost the tracker only to its neighbour").toBe(
+      COMMAND_BLOCKED,
+    );
+    expect(pair.rows[1].refusal, "clause 2 shares the class AND is over the cap").toBe("OVER_CAP");
+    expect(pair.rows[1].emitted).toBe(false);
+  });
+
+  test("FG-160: every non-checkout directory is ONE run, so a fresh dir mints nothing", async () => {
+    // The allowance was keyable by the filer: `runIdFor` resolved the path,
+    // so `mkdir /tmp/x && cd /tmp/x && gh issue create` bought a new one at
+    // no cost. Named by the security review of PR #1597; a gate whose unit
+    // the filer chooses is not a gate.
+    const one = join(scratch, "non-checkout-one");
+    const two = join(scratch, "non-checkout-two");
+    mkdirSync(one, { recursive: true });
+    mkdirSync(two, { recursive: true });
+    expect(runIdFor(one), "two bare directories are one run").toBe(NON_CHECKOUT_RUN);
+    expect(runIdFor(two)).toBe(NON_CHECKOUT_RUN);
+
+    const spentElsewhere = [landed(NON_CHECKOUT_RUN)];
+    const r = await filingGate(second, {
+      projectRoot: two,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentElsewhere,
+      readTarget: async () => onPr,
+    });
+    expect(r.rows[0].refusal, "a filing from a different bare dir is the same run").toBe("OVER_CAP");
+
+    // CONTROL: a real CHECKOUT is still its own run, so this is a bucket for
+    // the unidentifiable rather than a cap collapsed onto one allowance.
+    expect(runIdFor(runA)).not.toBe(NON_CHECKOUT_RUN);
+    const checkout = await filingGate(second, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentElsewhere,
+      readTarget: async () => onPr,
+    });
+    expect(checkout.rows[0].refusal, "the bucket is not everybody's allowance").toBeNull();
+  });
+
+  test("FG-161: an unreadable ledger REFUSES; an absent one allows", async () => {
+    // The one place in this file that fails CLOSED, and the distinction it
+    // turns on is `readLedgerRows`'s own: `[]` for absent, `null` for
+    // present-and-unreadable. A machine that has filed nothing has spent
+    // nothing; a ledger nobody can read has an allowance nobody can count,
+    // and allowing there is not a loud note — it is the gate removed by
+    // anything able to make one file unreadable.
+    const unreadable = await filingGate(`${second} --label ${FILING_OVERRIDE_LABEL}`, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => null,
+      readTarget: async () => onPr,
+    });
+    expect(unreadable.rows[0].refusal).toBe("UNMEASURED_CAP");
+    expect(unreadable.rows[0].overridden, "and no label waives this one either").toBe(false);
+    expect(unreadable.rows[0].emitted).toBe(false);
+    expect(unreadable.refusal ?? "", "the refusal names the file an OPERATOR must fix").toContain(
+      "could not be read",
+    );
+
+    // CONTROL, one axis: the SAME command against an ABSENT ledger — the
+    // empty population, which is a reading — is allowed. Without this the
+    // row above is satisfied by a gate that refuses every filing on earth.
+    const absent = await filingGate(second, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => [],
+      readTarget: async () => onPr,
+    });
+    expect(absent.rows[0].refusal, "nothing filed is not the same as nothing readable").toBeNull();
+    expect(absent.rows[0].emitted).toBe(true);
+  });
+
+  test("FG-162: a re-draft cannot record an override against a refusal no label waives", async () => {
+    // #1536 lets the label waive a PRIOR refusal when the body has been
+    // re-drafted. That arm read only `prior !== null`, so a row refused
+    // `OVER_CAP` a day ago and re-filed inside a fresh allowance came back
+    // `overridden: true` — the ledger's own account saying the label waived
+    // the cap. Nothing reaches the tracker that should not; the clause is
+    // ALLOWED on its merits by then. What breaks is the count of overrides
+    // against the cap, which is the number this change exists to expose.
+    const old = new Date(Date.parse(AT) - RUN_WINDOW_MS - 1000).toISOString();
+    const refusedBefore = (refusal: "OVER_CAP" | "DUPLICATE"): FilingLedgerRow => ({
+      ...landed(runIdFor(runA), old),
+      title: "zqxjCapTwo miscounts its own retries",
+      emitted: false,
+      disposition: "DROP",
+      refusal,
+      withheldBy: refusal,
+      // A refused filing reserved nothing: the gate only registers an intent
+      // for a clause the command-level decision has already cleared.
+      intent: false,
+    });
+    const withLabel = `${second} --label ${FILING_OVERRIDE_LABEL}`;
+
+    const afterCap = await gateIn(withLabel, runA, [refusedBefore("OVER_CAP")]);
+    expect(afterCap.rows[0].refusal, "the allowance is free again, so it files").toBeNull();
+    expect(afterCap.rows[0].emitted).toBe(true);
+    expect(
+      afterCap.rows[0].overridden,
+      "but no label waived the cap, so the ledger must not say one did",
+    ).toBe(false);
+
+    // CONTROL, one axis — the prior refusal is a WAIVABLE one. The #1536
+    // behaviour must survive: a re-draft after a DUPLICATE, carrying the
+    // label, is a counted override and is recorded as one.
+    const afterDup = await gateIn(withLabel, runA, [refusedBefore("DUPLICATE")]);
+    expect(afterDup.rows[0].overridden, "a waivable prior refusal still counts").toBe(true);
+    expect(afterDup.rows[0].refiledAfter, "and the row names the refusal it answered").toBe(old);
+  });
+
+  test("FG-163: a scratch `git init` does not mint an allowance", async () => {
+    // **The bypass my own first fix left open, and my own fixtures then
+    // asserted.** `resolve()` → `toplevel()` closed `mkdir /tmp/x` and left
+    // `git init /tmp/x` — one more command — producing a distinct toplevel
+    // and therefore a fresh allowance. I had demonstrated it in the same
+    // commit by adding `git init` to `freshRun()` SO THAT each spawn would
+    // be its own run. Found by the security review of PR #1597.
+    //
+    // Measured here rather than argued: two sibling inits, two toplevels,
+    // no origin on either. A checkout nobody can name is not a run.
+    const one = join(scratch, "scratch-init-one");
+    const two = join(scratch, "scratch-init-two");
+    for (const dir of [one, two]) {
+      mkdirSync(dir, { recursive: true });
+      // late-env-ok: the child is `git`, which reads no variable this file
+      // writes — the gate reads them in this process, never a subprocess.
+      expect(
+        spawnSync("git", ["-C", dir, "init", "-q", "-b", "main"], {
+          encoding: "utf-8",
+          env: { ...process.env },
+        }).status,
+      ).toBe(0);
+    }
+    // `checkoutTop` refuses a non-checkout, so these two lines are the
+    // fixture's premise — distinct toplevels — and not a claim about the gate.
+    expect(checkoutTop(one), "and the two really are distinct ones").not.toBe(checkoutTop(two));
+    expect(runIdFor(one), "yet both are the bucket, because neither has an origin").toBe(
+      NON_CHECKOUT_RUN,
+    );
+    expect(runIdFor(two)).toBe(NON_CHECKOUT_RUN);
+
+    const spentThere = [landed(NON_CHECKOUT_RUN)];
+    const second2 = await filingGate(second, {
+      projectRoot: two,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentThere,
+      readTarget: async () => onPr,
+    });
+    expect(second2.rows[0].refusal, "so a second scratch repo buys nothing").toBe("OVER_CAP");
+
+    // NEGATIVE CONTROL, one axis: the SAME directory with an origin added is
+    // its own run again. Without this the case above passes under a gate
+    // that had bucketed every checkout on the machine, which would be a gag
+    // rather than a cap — and it is the half that says what `git init` was
+    // missing rather than that git was the problem.
+    // late-env-ok: the child is `git`, which reads no variable this file
+    // writes — the gate reads them in this process, never in a subprocess.
+    expect(
+      spawnSync("git", ["-C", two, "remote", "add", "origin", FIXTURE_ORIGIN], {
+        encoding: "utf-8",
+        env: { ...process.env },
+      }).status,
+    ).toBe(0);
+    expect(runIdFor(two), "an origin is what makes a checkout nameable").toBe(checkoutTop(two));
+    const withOrigin = await filingGate(second, {
+      projectRoot: two,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => spentThere,
+      readTarget: async () => onPr,
+    });
+    expect(withOrigin.rows[0].refusal, "and a named checkout has its own allowance").toBeNull();
+  });
+
+  test("FG-164: an allowed filing writes one INTENT and one outcome", async () => {
+    // The intent row is the whole of the race fix and it is a row nobody
+    // asked for, so its shape is asserted here rather than inferred from the
+    // cap behaving. `ledgerRows()` filters intents out — see its docblock —
+    // and this is the case that stops that filter from hiding them.
+    const dir = freshRun();
+    const r = runHook(HOOK, NOVEL_FILING, {}, dir);
+    expect(r.blocked, "the premise: this filing is allowed").toBe(false);
+
+    const intents = ledgerIntents();
+    const decisions = ledgerRows();
+    expect(intents, "one reservation").toHaveLength(1);
+    expect(decisions, "and one decision").toHaveLength(1);
+    expect(decisions[0].emitted, "the decision is the filing").toBe(true);
+    expect(intents[0].intent).toBe(true);
+    // **`emitted: false` on the reservation.** A filing count read off this
+    // ledger is `emitted && !intent`, and an intent claiming `emitted` would
+    // double every filing it reserved — #1344's overcount, reintroduced by
+    // the fix for the race.
+    expect(intents[0].emitted, "a reservation is not a receipt").toBe(false);
+    expect(intents[0].withheldBy).toBe(INTENT_PENDING);
+    // The two rows are one decision, and the key is the join.
+    expect(intents[0].key).toBe(`${decisions[0].key}${INTENT_KEY_SUFFIX}`);
+    expect(intents[0].run, "and the reservation names the run it spent").toBe(runIdFor(dir));
+
+    // CONTROL, one axis — the same hook, a filing that is REFUSED. It
+    // reserves nothing, which is what makes FG-147 true of the new counter
+    // as well as the old one.
+    writeFileSync(ledger, "", "utf-8");
+    expect(runHook(HOOK, DUPLICATE_FILING, {}, freshRun()).blocked, "the premise").toBe(true);
+    expect(ledgerIntents(), "a refusal reserves nothing").toHaveLength(0);
+    expect(ledgerRows(), "and still records its decision").toHaveLength(1);
+  });
+
+  test("FG-165: two hook PROCESSES racing one allowance file one issue", async () => {
+    // **The defect, in the only configuration it exists in.** One session
+    // runs parallel subagents and each Bash call spawns its own hook
+    // process; `filingGate` reads the ledger, calls the tracker, and returns,
+    // and the hook writes afterwards. Two processes inside that window both
+    // counted zero filings and both filed. `spawnSync` cannot reproduce it —
+    // the first process has exited before the second starts — so this is the
+    // one case in the file that spawns asynchronously.
+    const dir = freshRun();
+    const [a, b] = await Promise.all([
+      runHookAsync(NOVEL_FILING, dir),
+      runHookAsync(SECOND_NOVEL_FILING, dir),
+    ]);
+    const blocked = [a, b].filter(r => r.blocked);
+    const allowed = [a, b].filter(r => !r.blocked);
+    expect(allowed, "exactly one of the two racers is allowed").toHaveLength(1);
+    expect(blocked, "and exactly one is refused").toHaveLength(1);
+    expect(blocked[0].reason, "by the cap, and not by anything about the finding").toContain(
+      "OVER_CAP",
+    );
+    // The ledger is the other half: one filing landed, whatever the two
+    // processes were told. A pass here with two emitted rows would mean the
+    // refusal was composed and the row written anyway.
+    expect(
+      ledgerRows().filter(r => r.emitted),
+      "one filing on the ledger",
+    ).toHaveLength(1);
+    // **Not `toHaveLength(2)`, and the reason is the point of FG-166.**
+    // Whether BOTH processes reserve depends on whether they overlapped: if
+    // the first finishes before the second reads, the second is refused by
+    // the pre-read and never reserves. That is a true outcome, not a weaker
+    // one — but it means this case cannot witness the ordinal. Measured: two
+    // reservations on this machine, one on the CI runner, same assertion.
+    // FG-166 forces the interleave instead of hoping for it.
+    const reserved = ledgerIntents().length;
+    expect(reserved, "whoever got far enough reserved").toBeGreaterThanOrEqual(1);
+    expect(reserved, "and nobody reserved twice").toBeLessThanOrEqual(2);
+  });
+
+  test("FG-166: the second racer loses on its ORDINAL, not on the pre-read", async () => {
+    // FG-165 spawns two real processes and cannot force the interleave: if
+    // the first finishes before the second reads, the second is refused by
+    // the pre-read and the ordinal is never exercised. This case IS the
+    // interleave, by construction — both gates read an EMPTY ledger before
+    // either appends, which is exactly the window — so it is the one that
+    // says the ordinal is what decides.
+    const dir = freshRun();
+    const sink: FilingLedgerRow[] = [];
+    // The first read of each call is the pre-read, taken before either
+    // racer wrote; every later read sees the live file.
+    const racing = () => {
+      let reads = 0;
+      return () => (reads++ === 0 ? [] : [...sink]);
+    };
+    // **Two racers are two PROCESSES, and `filingBatch` separates them by
+    // pid.** This fixture is one process, so the pid is held fixed and the
+    // keys would collide — both rows would be `${session}.${pid}/${at}/0`,
+    // the loser's `indexOf` would find the winner's position, and the case
+    // would go green reporting that the ordinal works. Varying `now` by a
+    // millisecond restores the property the real pair gets for free, and the
+    // premise is asserted below rather than assumed.
+    const race = (cmd: string, now: string) =>
+      filingGate(cmd, {
+        projectRoot: dir,
+        now,
+        readExisting: async () => measuredCorpus([]),
+        readLedger: racing(),
+        appendLedger: (row: FilingLedgerRow) => {
+          sink.push(row);
+          return true;
+        },
+        readTarget: async () => onPr,
+      });
+
+    const won = await race(first, AT);
+    const lost = await race(second, new Date(Date.parse(AT) + 1).toISOString());
+    expect(sink[0].key, "the premise: the two reservations are told apart").not.toBe(sink[1].key);
+    expect(won.rows[0].refusal, "the first in the queue files").toBeNull();
+    expect(won.rows[0].emitted).toBe(true);
+    expect(lost.rows[0].refusal, "the second is over the cap on its position").toBe("OVER_CAP");
+    expect(lost.rows[0].emitted).toBe(false);
+    // Three rows, not two: both reserved, and the loser GAVE ITS SLOT BACK.
+    // A losing reservation left on the file is the stranded allowance by a
+    // rarer route than the two-clause one FG-170 holds.
+    expect(sink, "both reserved, and the loser released").toHaveLength(3);
+    expect(sink[2].releases, "the release names the slot it returns").toBe(sink[1].key);
+    expect(
+      intentOrdinal(sink.slice(0, 2), sink[1].key, runIdFor(dir), Date.parse(AT)),
+      "and the loser's position before the release is what refused it",
+    ).toBe(2);
+    expect(
+      intentsInRun(sink, runIdFor(dir), Date.parse(AT)),
+      "after it, the run has spent exactly the one filing that landed",
+    ).toBe(1);
+  });
+
+  test("FG-167: both ledger failures refuse, and each names its own half", async () => {
+    // **This case asserted the opposite for one round, and the round was
+    // wrong.** The write failure ALLOWED, on `recordAdjudication`'s policy
+    // that a measurement apparatus must not block the thing it measures.
+    // That policy is right for the row which RECORDS a decision and wrong
+    // for the row which MAKES one: a failure to update the cap's state
+    // cannot be told apart from an attempt to disable it, so an unwritable
+    // ledger switched the cap off. The read path had already settled this
+    // in the same commit, and the two branches disagreed about one file.
+    //
+    // The readings stay separate even though the verdict is now shared,
+    // because an operator repairs a different half of the same file.
+    const dir = freshRun();
+    const run = runIdFor(dir);
+    const row = { ...landed(run), intent: false, emitted: true, withheldBy: null };
+
+    expect(
+      reserveAllowance(row, run, { now: Date.parse(AT), append: () => false, readLedger: () => [] })
+        .outcome,
+      "the WRITER failed, so no position was taken",
+    ).toBe("UNRESERVED");
+    expect(
+      reserveAllowance(row, run, { now: Date.parse(AT), append: () => true, readLedger: () => null })
+        .outcome,
+      "the STATE could not be read, which is the cap's own input",
+    ).toBe("UNCOUNTABLE");
+
+    // And the gate acts on each: one allows loudly, one refuses.
+    const unwritable = await filingGate(first, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => [],
+      appendLedger: () => false,
+      readTarget: async () => onPr,
+    });
+    expect(unwritable.rows[0].refusal, "an allowance nobody can reserve is not spendable").toBe(
+      "UNMEASURED_CAP",
+    );
+    expect(unwritable.rows[0].emitted).toBe(false);
+    expect(unwritable.refusal ?? "", "and the refusal names the WRITE, not the read").toContain(
+      "could not be appended",
+    );
+    expect(unwritable.note ?? "", "with the note naming the file an operator repairs").toContain(
+      "took no position in this run's queue",
+    );
+
+    // One axis apart: the pre-read succeeds and the VERIFY read does not, so
+    // this is the ordinal's own UNMEASURED and not the pre-read's.
+    let reads = 0;
+    const unreadable = await filingGate(first, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => (reads++ === 0 ? [] : null),
+      appendLedger: () => true,
+      readTarget: async () => onPr,
+    });
+    expect(unreadable.rows[0].refusal, "an allowance nobody can count is not spendable").toBe(
+      "UNMEASURED_CAP",
+    );
+  });
+
+  test("FG-168: a BLOCKED command reserves nothing", async () => {
+    // The reservation is taken after the command-level decision, and this is
+    // why. A clause that is clean inside a command the hook goes on to block
+    // files nothing — `markBlockedCommand` has said so since #1344 — so
+    // reserving for it would spend the run's allowance on a command that
+    // never reached the tracker, and the agent's corrected re-run would come
+    // back OVER_CAP. A reservation cannot be taken back, so the ordering is
+    // the whole defence.
+    const dir = freshRun();
+    const sink: FilingLedgerRow[] = [];
+    const mixed = `${first} && gh issue create --title "zqxjCapOne loses a sweep it started" --body "a second clause of the same class. Claim 4. ${DECLARED}"`;
+    const r = await filingGate(mixed, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: () => [],
+      appendLedger: (row: FilingLedgerRow) => {
+        sink.push(row);
+        return true;
+      },
+      readTarget: async () => onPr,
+    });
+    expect(r.refusal, "the premise: this command is blocked").not.toBeNull();
+    expect(sink, "so nothing was reserved").toHaveLength(0);
+    expect(
+      r.rows.filter(row => row.emitted),
+      "and nothing is recorded as filed",
+    ).toHaveLength(0);
+  });
+
+  test("FG-170: a reservation whose command then refuses is given back", async () => {
+    // **A reservation is taken and the command files nothing anyway.** The
+    // clause clears the pre-read, appends its intent, and the verify read
+    // fails — so it is refused `UNMEASURED_CAP` holding a slot for a filing
+    // that never happened. Without the release the run is charged for it
+    // and the re-run, once the file is readable again, is `OVER_CAP`.
+    //
+    // **The two-clause command is NOT this case, and the walk that says it
+    // is does not reproduce.** `spent` is incremented inside the clause loop
+    // on every cleared clause, so at a cap of one, clause 1 is refused by
+    // the pre-read before the reservation stage runs at all — `refusals` is
+    // already non-empty and the stage is skipped, reserving nothing.
+    // Measured: a version of this case built on `first && second` stays
+    // GREEN with the release removed, because nothing was ever reserved. At
+    // most one clause per command reaches the stage while the cap is 1, so
+    // the reachable strandings are the concurrent loser (`FG-166`) and this
+    // one.
+    const dir = freshRun();
+    const run = runIdFor(dir);
+    const sink: FilingLedgerRow[] = [];
+    const append = (row: FilingLedgerRow) => {
+      sink.push(row);
+      return true;
+    };
+    let reads = 0;
+    const stranded = await filingGate(first, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readTarget: async () => onPr,
+      // One axis: the pre-read succeeds and the VERIFY read does not.
+      readLedger: () => (reads++ === 0 ? [...sink] : null),
+      appendLedger: append,
+    });
+    expect(stranded.rows[0].refusal, "the premise: it reserved, then could not verify").toBe(
+      "UNMEASURED_CAP",
+    );
+    expect(stranded.rows[0].emitted, "and filed nothing").toBe(false);
+    expect(sink, "one reservation and one release").toHaveLength(2);
+    expect(sink[1].releases, "which names the slot it returns").toBe(sink[0].key);
+    expect(
+      intentsInRun(sink, run, Date.parse(AT)),
+      "so the run was not charged for a filing that never happened",
+    ).toBe(0);
+
+    // The half that makes it a property rather than a count: the re-run,
+    // against a ledger that reads again, files.
+    const retry = await filingGate(first, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readTarget: async () => onPr,
+      readLedger: () => [...sink],
+      appendLedger: append,
+    });
+    expect(retry.rows[0].refusal, "the re-run is not punished for the failed attempt").toBeNull();
+    expect(retry.rows[0].emitted).toBe(true);
+
+    // CONTROL, one axis: the allowance is still finite. A second re-run is
+    // over the cap, so the row above is not passing under a gate that
+    // releases everything it reserves.
+    const third = await filingGate(second, {
+      projectRoot: dir,
+      now: AT,
+      readExisting: async () => measuredCorpus([]),
+      readTarget: async () => onPr,
+      readLedger: () => [...sink],
+      appendLedger: append,
+    });
+    expect(third.rows[0].refusal, "and a filing that DID land still spends it").toBe("OVER_CAP");
+  });
+
+  test("FG-171: an intent absent from the re-read takes the NEXT position, not the last", async () => {
+    // `queue.length` for a not-found key hands us the last EXISTING slot
+    // rather than the one after it: with one intent queued and a cap of 1,
+    // ordinal 1, `1 > 1` false, WON — while we are genuinely second.
+    const run = "/wt/x";
+    const now = Date.parse(AT);
+    const queued = { ...landed(run), key: "someone-else#intent" };
+    expect(
+      intentOrdinal([queued], "mine#intent", run, now),
+      "our row is not in this reading, so everything in it precedes us",
+    ).toBe(2);
+    expect(
+      intentOrdinal([], "mine#intent", run, now),
+      "and an empty queue still makes us first",
+    ).toBe(1);
+
+    // **The other not-found cause, which must NOT take the next position.**
+    // A null key means `CLAUDE_CODE_SESSION_ID` was absent, so our row IS in
+    // the queue and cannot be pointed at. Counting us after it would count
+    // us twice and refuse every filing from an unkeyed session — a gag, and
+    // a contradiction of `unkeyedLedgerNote`'s stated policy.
+    const mine = { ...landed(run), key: null };
+    expect(intentOrdinal([mine], null, run, now), "ours is the one in there").toBe(1);
+    expect(
+      intentOrdinal([queued, mine], null, run, now),
+      "and with another ahead of it, last place among what is visible",
+    ).toBe(2);
+  });
+
+  test("FG-172: a released intent holds no position", async () => {
+    const run = "/wt/x";
+    const now = Date.parse(AT);
+    const taken = { ...landed(run), key: "a#intent" };
+    expect(intentsInRun([taken], run, now), "the premise: it counts while held").toBe(1);
+
+    const sink: FilingLedgerRow[] = [taken];
+    expect(
+      releaseAllowance(taken, row => {
+        sink.push(row);
+        return true;
+      }),
+      "the release landed",
+    ).toBe(true);
+    expect(sink[1].releases, "naming the key it returns").toBe("a#intent");
+    expect(sink[1].intent, "and a release is not itself a reservation").not.toBe(true);
+    expect(intentsInRun(sink, run, now), "so the slot is free again").toBe(0);
+
+    // A null-keyed intent cannot be named, so it cannot be released, and
+    // the function says so instead of appending a row that releases nothing.
+    const unkeyed = { ...landed(run), key: null };
+    expect(
+      releaseAllowance(unkeyed, () => true),
+      "nothing can name it, so nothing can give it back",
+    ).toBe(false);
+  });
+
+  test("FG-173: a title too long for one write is bounded before it is recorded", async () => {
+    // The whole race fix rests on an append reaching the filesystem as ONE
+    // write. A row large enough to be split can tear, and `readLedgerRows`
+    // treats a torn line as expected and skips it — so a torn intent is a
+    // reservation that took no position while its writer believes it did.
+    // `title` is the one field on the row a FILER sets and nothing else
+    // bounds.
+    const long = "z".repeat(MAX_LEDGER_TITLE + 50);
+    expect(ledgerTitle(long).length, "bounded, with one character marking the cut").toBe(
+      MAX_LEDGER_TITLE + 1,
+    );
+    expect(ledgerTitle("short"), "and a title inside the bound is untouched").toBe("short");
+
+    const r = await filingGate(
+      `gh issue create --title "${long}" --body "\`zqxjLongTitle\` in lib/zqxj-long.ts drops 11 of 29 commands over 5503 runs. Claim 4. ${DECLARED}"`,
+      {
+        projectRoot: freshRun(),
+        now: AT,
+        readExisting: async () => measuredCorpus([]),
+        readTarget: async () => onPr,
+        ...noCap,
+      },
+    );
+    expect(r.rows[0].title.length, "the row carries the bounded one").toBe(MAX_LEDGER_TITLE + 1);
+
+    // **The lookup is bounded too, or the bound breaks #1536.**
+    // `priorRefusalFor` joins on this field, so a raw title compared against
+    // a stored truncated one would never match its own prior refusal and the
+    // override would stop surviving a re-draft for exactly the longest
+    // titles. One binding, both ends.
+    const priorRow = {
+      ...landed("/wt/x"),
+      intent: false,
+      title: ledgerTitle(long),
+      refusal: "DUPLICATE" as const,
+      withheldBy: "DUPLICATE" as const,
+      emitted: false,
+    };
+    expect(
+      priorRefusalFor(long, [priorRow])?.title,
+      "the raw title still finds the row written under the bounded one",
+    ).toBe(ledgerTitle(long));
+  });
+
+  test("FG-147: a REFUSED filing does not consume the allowance", async () => {
+    // A gate that counted its own refusals would cap a run out for having
+    // been stopped, which is the fastest way to build one that refuses
+    // everything. The intent is the only row counted and this is why: it is
+    // registered after the command-level decision, so a refused clause never
+    // writes one.
+    const refusedRow = {
+      ...landed(runIdFor(runA)),
+      intent: false,
+      emitted: false,
+      refusal: "DUPLICATE" as const,
+      disposition: "DROP" as const,
+    };
+    const r = await gateIn(second, runA, [refusedRow]);
+    expect(r.rows[0].refusal).toBeNull();
+  });
+
+  test("FG-148: a filing outside the window does not count", async () => {
+    // Without the window a long-lived checkout is barred for ever, and the
+    // window is 24h because every number #1595 measured is a per-day one.
+    const old = new Date(Date.parse(AT) - RUN_WINDOW_MS - 1000).toISOString();
+    expect((await gateIn(second, runA, [landed(runIdFor(runA), old)])).rows[0].refusal).toBeNull();
+    const justInside = new Date(Date.parse(AT) - RUN_WINDOW_MS + 1000).toISOString();
+    expect(
+      (await gateIn(second, runA, [landed(runIdFor(runA), justInside)])).rows[0].refusal,
+      "and a filing one second inside the window still counts",
+    ).toBe("OVER_CAP");
+  });
+
+  test("FG-149: `intentsInRun` is the one binding, and it counts what it says", () => {
+    const run = runIdFor(runA);
+    const now = Date.parse(AT);
+    expect(intentsInRun([], run, now), "nothing reserved").toBe(0);
+    expect(intentsInRun([landed(run)], run, now)).toBe(1);
+    expect(intentsInRun([landed(run), landed(run)], run, now)).toBe(2);
+    expect(intentsInRun([landed("elsewhere")], run, now), "another run").toBe(0);
+    expect(
+      intentsInRun([{ ...landed(run), intent: false }], run, now),
+      "a refusal reserves nothing",
+    ).toBe(0);
+    // **The outcome row is not counted, and this is the assertion that says
+    // so.** A landed filing leaves an intent AND an outcome, and counting
+    // both would halve the cap — a run allowed one filing would be refused
+    // its first. Counting the outcome INSTEAD is the defect the intent row
+    // exists to fix: it is written after the decision, so a filing in flight
+    // in another process is invisible.
+    expect(intentsInRun([outcome(run)], run, now), "an outcome row is not a reservation").toBe(0);
+    // An unparseable timestamp is COUNTED, not skipped: it is a row this
+    // writer appended, and skipping it would let a filing escape the count
+    // by carrying a date nobody can read.
+    expect(intentsInRun([{ ...landed(run), at: "not a date" }], run, now)).toBe(1);
+    // A legacy row written before the column existed has no `run` at all.
+    // It must not be attributed to a real checkout.
+    const legacy = { ...landed(run) } as Partial<FilingLedgerRow>;
+    delete legacy.run;
+    expect(intentsInRun([legacy as FilingLedgerRow], run, now), "a row with no run is not this run")
+      .toBe(0);
+    // And a row written before the column existed carries no `intent`
+    // either, so absent must read as false rather than as a reservation.
+    const beforeTheColumn = { ...landed(run) } as Partial<FilingLedgerRow>;
+    delete beforeTheColumn.intent;
+    expect(
+      intentsInRun([beforeTheColumn as FilingLedgerRow], run, now),
+      "absent is not a reservation",
+    ).toBe(0);
+  });
+
+  test("FG-150: the refusal names the cap, the run and the comment target", () => {
+    const text = overCapReason("/wt/x", 1, onPr);
+    expect(text).toContain("cap is 1");
+    expect(text).toContain("/wt/x");
+    expect(text).toContain("PR #1595");
+    expect(text, "and it offers no way out, because there is not one").toContain(
+      "no label that waives it",
+    );
+    // The same self-reference property FG-126 holds for the other refusal:
+    // pasting this into a body must not declare anything.
+    expect(declaredExemption(text)).toBeNull();
+  });
+
+  test("FG-151: the ledger row carries the run, so the denominator is recordable", async () => {
+    const r = await gateIn(second, runB, []);
+    expect(r.rows[0].run, "the cap's denominator has to be written down to be counted").toBe(
+      runIdFor(runB),
+    );
+    // `runIdFor` canonicalises through git, so a subdirectory of one
+    // checkout is one run. Asserted on the repo this suite lives in, which
+    // is the only checkout it can be sure of.
+    expect(runIdFor(join(REPO, "lib"))).toBe(runIdFor(REPO));
+    // And two DIFFERENT checkouts are two runs. `runA` and `runB` each carry
+    // an origin, which is what makes them nameable — the earlier version of
+    // this comment said a non-checkout was its own run too, which was the
+    // policy this branch reversed, and FG-160 now asserts the opposite.
+    expect(runIdFor(runA)).not.toBe(runIdFor(runB));
+  });
+
+  test("FG-154: an UNMEASURED tracker does not excuse the cap", async () => {
+    // **The bypass this ordering exists to close.** Every other UNMEASURED
+    // arm in this file ALLOWS, and rightly — a broken adjudicator must not
+    // gag the tracker. But `lib/issue-filing-gate.ts`'s own header records
+    // that a developer's GitHub credential usually is not in the
+    // environment, so with the cap behind the tracker read, the no-token
+    // configuration would have no cap at all. A gate that switches itself
+    // off in the setup most agents run in is not a gate.
+    //
+    // Observed end to end before it was written down: with
+    // `RUNGATE_OPEN_FINDINGS` pointed at an absent file, the real hook
+    // allowed the first filing as UNMEASURED and blocked the second
+    // `OVER_CAP`.
+    const unreadable = async () => unmeasuredCorpus("the open-issue set could not be read");
+    const capped = await filingGate(second, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: unreadable,
+      readLedger: () => [landed(runIdFor(runA))],
+      readTarget: async () => onPr,
+    });
+    expect(capped.rows[0].refusal).toBe("OVER_CAP");
+
+    // CONTROL: the same unreadable tracker, an allowance not yet spent.
+    // Without it this row could be witnessing "UNMEASURED now refuses".
+    const first = await filingGate(second, {
+      projectRoot: runA,
+      now: AT,
+      readExisting: unreadable,
+      readLedger: () => [],
+      readTarget: async () => onPr,
+    });
+    expect(first.rows[0].refusal, "a broken adjudicator is still not a gag").toBe("UNMEASURED");
+    expect(first.refusal).toBeNull();
+  });
+
+  test("FG-152: the closed list cannot grow", () => {
+    // #1595: *"Do not let the reason list grow. A fourth clause added later
+    // to admit one good finding is how this leaks back, and it will look
+    // reasonable at the time."* A prose instruction is not one that
+    // survives the next agent with a good reason; this is.
+    expect(
+      Object.keys(COMMENT_EXEMPTIONS).sort(),
+      "adding a fourth clause is how the per-finding judgement comes back — " +
+        "the cap is the gate, and this list is only the record of why",
+    ).toEqual(["evidence-expires", "green-check-lies", "out-of-pr-diff"]);
   });
 });
