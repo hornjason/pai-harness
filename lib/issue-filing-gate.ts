@@ -2569,8 +2569,40 @@ export async function filingGate(
     // being ALLOWED on its merits by then; what breaks is the measurement,
     // and the count of overrides against the cap is the number this whole
     // change exists to make readable. Raised by the AI review at round 6.
+    // **`v.exemption !== null` is the sibling-refusal fix, and it is not a
+    // new policy** (#1595, 2026-10-25). The adjudicator returns the FIRST
+    // refusal it reaches, so waiving that one emits a filing whose later
+    // refusals were never computed. `COMMENT_INSTEAD` is issued last, after
+    // `NO_CLAIM` — deliberately, and the reason is defended at the stage
+    // itself — so a filing that is undeclared AND claimless is refused
+    // `NO_CLAIM`, the label waives that, and the unwaivable member is never
+    // consulted. The route this change closed was "delete the declaration";
+    // the route that replaced it was "delete the declaration AND the claim".
+    // A gate that gets cheaper to beat the worse the filing gets is not a
+    // gate, and there is no reason to believe `NO_CLAIM` is the only sibling
+    // that can win the race.
+    //
+    // Keying unwaivability on the refusal ISSUED was the actual defect:
+    // absence of a declaration is a property of the ATTEMPT, and which
+    // refusal fired is a property of the precedence. Reading `exemption` —
+    // which `adjudicateFiling` already computed and carries on EVERY
+    // adjudication, so this is not a second decider — asks the attempt
+    // directly and closes every sibling at once.
+    //
+    // **Not by making `COMMENT_INSTEAD` win the precedence race.** That
+    // deletes `NO_CLAIM` for the common filing as a side effect of adding
+    // one gate, which is exactly what the comment at that stage warns
+    // against. The ordering is untouched; `FG-178` asserts the refusal is
+    // still `NO_CLAIM`, so a later change that reorders goes red and says so.
+    //
+    // The invariant this restores, stated so it can be tested as one: **no
+    // filing without a declaration reaches the tracker, label or no label.**
+    // Without the label that was already true — undeclared is
+    // `COMMENT_INSTEAD` and `COMMENT_INSTEAD` is not emitted. The label was
+    // the only hole.
     const overrideOf = (v: FilingAdjudication) =>
       labelled &&
+      v.exemption !== null &&
       waivableRefusal(v.refusal) &&
       (v.outcome === "REFUSE" || (prior !== null && waivableRefusal(prior.refusal)));
 
