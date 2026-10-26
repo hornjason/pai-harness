@@ -149,7 +149,33 @@ export const FORK_GUARD_COMPARISON =
  * naming the event, which is how the dispatch arm earns its place beside the
  * fork comparison.
  */
-export const FORK_GUARD_COMPANION_ARM = /^github\.event_name\s*==\s*'[a-z_]+'$/;
+export const FORK_GUARD_COMPANION_EVENTS = ["workflow_dispatch", "schedule"] as const;
+
+/**
+ * And the event it names must be one that CANNOT carry a fork's head.
+ *
+ * The first spelling of this was `'[a-z_]+'` — any event at all — and the
+ * reviewer caught it, the third real finding about this one guard:
+ *
+ *     if: >-
+ *       github.event_name == 'pull_request' ||
+ *       github.event.pull_request.head.repo.full_name == github.repository
+ *
+ * On a fork's pull request the FIRST arm is true, so the job runs and the
+ * comparison beside it decides nothing. That is the bypass `forkGuardDefect`
+ * was written to close, reopened by the escape hatch added to let the live
+ * file's dispatch arm through.
+ *
+ * `FORK_GUARD_COMPANION_EVENTS` is the closed set, and the membership test is
+ * what the event has in common: no `github.event.pull_request` context at
+ * all, so the fork comparison cannot be the predicate for it and a separate
+ * arm is the only way to express the case. `pull_request` and
+ * `pull_request_target` are excluded by construction rather than by being
+ * listed as denied — an allowlist cannot be widened by forgetting a denial.
+ */
+export const FORK_GUARD_COMPANION_ARM = new RegExp(
+  `^github\\.event_name\\s*==\\s*'(?:${FORK_GUARD_COMPANION_EVENTS.join("|")})'$`,
+);
 
 /**
  * Why an ANCHORED per-disjunct test and not a substring search.
@@ -204,7 +230,9 @@ export function forkGuardDefect(condition: string): string | null {
       `the job's condition compares the two terms, but it is one arm of a ` +
       `disjunction whose other arm is ${stray.map(a => `\`${a}\``).join(", ")} — ` +
       `an arm that can be true on a fork makes the comparison beside it decide ` +
-      `nothing. Only a \`github.event_name == '...'\` arm may sit beside it`
+      `nothing. The only arm that may sit beside it is ` +
+      `\`github.event_name == '<e>'\` for e in ${FORK_GUARD_COMPANION_EVENTS.join(", ")} — ` +
+      `events that carry no pull_request context, so the comparison cannot serve them`
     );
   }
   return null;

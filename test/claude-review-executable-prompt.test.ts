@@ -62,6 +62,7 @@ import { join } from "node:path";
 import {
   AUTOMATION_ONLY_TRIGGERS,
   ENTITY_ONLY_MCP_SERVERS,
+  FORK_GUARD_COMPANION_EVENTS,
   FORK_GUARD_TERMS,
   POSTING_TOOLS,
   READING_SCRIPT,
@@ -438,6 +439,49 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     // …and the live file's own `||` stays clean, or the check above is just
     // refusing disjunctions and would catch the bypass for the wrong reason.
     expect(kinds(live)).not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
+   * AC-25 is the reviewer's THIRD finding about this one guard, and it is a
+   * finding about AC-23's own fix. The companion arm was first spelled
+   * `'[a-z_]+'` — any event — to let the live file's dispatch arm through, and
+   * `github.event_name == 'pull_request'` is true on exactly the fork pull
+   * request the guard exists to refuse. The escape hatch reopened the hole.
+   *
+   * So the set is closed, and this case is the reason it must stay closed:
+   * widening it by one plausible-looking event is a one-character edit that
+   * turns the guard off.
+   */
+  test("AC-25: only an event with no pull_request context may sit beside the comparison", () => {
+    const anchor =
+      "    if: >-\n" +
+      "      github.event_name == 'workflow_dispatch' ||\n" +
+      "      github.event.pull_request.head.repo.full_name == github.repository\n";
+    const withArm = (arm: string) =>
+      mutateOnce(
+        live,
+        anchor,
+        "    if: >-\n" +
+          `      github.event_name == '${arm}' ||\n` +
+          "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      );
+    // An arm that CAN be true on a fork's pull request is the bypass.
+    for (const unsafe of ["pull_request", "pull_request_target", "issue_comment"]) {
+      expect(kinds(withArm(unsafe)), `'${unsafe}' must not be accepted beside the comparison`)
+        .toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+    }
+    // …and every member of the declared set still is, or this is just a
+    // check that refuses companion arms and the live file passes by luck.
+    for (const safe of FORK_GUARD_COMPANION_EVENTS) {
+      expect(kinds(withArm(safe)), `'${safe}' is in the declared set and must be accepted`)
+        .not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+    }
+    // The set is non-empty, or both loops above are vacuous.
+    expect(FORK_GUARD_COMPANION_EVENTS.length).toBeGreaterThan(0);
+    // And the events this is all about are NOT in it, asserted over the
+    // declared constant rather than only through behaviour.
+    expect(FORK_GUARD_COMPANION_EVENTS as readonly string[]).not.toContain("pull_request");
+    expect(FORK_GUARD_COMPANION_EVENTS as readonly string[]).not.toContain("pull_request_target");
   });
 
   /** AC-24: the other spelling in the same finding — negation, not addition. */
