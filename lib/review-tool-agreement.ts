@@ -43,12 +43,22 @@
  *
  * ## Scope, stated rather than implied
  *
- * No YAML parser. This repo ships four runtime dependencies and a guard is not
- * a reason to add a fifth to a published package — the same decision
- * `test/claude-review-no-key.test.ts` records. Everything here is a cut and a
- * regex over the cut, and every cut refuses by name when it cannot find its
- * region, because a slice that missed its section is an empty string and an
- * empty string satisfies every claim of the form "X is not in here".
+ * No ADDED dependency. This repo ships four runtime dependencies and a guard
+ * is not a reason to add a fifth to a published package — the same decision
+ * `test/claude-review-no-key.test.ts` records.
+ *
+ * That rule is about the dependency list, not about parsing, and this
+ * paragraph used to say "no YAML parser" as though the two were the same
+ * thing. They are not: `triggerNames` parses the workflow with `Bun.YAML`,
+ * which is built into the runtime and adds nothing to `package.json`. Six
+ * revisions of hand-rolled trigger matching shipped two fail-open holes
+ * before that distinction was drawn (#1614), so it is drawn here explicitly
+ * — if a real parser is reachable without a dependency, use it.
+ *
+ * Everything else here is a cut and a regex over the cut, and every cut
+ * refuses by name when it cannot find its region, because a slice that
+ * missed its section is an empty string and an empty string satisfies every
+ * claim of the form "X is not in here".
  */
 
 import { structuralCut } from "./source-slice";

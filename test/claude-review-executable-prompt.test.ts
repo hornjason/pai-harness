@@ -314,11 +314,14 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     // The control: the pair differs in the dispatch trigger and in nothing
     // else, and the entity trigger is present in both.
     //
-    // Both HALVES are asserted. An earlier revision wrote the second as
-    // `triggerNames(entityOnly).map(m => m[1])`, left over from when this
-    // returned regex matches — mapping strings through `m[1]` yields their
-    // second CHARACTER, so the list was ["u"] and could never contain
-    // "workflow_dispatch". Vacuous, and round 14 caught it. The positive
+    // Both HALVES are asserted. An earlier revision projected this list
+    // through its own second index — left over from when `triggerNames`
+    // returned regex matches rather than strings — which turned each name
+    // into a single character, so the list could never contain
+    // "workflow_dispatch". Vacuous, and round 14 caught it. The expression
+    // is described rather than quoted on purpose: rounds 12 to 15 each
+    // re-raised a defect that existed only inside a comment quoting it, so
+    // a dead expression spelled out verbatim is a liability. The positive
     // assertion below is what makes the negative one mean anything: without
     // it, a `triggerNames` that returned [] would satisfy the negative too.
     for (const src of [mixed, entityOnly]) {
