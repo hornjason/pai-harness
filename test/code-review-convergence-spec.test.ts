@@ -261,7 +261,11 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the remainder tally is recomput
       "the reconciliation sentence must keep its shape: `… without leading one (<ids>); … " +
         "why <N> ids appear here and <M> is the right count …`",
     ).not.toBeNull();
-    const named = (m![1].match(/CRC-[A-Z]+\d+/g) ?? []).sort();
+    // Spread before sorting: `String.match` returns a `RegExpMatchArray`, and
+    // `toEqual` has no overload for one against a `string[]`. Caught by
+    // typecheck in CI rather than locally, because the suite is outside
+    // `tsconfig` — `bun test` green does not mean `bun run typecheck` green.
+    const named: string[] = [...(m![1].match(/CRC-[A-Z]+\d+/g) ?? [])].sort();
     expect(
       named,
       "the ids the sentence names as mentioned-but-not-leading are not the ones that are. " +
