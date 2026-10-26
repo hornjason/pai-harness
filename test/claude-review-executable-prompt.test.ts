@@ -556,6 +556,68 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     expect(refused.length).toBeGreaterThan(0);
   });
 
+  /**
+   * AC-27: round 10's finding, and the first on this guard that was a real
+   * fail-OPEN rather than a false positive.
+   *
+   * `triggers` was read with `/^\s{2}([a-z_]+):/gm` — block style at exactly
+   * two spaces. Measured against the live file with only the `on:` block
+   * swapped, before the fix:
+   *
+   *   on:\n  pull_request_target:     → caught
+   *   on: {pull_request_target: }     → SILENT
+   *   on:\n    pull_request_target:   → SILENT
+   *
+   * `pull_request_target` runs a job with a WRITE token on a fork's pull
+   * request. Two valid YAML spellings of it passed the check.
+   *
+   * The fix has two halves and the SECOND is the one that matters. Widening
+   * `TRIGGER_NAME` closes the spellings somebody thought of; refusing an
+   * empty reading closes the ones nobody did. The set of valid YAML
+   * spellings is open and what this file can parse is closed, so the only
+   * safe response to a block it cannot read is to say so. That is the same
+   * lesson as AC-26 one level up: state what you can measure, and refuse
+   * outside it — do not enumerate failures.
+   */
+  test("AC-27: every YAML spelling of a trigger is read, and an unreadable block refuses", () => {
+    const onAt = live.indexOf("\non:");
+    const permAt = live.indexOf("\npermissions:", onAt);
+    expect(onAt, "the `on:` block anchor moved — this case cannot stage anything")
+      .toBeGreaterThan(-1);
+    expect(permAt, "the `permissions:` end anchor moved").toBeGreaterThan(onAt);
+    const withOn = (block: string) => live.slice(0, onAt) + block + live.slice(permAt);
+
+    // The control. The live file declares real triggers and is clean, so a
+    // mutation that broke parsing outright would show up here first.
+    const liveKinds = kinds(withOn(live.slice(onAt, permAt)));
+    expect(liveKinds, "the unmodified file must not refuse").not.toContain("TRIGGERS_UNMEASURED");
+    expect(liveKinds).not.toContain("PULL_REQUEST_TARGET_TRIGGER");
+
+    // Three spellings of the SAME dangerous trigger. Two of them were silent
+    // before this fix; all three must be caught now.
+    for (const [name, block] of [
+      ["block style, two spaces", "\non:\n  pull_request_target:\n"],
+      ["block style, four spaces", "\non:\n    pull_request_target:\n"],
+      ["flow style", "\non: {pull_request_target: }\n"],
+    ] as const) {
+      expect(
+        kinds(withOn(block)),
+        `pull_request_target written in ${name} must be caught — it runs this job with a ` +
+          `WRITE token on a fork's pull request, and the spelling must not decide that`,
+      ).toContain("PULL_REQUEST_TARGET_TRIGGER");
+    }
+
+    // And the half that covers the spellings nobody has thought of: a block
+    // this file cannot read is UNMEASURED, never clean.
+    const unreadable = kinds(withOn("\non: !!something-nobody-anticipated\n"));
+    expect(
+      unreadable,
+      "an `on:` block yielding no trigger names must REFUSE. Without this, every future " +
+        "YAML spelling TRIGGER_NAME does not cover is a silent pass — which is exactly how " +
+        "the two spellings above got through.",
+    ).toContain("TRIGGERS_UNMEASURED");
+  });
+
   /** AC-24: the other spelling in the same finding — negation, not addition. */
   test("AC-24: a comparison wrapped in a negation is not a governing predicate", () => {
     const negated = mutateOnce(

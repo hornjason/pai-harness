@@ -62,6 +62,7 @@ export type ReviewToolViolationKind =
   | "ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER"
   | "ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD"
   | "PULL_REQUEST_TARGET_TRIGGER"
+  | "TRIGGERS_UNMEASURED"
   | "NO_POSTING_TOOL_IS_ALLOWED"
   | "NO_SUBJECT_REACHES_THE_AGENT"
   | "MUTABLE_PLUGIN_MARKETPLACE"
@@ -113,6 +114,22 @@ export const AUTOMATION_ONLY_TRIGGERS = [
  * that runs an agent, so it gets its own violation rather than a guard.
  */
 export const ENTITY_TRIGGERS = ["pull_request", "pull_request_target"] as const;
+
+/**
+ * A trigger name inside the `on:` block, in either YAML style.
+ *
+ * Group 1 is block style at ANY indentation — the original pattern pinned it
+ * at exactly two spaces, and `on:\n    pull_request_target:` slipped past.
+ * Group 2 is flow style, `on: {a: , b: }`, which the original did not see at
+ * all. One pattern rather than two so there is a single thing to widen and a
+ * single thing for a mutation to remove.
+ *
+ * This is still a text match and it is still narrower than YAML. That is
+ * survivable only because an EMPTY result REFUSES — see `TRIGGERS_UNMEASURED`
+ * at the call site. Widen this when a real spelling is found; do not rely on
+ * it being complete.
+ */
+export const TRIGGER_NAME = /^[ \t]+([a-z_]+):|[{,]\s*([a-z_]+)\s*:/gm;
 
 /**
  * The two expressions a job-level condition needs to compare before it can be
@@ -523,7 +540,41 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
   //    on one of two triggers is #732 reintroduced for the other one, and the
   //    property degraded from "never exists" to "does not exist on the
   //    intersection of all triggers" without the name or the comment moving.
-  const triggers = [...triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm)].map(m => m[1]);
+  //    HOW THE TRIGGER NAMES ARE READ, and why an empty reading REFUSES
+  //    (#1614, round 10). The first spelling of this was
+  //    `/^\s{2}([a-z_]+):/gm` — exactly two leading spaces, block style only.
+  //    Every other valid YAML spelling of the same trigger set returned `[]`,
+  //    and `[]` made BOTH checks below silent rather than loud. Measured on
+  //    the live file with only the `on:` block swapped:
+  //
+  //      on:\n  pull_request_target:            → ["pull_request_target"], caught
+  //      on: {pull_request_target: }            → [], SILENT
+  //      on:\n    pull_request_target:          → [], SILENT
+  //
+  //    A workflow granting a write token on a fork's pull request therefore
+  //    passed, which is the fail-open shape
+  //    `.claude/rules/checks-must-be-able-to-fail.md` calls *a detector
+  //    narrower than what it detects*.
+  //
+  //    Two changes, and the second is the load-bearing one. Widening the
+  //    pattern closes the spellings we thought of; refusing an EMPTY reading
+  //    closes the ones we did not. The set of valid YAML spellings is open
+  //    and the set of things this function can parse is closed, so the only
+  //    safe thing to do with a block it cannot read is say so — an absent
+  //    reading is UNMEASURED, never a clean one.
+  const triggers = [...triggerBlock.matchAll(TRIGGER_NAME)].map(m => m[1] ?? m[2]);
+  if (triggers.length === 0) {
+    v.push({
+      kind: "TRIGGERS_UNMEASURED",
+      detail:
+        "the `on:` block was found but no trigger name could be read out of it, so the " +
+        "pull_request_target and fork-guard checks below have nothing to decide on. That is " +
+        "UNMEASURED, not clean: a workflow with no readable triggers is one this check cannot " +
+        "speak about. Either the block uses a YAML spelling TRIGGER_NAME does not cover — " +
+        "widen it and add the spelling to that pattern's test — or the workflow genuinely " +
+        "declares no triggers, in which case it never runs",
+    });
+  }
   const automationTriggers = triggers.filter(t =>
     (AUTOMATION_ONLY_TRIGGERS as readonly string[]).includes(t),
   );
