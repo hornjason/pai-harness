@@ -771,7 +771,7 @@ moved.
 
 | Phase | Verdict | PR | Head | Criteria evidenced | What was observed |
 |---|---|---|---|---|---|
-| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Every required context SUCCESS (`test`, `ai-review`, `gates`, four shards), `mergeable: MERGEABLE`, and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second, independent draw the same day on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6`: nine required contexts SUCCESS and exactly one unresolved thread, which carried **no finding at all** — an informational note — and resolving it alone moved `BLOCKED` to `UNSTABLE` on an unchanged head |
+| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Both required contexts SUCCESS — the required set is exactly `test` and `ai-review` (`gh api …/branches/main/protection/required_status_checks`), and all nine check-runs at that head were `success` — with `mergeable: MERGEABLE` and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second, independent draw the same day on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6`: both required contexts SUCCESS, all ten check-runs `success`, exactly one unresolved thread carrying **no finding at all** — an informational note — and resolving it alone moved `BLOCKED` to `UNSTABLE`, not `CLEAN`, on an unchanged head |
 | **1** | PENDING | — | — | — | — |
 | **2** | UNMEASURED — unreachable, see below | — | — | — | — |
 | **3** | PENDING | — | — | — | — |
@@ -878,16 +878,26 @@ resolve them is sixty blocked merges — the gate working perfectly and the
 swarm delivering nothing.
 
 **That scenario was argued rather than measured when this paragraph was
-written. The control has since been run, and this paragraph said otherwise
-for two days after the readings table above recorded it.**
+written. The control has since been run, and this paragraph went on saying
+otherwise — committed at 2026-10-26T18:45:42Z by #1616, contradicted by the
+readings table at 2026-10-26T19:21:41Z by #1617, thirty-six minutes later in
+the same file.**
 
 What it used to say was that no unconfounded instance existed, citing #1614,
 whose `BLOCKED` was overdetermined because `ai-review` was `FAILURE` there at
 the same time. That was true of #1614 and it is not true of the population:
 *Readings taken* above records Phase 0 EXITED on 2026-10-26 at #1616 head
 `7ea82e50`, where resolving two threads and nothing else — no push, no
-re-run — moved `BLOCKED` to `CLEAN`, with a second draw on #1614 at
-`471a5b50` once its other contexts were green.
+re-run — moved `BLOCKED` to `CLEAN`.
+
+The same row records a second draw on #1614 at `471a5b50`, and it is **not**
+the equal of the first: resolving its one thread moved `BLOCKED` to
+`UNSTABLE`, not to `CLEAN`. That still attributes the block to the thread —
+`UNSTABLE` is a non-required context failing, which is a different fact about
+a different check — but a draw that does not reach `CLEAN` is weaker
+evidence, and the row above is where its reading method and outcome live.
+This sentence points at it rather than restating it, because a paraphrase of
+a reading is the thing this whole section is about.
 
 **A third independent draw, which is why this paragraph is being edited
 rather than deleted.** Read **2026-10-26 at 23:16Z** on **#1619**, head
@@ -903,16 +913,22 @@ rather than deleted.** Read **2026-10-26 at 23:16Z** on **#1619**, head
 One check was red — `review`, the local plugin's advisory job — and it is
 **not** in the required set, which is the fact that makes the reading
 unconfounded and is why the contexts are read from the API beside it rather
-than remembered. Three draws, and three is still not a population; the boxes
-above stay open for the reason stated there.
+than remembered. Three draws — two reaching `CLEAN`, one `UNSTABLE` — and
+three is still not a population; the boxes above stay open for the reason
+stated there.
 
-**The defect worth keeping from this is not the reading, it is the two days.**
-This paragraph and the readings table disagreed about one observable, in one
-file, and nothing compares two prose statements of one fact — the same shape
-the CRC-B8 bullet below records about `required_conversation_resolution`
-being written `false` here and `true` two hundred lines away. Twice now, and
-the second time the stale half was the one arguing that a whole track's
-premise was unmeasured.
+**The defect worth keeping is that no elapsed time was required.** The first
+draft of this correction said the two halves disagreed "for two days", a
+duration nobody measured and the document's own dates refute: both statements
+carry 2026-10-26, and `git log -S` on the two strings puts their commits
+thirty-six minutes apart. The reviewer caught it on this very pull request,
+which is the point — a prose claim about the file contradicting itself was
+itself a prose claim nothing checked. Two consecutive pull requests, both
+green, both reviewed, wrote opposite answers to one observable into one file
+inside the same hour. It is the same shape the CRC-B8 bullet below records
+about `required_conversation_resolution` being written `false` here and
+`true` two hundred lines away. Twice now, and the costly time is when the
+stale half is the one arguing that a whole track's premise is unmeasured.
 
 **Phase 4 therefore moves ahead of Phase 3 for this objective**, but the
 reason is narrower than "Phase 3 unblocks nothing". Phase 3 is prompt and
