@@ -41,6 +41,8 @@ import {
   readAiReviewChangedFiles,
   readAiReviewFindingsFile,
 } from "../lib/scaffold/ai-review-findings";
+import { carryKey } from "../lib/ai-review-rounds";
+import { checkoutLineText } from "../lib/ai-review-suppression";
 
 const COMMAND = "ai-review-threads";
 
@@ -141,7 +143,15 @@ const post: AiReviewThreadPoster = async request => {
   }
 };
 
-const result = await postReviewThreads(reading, post);
+// THE KEY-SYMMETRY HALF, on the producing side. The thread carries the key
+// a later round's suppression gate will form for the same finding, so the
+// text anchor must be read the same way both sides read it — which is why
+// this is `checkoutLineText` and not a second line reader. A caller that
+// supplied no text would key `n:<line>` while the gate keys `t:<text>`, and
+// the two namespaces never collide: the gate would suppress nothing and
+// every round would re-post every thread.
+const lineTextFor = checkoutLineText(process.cwd());
+const result = await postReviewThreads(reading, post, f => carryKey(f, lineTextFor(f)));
 for (const line of result.detail) console.log(`${COMMAND}: ${line}`);
 console.log(
   `${COMMAND}: ${result.outcome} — attempted ${result.attempted}, posted ${result.posted}, ` +

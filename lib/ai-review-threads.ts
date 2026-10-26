@@ -117,6 +117,7 @@ const FORBIDDEN = 403;
 export async function postReviewThreads(
   reading: AiReviewFindingsReading,
   post: AiReviewThreadPoster,
+  keyFor?: (finding: Record<string, unknown>) => string | null,
 ): Promise<AiReviewThreadsResult> {
   const detail: string[] = [];
 
@@ -127,7 +128,7 @@ export async function postReviewThreads(
     return { outcome: "UNMEASURED", attempted: 0, posted: 0, demoted: 0, detail };
   }
 
-  const requests = reviewThreadRequests(reading);
+  const requests = reviewThreadRequests(reading, keyFor);
   if (requests.length === 0) {
     detail.push("the reading located no finding that could be anchored to a path in this diff");
     return { outcome: "NOTHING_TO_POST", attempted: 0, posted: 0, demoted: 0, detail };
