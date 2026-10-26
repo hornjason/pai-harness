@@ -50,6 +50,7 @@ import {
   AI_REVIEW_CARRY_UNMEASURED,
   AI_REVIEW_EVENT_VAR,
   AI_REVIEW_FINDINGS_DIR_OUTPUT,
+  AI_REVIEW_GRAPHQL_VAR,
   AI_REVIEW_FINDINGS_KEY,
   AI_REVIEW_LEDGER_API_VAR,
   AI_REVIEW_LEDGER_BOT_LOGIN,
@@ -66,6 +67,8 @@ import {
   AI_REVIEW_RUN_STEP_ID,
   AI_REVIEW_SNAPSHOT_ROUND_KEY,
   AI_REVIEW_SNAPSHOT_ROUND_VAR,
+  AI_REVIEW_THREADS_BASENAME,
+  AI_REVIEW_THREADS_PATH_VAR,
   buildCarryScript,
   buildReviewPrompt,
 } from "../lib/scaffold/ai-review-step.ts";
@@ -73,7 +76,12 @@ import {
 // snapshot's format are held together by a test rather than by two authors
 // agreeing — the writer is bash and the reader is TypeScript, which is the
 // arrangement #1568 was.
-import { ledgerPriorKeysFrom, readSnapshot } from "../lib/ai-review-suppression.ts";
+import {
+  ledgerPriorKeysFrom,
+  priorKeysFrom,
+  readSnapshot,
+} from "../lib/ai-review-suppression.ts";
+import { threadBody } from "../lib/scaffold/ai-review-findings.ts";
 import {
   AI_REVIEW_LEDGER_COMMENT_MARKER,
   AI_REVIEW_LEDGER_FINDING_TEXT,
@@ -133,6 +141,40 @@ interface Rig {
   noPath?: boolean;
   /** Suppress writing the ledger-snapshot path into the environment (#1586). */
   noSnapshotPath?: boolean;
+  /**
+   * AC-1. The review threads the GraphQL POST answers with, as pages. A
+   * `null` makes the POST FAIL, which is the state the adjudicator must read
+   * as UNMEASURED rather than as "this pull request has no threads".
+   * Undefined serves one empty page, so every pre-existing row still drives
+   * the fetch rather than leaving it unexercised.
+   */
+  threadPages?: Array<Array<{ isResolved: unknown; body: unknown }>> | null;
+  /** A raw GraphQL response, for the shapes the helper cannot express. */
+  threadsRaw?: string;
+  /** Suppress writing the threads path into the environment. */
+  noThreadsPath?: boolean;
+}
+
+/** One page of the GraphQL answer, in the shape the query asks for. */
+function graphqlPage(
+  nodes: Array<{ isResolved: unknown; body: unknown }>,
+  endCursor: string | null,
+): string {
+  return JSON.stringify({
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: endCursor !== null, endCursor },
+            nodes: nodes.map(n => ({
+              isResolved: n.isResolved,
+              comments: { nodes: [{ body: n.body }] },
+            })),
+          },
+        },
+      },
+    },
+  });
 }
 
 interface Carried {
@@ -158,9 +200,48 @@ function runCarry(rig: Rig = {}) {
       rig.pages.forEach((p, i) => writeFileSync(join(dir, `page-${i + 1}.json`), JSON.stringify(p)));
     }
 
+    // The GraphQL answers, one file per page, selected by the CURSOR the
+    // step sends — so a step that forgot to page, or paged with the wrong
+    // cursor, serves page 1 twice and the count comes back wrong.
+    const threadPages = rig.threadPages === undefined ? [[]] : rig.threadPages;
+    if (threadPages !== null) {
+      threadPages.forEach((nodes, i) => {
+        const last = i === threadPages.length - 1;
+        writeFileSync(
+          join(dir, `gql-${i === 0 ? "first" : `c${i}`}.json`),
+          rig.threadsRaw !== undefined && last
+            ? rig.threadsRaw
+            : graphqlPage(nodes, last ? null : `c${i + 1}`),
+        );
+      });
+    }
+
     const curl = [
       "#!/usr/bin/env bash",
       `printf '%s\\n' "$@" >> ${JSON.stringify(argvPath)}`,
+      // The GraphQL POST, told apart by its URL the way the real endpoint is.
+      'is_gql=no',
+      'for a in "$@"; do case "$a" in *graphql*) is_gql=yes;; esac; done',
+      'if [ "$is_gql" = yes ]; then',
+      ...(threadPages === null
+        ? ["  exit 22"]
+        : [
+            "  cur=first",
+            `  body=""`,
+            `  prev=""`,
+            `  for a in "$@"; do if [ "$prev" = "-d" ]; then body="$a"; fi; prev="$a"; done`,
+            // Whitespace stripped first. `jq -n` pretty-prints unless told
+            // not to, so a pattern written against the compact spelling
+            // would serve page one forever the day somebody drops `-c` —
+            // a red that says "pagination is broken" about a request that
+            // is still perfectly valid.
+            `  body=\$(printf '%s' "$body" | tr -d ' \\n\\t')`,
+            `  case "$body" in *'"cursor":"c'*) cur="\${body##*'"cursor":"'}"; cur="\${cur%%\\"*}";; esac`,
+            `  f=${JSON.stringify(dir)}/gql-\${cur}.json`,
+            '  if [ -f "$f" ]; then cat "$f"; else printf "{}"; fi',
+            "  exit 0",
+          ]),
+      "fi",
       ...(rig.pages === undefined
         ? []
         : [
@@ -195,6 +276,7 @@ function runCarry(rig: Rig = {}) {
 
     const carryPath = join(dir, AI_REVIEW_CARRY_BASENAME);
     const snapshotPath = join(dir, AI_REVIEW_LEDGER_SNAPSHOT_BASENAME);
+    const threadsPath = join(dir, AI_REVIEW_THREADS_BASENAME);
     const script = join(dir, "carry.sh");
     writeFileSync(script, rig.script ?? buildCarryScript());
 
@@ -210,6 +292,10 @@ function runCarry(rig: Rig = {}) {
     };
     if (rig.noPath !== true) env[AI_REVIEW_CARRY_PATH_VAR] = carryPath;
     if (rig.noSnapshotPath !== true) env[AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR] = snapshotPath;
+    if (rig.noThreadsPath !== true) env[AI_REVIEW_THREADS_PATH_VAR] = threadsPath;
+    if (env[AI_REVIEW_GRAPHQL_VAR] === undefined) {
+      env[AI_REVIEW_GRAPHQL_VAR] = "https://api.github.test/graphql";
+    }
     // The round the snapshot PRECEDES, which the deployed step takes from
     // `steps.ai-review-rounds.outputs.round`. Defaulted here rather than
     // left unset, because unset is its own case (`AC-C7`) and a rig that
@@ -245,7 +331,11 @@ function runCarry(rig: Rig = {}) {
     // `null` for "the step wrote no snapshot" — distinct from `""`, which is
     // a snapshot of an empty body and is a different fact (#1586).
     const snapshot = existsSync(snapshotPath) ? readFileSync(snapshotPath, "utf8") : null;
-    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", file, state, carried, argv, snapshot };
+    // `null` for "the step wrote no thread list", which is the only thing
+    // that makes a failed fetch distinguishable from a pull request with no
+    // threads — an empty FILE would be the second statement (AC-4).
+    const threads = existsSync(threadsPath) ? readFileSync(threadsPath, "utf8") : null;
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", file, state, carried, argv, snapshot, threads };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1417,5 +1507,140 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
       AI_REVIEW_CARRY_PATH_VAR,
     );
     expect(block).toContain(AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR);
+  });
+});
+
+/**
+ * AC-1's writer: the carry step fetches the pull request's review threads
+ * and leaves them where the adjudicator and the thread poster both read
+ * them.
+ *
+ * Every row below runs the REAL generated bash against a faked `curl`, and
+ * every row ends by handing what bash wrote to the TypeScript that decides.
+ * A writer asserted only on its own bytes is the #1586 shape: the file
+ * round-tripped perfectly and keyed nothing, for seven months.
+ */
+describe("AC-T1 (AC-1): the carry step writes the review threads", () => {
+  const KEY = "lib/a.ts\u0000t:alpha\u0000unchecked index";
+  const keyed = (key: string) => threadBody({ severity: "high", summary: "unchecked index" }, key);
+
+  test("AC-T1a: a fetched thread reaches the gate's reader as a prior key", () => {
+    const r = runCarry({ threadPages: [[{ isResolved: false, body: keyed(KEY) }]] });
+    expect(r.threads, "the step wrote no thread list at all").not.toBeNull();
+    const prior = priorKeysFrom(r.threads);
+    expect(prior.status, `${r.threads}\n${r.stdout}${r.stderr}`).toBe("MEASURED");
+    if (prior.status !== "MEASURED") throw new Error("unreachable");
+    expect(prior.keys, "the bytes bash wrote parsed and produced no keys").toEqual([KEY]);
+  });
+
+  test("AC-T1b: the resolution flag survives the shell, both ways", () => {
+    // Not decoration: `carryForwardFromThreads` drops a finding on this
+    // field alone, and a transport that flattened it to a string would make
+    // every thread read as open — which carries everything and looks fine.
+    const r = runCarry({
+      threadPages: [
+        [
+          { isResolved: true, body: keyed(`${KEY} one`) },
+          { isResolved: false, body: keyed(`${KEY} two`) },
+        ],
+      ],
+    });
+    expect(JSON.parse(r.threads!)).toEqual([
+      { isResolved: true, body: keyed(`${KEY} one`) },
+      { isResolved: false, body: keyed(`${KEY} two`) },
+    ]);
+  });
+
+  test("AC-T1c: every page is walked, and the cursor is the one GraphQL gave", () => {
+    const r = runCarry({
+      threadPages: [
+        [{ isResolved: false, body: keyed("one") }],
+        [{ isResolved: false, body: keyed("two") }],
+        [{ isResolved: true, body: keyed("three") }],
+      ],
+    });
+    const prior = priorKeysFrom(r.threads);
+    expect(prior.status, `${r.threads}\n${r.stdout}${r.stderr}`).toBe("MEASURED");
+    // Three, in order. A step that ignored the cursor serves page one three
+    // times and this reads `["one","one","one"]`, which a length check alone
+    // would not catch.
+    expect(prior.status === "MEASURED" ? prior.keys : null).toEqual(["one", "two", "three"]);
+  });
+
+  test("AC-T1d: a failed POST writes NO file, and says so on the run", () => {
+    // AC-4 at the writer. An empty list here would assert the pull request
+    // has no threads, and the next round would post a duplicate of every
+    // finding while reporting nothing unusual.
+    const r = runCarry({ threadPages: null });
+    expect(r.threads, "a failed fetch left bytes the adjudicator will key from").toBeNull();
+    expect(r.stdout + r.stderr).toContain("could not be read");
+    expect(priorKeysFrom(r.threads).status).toBe("UNMEASURED");
+  });
+
+  test("AC-T1e: a GraphQL error response writes NO file either", () => {
+    // HTTP 200 with an `errors` array — a bad credential, a missing scope, a
+    // deleted pull request. `curl -f` succeeds on all three, so this is the
+    // failure a fetch cannot see from its exit code.
+    const r = runCarry({
+      threadsRaw: JSON.stringify({ errors: [{ message: "Bad credentials" }] }),
+    });
+    expect(r.threads).toBeNull();
+    expect(r.stdout + r.stderr).toContain("Bad credentials");
+  });
+
+  test("AC-T1f: an unplumbed path writes nothing and does not disturb the carry", () => {
+    // Every consumer that has not re-scaffolded. The step must behave as it
+    // did before AC-1 rather than refusing.
+    const r = runCarry({
+      list: [botComment(5, windowBody([round(1, [recorded("lib/a.ts", 1, "unchecked index", "alpha")])]))],
+      files: { "lib/a.ts": "alpha\n" },
+      noThreadsPath: true,
+    });
+    expect(r.threads).toBeNull();
+    expect(r.state, "an unplumbed thread path changed the carry's own reading").toBe(
+      AI_REVIEW_CARRY_READ,
+    );
+    expect(r.carried, "the carry itself stopped working when the threads were not plumbed").toHaveLength(1);
+  });
+
+  test("AC-T1g: a merge_group entry writes an EMPTY list, which is a reading", () => {
+    // No pull request, so nothing has been raised on one. MEASURED and
+    // empty, not UNMEASURED — and it must not reach the network at all.
+    const r = runCarry({ env: { [AI_REVIEW_EVENT_VAR]: "merge_group" } });
+    expect(r.threads).toBe("[]");
+    expect(priorKeysFrom(r.threads)).toEqual({ status: "MEASURED", keys: [] });
+    expect(
+      r.argv.some(a => a.includes("graphql")),
+      "a merge_group entry queried GitHub for threads on a pull request it does not have",
+    ).toBe(false);
+  });
+
+  test("AC-T1h: the MUTANT — the write removed — leaves the readers with nothing", () => {
+    // Performed. Without this row every assertion above is satisfied by a
+    // step that writes the file for some other reason.
+    const real = buildCarryScript();
+    const mutant = real.replace(
+      `printf '%s' "\${threads_acc}" > "\${${AI_REVIEW_THREADS_PATH_VAR}}"`,
+      ":",
+    );
+    expect(mutant, "the thread write was not found, so nothing was mutated").not.toBe(real);
+    const pages = [[{ isResolved: false, body: keyed(KEY) }]];
+    const m = runCarry({ threadPages: pages, script: mutant });
+    expect(m.threads, "removing the write changed nothing, so the write decides no input").toBeNull();
+    expect(runCarry({ threadPages: pages }).threads).not.toBeNull();
+  });
+
+  test("AC-T1i: the path is declared in the three steps that use it", () => {
+    // One writer and TWO readers — the adjudicator and the thread poster —
+    // and a step's `env:` does not carry forward. The poster is the one that
+    // can open a duplicate, so a declaration missing there is AC-3 failing
+    // while AC-1 looks satisfied.
+    const yml = readFileSync(WORKFLOW, "utf8");
+    const declarations = yml
+      .split("\n")
+      .filter(l => new RegExp(`^\\s+${AI_REVIEW_THREADS_PATH_VAR}: \\S`).test(l));
+    expect(declarations, declarations.join("\n")).toHaveLength(3);
+    expect(new Set(declarations.map(l => l.trim())).size, "the steps name different paths").toBe(1);
+    expect(yml).toContain(`/${AI_REVIEW_THREADS_BASENAME}`);
   });
 });

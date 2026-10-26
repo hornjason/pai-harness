@@ -4955,7 +4955,7 @@ threads_fetch() {
   threads_cursor=''
   threads_page=1
   while [ "\${threads_page}" -le ${AI_REVIEW_CARRY_MAX_PAGES} ]; do
-    if ! request=\$(jq -n --arg q "\${query}" --arg owner "\${owner}" --arg name "\${name}" \\
+    if ! request=\$(jq -c -n --arg q "\${query}" --arg owner "\${owner}" --arg name "\${name}" \\
       --argjson number "\${${AI_REVIEW_LEDGER_PR_VAR}}" --arg cursor "\${threads_cursor}" \\
       '{query:\$q,variables:{owner:\$owner,name:\$name,number:\$number,cursor:(if \$cursor=="" then null else \$cursor end)}}'); then
       threads_unmeasured "the GraphQL request body could not be built."
@@ -4996,7 +4996,10 @@ threads_fetch() {
       printf '%s' "\${threads_acc}" > "\${${AI_REVIEW_THREADS_PATH_VAR}}"
       return 0
     fi
-    threads_cursor=\$(printf '%s' "\${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""')
+    if ! threads_cursor=\$(printf '%s' "\${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""'); then
+      threads_unmeasured "the cursor for page \$((threads_page + 1)) could not be read."
+      return 0
+    fi
     if [ -z "\${threads_cursor}" ]; then
       threads_unmeasured "GraphQL reported another page and gave no cursor to reach it."
       return 0

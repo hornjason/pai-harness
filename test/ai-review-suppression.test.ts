@@ -77,6 +77,7 @@ import {
   THREADS_NOT_A_LIST,
   THREADS_NOT_READ,
   THREADS_UNPARSEABLE,
+  postReviewThreads,
 } from "../lib/ai-review-threads";
 import {
   AI_REVIEW_OUTCOME_LINE,
@@ -893,6 +894,93 @@ describe("AS-8: the files are read as the carry step writes them", () => {
 
     expect(viaRounds.suppressed).toHaveLength(1);
     expect(viaGate.repeat).toEqual(viaRounds.reasons);
+  });
+});
+
+// ── AS-10: AC-3, executed — two pushes, one thread ───────────────────────
+
+describe("AS-10 (AC-3): a defect present on two pushes gets ONE thread", () => {
+  /**
+   * The acceptance says *"Executed, not asserted: the duplicate is the
+   * failure this exists to avoid, so the test pushes a second round and
+   * counts threads."* So this runs the REAL producer twice, with a poster
+   * that behaves the way GitHub does — a posted comment becomes a thread,
+   * and that thread is in the list the next round reads.
+   *
+   * Nothing here is simulated except the HTTP call. The key in the thread
+   * body is written by `threadBody` through `reviewThreadRequests`, and read
+   * back by `threadKeyFrom` inside `threadReadingFromJson`. A change to
+   * either side breaks this, which is the point — the two halves never met
+   * in a test before.
+   */
+  async function push(
+    findings: Record<string, unknown>[],
+    existing: Array<{ isResolved: boolean; body: string }>,
+    root: string,
+  ) {
+    const lineTextFor = checkoutLineText(root);
+    const reading = readAiReviewFindings(
+      payloadOf("PASS", findings),
+      undefined,
+      aiReviewSuppressionGate({ threads: JSON.stringify(existing), lineTextFor }),
+    );
+    const posted: string[] = [];
+    const result = await postReviewThreads(
+      reading,
+      async request => {
+        posted.push(request.body);
+        return { ok: true };
+      },
+      f => carryKey(f, lineTextFor(f)),
+    );
+    // GitHub's side of it: every accepted comment is now an OPEN thread.
+    return { result, threads: [...existing, ...posted.map(body => ({ isResolved: false, body }))] };
+  }
+
+  test("AS-10a: the second push posts nothing, and one thread exists in total", async () => {
+    const root = checkout("ac3");
+    const one = await push([advisory()], [], root);
+    expect(one.result.posted, "the first push posted nothing, so there is no duplicate to avoid").toBe(1);
+
+    const two = await push([advisory()], one.threads, root);
+    expect(two.result.posted, "the same defect on a second push opened a second thread").toBe(0);
+    expect(two.threads, "the pull request ended with more than one thread").toHaveLength(1);
+  });
+
+  test("AS-10b: WITHOUT the gate the same two pushes produce two threads", async () => {
+    // The control. Without it AS-10a is satisfied by a producer that posts
+    // nothing at all, or by a reading that located nothing to anchor.
+    const root = checkout("ac3-control");
+    const lineTextFor = checkoutLineText(root);
+    const ungated = () =>
+      postReviewThreads(
+        readAiReviewFindings(payloadOf("PASS", [advisory()])),
+        async () => ({ ok: true }),
+        f => carryKey(f, lineTextFor(f)),
+      );
+    expect((await ungated()).posted + (await ungated()).posted).toBe(2);
+  });
+
+  test("AS-10c: a DIFFERENT defect on the second push still gets its own thread", async () => {
+    // The vacuity control on the other side: AS-10a also holds for a gate
+    // that suppresses everything after round one, which would silence every
+    // finding a later push introduces.
+    const root = checkout("ac3-other");
+    const one = await push([advisory()], [], root);
+    const two = await push([advisory({ summary: "something else is wrong" })], one.threads, root);
+    expect(two.result.posted).toBe(1);
+    expect(two.threads).toHaveLength(2);
+  });
+
+  test("AS-10d: a RESOLVED thread does not re-open on the next push", async () => {
+    // What someone doing the work actually experiences. Resolving a thread
+    // must not be the thing that brings it back.
+    const root = checkout("ac3-resolved");
+    const one = await push([advisory()], [], root);
+    const resolved = one.threads.map(t => ({ ...t, isResolved: true }));
+    const two = await push([advisory()], resolved, root);
+    expect(two.result.posted, "resolving the thread re-posted the finding").toBe(0);
+    expect(two.threads).toHaveLength(1);
   });
 });
 
