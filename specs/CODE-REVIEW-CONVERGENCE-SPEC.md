@@ -1108,7 +1108,7 @@ spec rots without anything checking it.
 
 Recorded because each one invalidates a naive reading of the criteria above.
 
-- **Sixteen rounds on one pull request produced three genuine findings and nine repairs of its own wake, and the most valuable finding arrived at round 10 (#1614).** The biggest round-economics draw this repository has. Method: every commit on the branch was classified by `git blame`ing the lines its diff DELETED at its own parent, so a fix is attributed to whoever wrote the code it repaired rather than to its commit message. Of 12 substantive commits, **3 repaired defects in the pull request's own new code** — `f840d009` an inverted fork guard, `f71f816e` check 3 reporting over an intersection, `abf2a05e` a trigger reader that missed two valid YAML spellings — and **9 repaired code written in response to an earlier round of the same review**: `3e7babb1`→`f840d009`, `471a5b50`→`3e7babb1`, `8f923b4a`→`abf2a05e`, `1526fc29`→`8f923b4a`, `810d7798`→`f71f816e`, plus four commits repairing the author's own prose. **31 review threads, of which 12 were ONE informational note re-posted** (39%), 19 were findings, and all 19 landed on 2 files. **Exactly one blocking finding across all sixteen rounds**, at round 11; it was correct and it is described below. Wall clock 10:27 to 16:20.
+- **Fifteen rounds on one pull request produced three genuine findings and nine repairs of its own wake, and the most valuable finding arrived at round 10 (#1614).** The biggest round-economics draw this repository has. Method: every commit on the branch was classified by `git blame`ing the lines its diff DELETED at its own parent, so a fix is attributed to whoever wrote the code it repaired rather than to its commit message. Of 12 substantive commits, **3 repaired defects in the pull request's own new code** — `f840d009` an inverted fork guard, `f71f816e` check 3 reporting over an intersection, `abf2a05e` a trigger reader that missed two valid YAML spellings — and **9 repaired code written in response to an earlier round of the same review**: `3e7babb1`→`f840d009`, `471a5b50`→`3e7babb1`, `8f923b4a`→`abf2a05e`, `1526fc29`→`8f923b4a`, `810d7798`→`f71f816e`, plus four commits repairing the author's own prose. **31 review threads, of which 12 were ONE informational note re-posted** (39%), 19 were findings, and all 19 landed on 2 files. **Exactly one blocking finding across all fifteen rounds**, at round 11; it was correct and it is described below. Wall clock 10:27 to 16:20.
 
   **The result that should change the design is the timing, not the ratio.** The
   genuine finds landed at rounds ~2, ~3, **10 and 11**, and the last two are the
@@ -1140,10 +1140,18 @@ Recorded because each one invalidates a naive reading of the criteria above.
   moving a shipped gate on one pull request is the error this document's own
   *"a sampled instrument"* bullet warns about. n=1.
 
-  **Two limits on this reading, stated because they bound it.** The ledger
-  carries `truncated: 5`, so **rounds 1–4 are gone** and nothing here
-  characterises them; 12 entries hold 11 distinct round numbers, because round 9
-  appears twice (#1592 — a re-run appends an entry at the same number). And
+  **Two limits on this reading, stated because they bound it.** The ledger is a
+  WINDOW of `AI_REVIEW_LEDGER_MAX_ROUNDS` = 12 entries and it is full: 12
+  entries carrying 11 distinct round numbers, because round 9 appears twice
+  (#1592 — a re-run appends an entry at the same number). Its earliest entry is
+  round 5, **so rounds 1–4 are absent and nothing here characterises them.** Its
+  `truncated` count reads **5**, which is five evicted ENTRIES and not five
+  round numbers — the same unit distinction, one line further on, and the first
+  draft of this bullet took the count for a range and wrote "rounds 1–5". The
+  reviewer caught it on #1619 and was right to; the two numbers cannot be
+  reconciled into a round range, because an evicted entry may have been a
+  duplicate exactly as the surviving round 9 is. **What the ledger supports is
+  the first present round number, not a derived count of missing ones.** And
   `f71f816e` **was never reviewed**: its no-payload refusal was cleared at 18:27
   by a WAIVER on the unchanged sha, whose annotation reads *"the AI review on
   this pull request was WAIVED by the 'ai-review-override' label"*. One of the
