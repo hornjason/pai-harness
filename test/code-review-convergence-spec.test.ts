@@ -233,6 +233,29 @@ function remainderSection(body: string): string | null {
  *
  * A declared obligation with no reader is the same defect as a flag with no
  * reader. This is the reader.
+ *
+ * ## WHAT THIS CANNOT DO, stated because round 8 was right about it
+ *
+ * **It is BULLET-granular. It cannot tie a specific number to a specific
+ * marker.** A bullet that already carries a date clears every number in it,
+ * including one appended later that the date does not govern — round 8's
+ * mutant is *"and 73% of all merges are affected"* added to a bullet already
+ * reading `19:15Z on 2026-10-23`, and this check stays green on it.
+ *
+ * That is not fixable by tightening the regex, and the attempt is worse than
+ * the gap. Per-sentence granularity reds the real content: *"33 distinct
+ * defects were dropped at least once. 2 were raised again. 31 were never
+ * seen again."* is three sentences and three numbers, all governed by a
+ * Method clause above them. Demanding the date be restated in each is noise,
+ * and noise is how a check gets routed around. Marker-must-precede-number
+ * does not help either — an APPENDED number is preceded by the marker.
+ *
+ * So the claim is narrowed to what is true rather than left overclaiming:
+ * **every bullet stating a measurement declares a provenance.** Accretion
+ * inside an already-marked bullet is out of scope and is named here, in the
+ * failure message, and in the spec. A check that says what it measures is
+ * this project's own rule; one that implies more is the defect rounds 4-8
+ * kept finding.
  */
 function measuredFactsSection(body: string): string | null {
   const start = body.search(/^## Measured non-obvious facts/m);
@@ -366,17 +389,19 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every measurement can be taken 
     ).toBeGreaterThan(5);
   });
 
-  test("a bullet stating a measurement names a date, a run, a commit or the command", () => {
+  test("a bullet stating a measurement declares a date, a run, a commit or the command", () => {
     expect(facts, "'## Measured non-obvious facts' was not found").not.toBeNull();
     expect(
       unretakeableBullets(facts!),
-      "These bullets state a number and give no way to take the reading again. " +
+      "These bullets state a number and declare no way to take the reading again. " +
         "A world-derived number cannot be recomputed by a test — re-measuring gives a " +
         "different answer when the world moves — so the obligation is RE-TAKEABILITY: " +
         "name the date it was read, the workflow run, the commit, or the command. " +
-        "Six bullets were in this state when this check was written; it exists because " +
-        "rounds 4-7 of #1619 raised the same untested-tally finding four times and the " +
-        "prior fix declared this obligation without discharging it.",
+        "SCOPE, and it is narrower than it sounds: this is BULLET-granular and cannot " +
+        "tie a particular number to a particular marker, so a number appended to a " +
+        "bullet that already carries one passes. That gap is real, is not closable by " +
+        "a tighter regex without reddening correct prose, and is recorded at " +
+        "`unretakeableBullets` and in the spec rather than implied away.",
     ).toEqual([]);
   });
 });

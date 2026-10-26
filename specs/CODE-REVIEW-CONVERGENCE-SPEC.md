@@ -529,6 +529,23 @@ test now added covers that class where it is concentrated. The world-derived
 readings in this file are dated where they are stated and are not, and cannot
 be, bound by a test.
 
+**The re-takeability check is BULLET-granular, and that bound is stated
+because round 8 of this pull request's review found it and was right.** It
+asks whether a bullet stating a measurement declares a date, a run, a commit
+or a command. It cannot ask whether *this* marker governs *that* number — so
+a figure appended to a bullet that already carries a marker passes. The gap
+is not closable by a tighter regex: per-sentence granularity reds correct
+prose, because *"33 defects were dropped. 2 were raised again. 31 were never
+seen again"* is three sentences governed by one Method clause above them, and
+requiring the date in each is noise. Requiring the marker to PRECEDE the
+number does not help either, since an appended figure follows it.
+
+So what is enforced is the narrow claim — **every bullet stating a
+measurement declares a provenance** — and the remainder is declared rather
+than implied. Rounds 4 through 8 each found the same class one layer further
+up; a check that implied it had closed the class would have been the next
+instance of it.
+
 - **CRC-A1** `missingEvidenceViolations` requires a runnable command per AC and `gates/workflow.test.ts` enforces it — but only inside a harness ship run, and `ship.mode` is `direct`. Dormant on the lane this project ships on.
 - **CRC-A2** Nothing makes a fresh-context subagent review the diff before the PR opens. The generated pre-push hook runs conformity tests, not a review.
 - **CRC-A3** `scripts/check-instruction-surface.ts` holds `CLAUDE.md` under a byte budget. Nothing checks it states stack, conventions, goals and non-goals.
