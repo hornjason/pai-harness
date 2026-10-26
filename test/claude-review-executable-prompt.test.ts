@@ -313,16 +313,22 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     const entityOnly = mutateOnce(mixed, DISPATCH_TRIGGER, "");
     // The control: the pair differs in the dispatch trigger and in nothing
     // else, and the entity trigger is present in both.
+    //
+    // Both HALVES are asserted. An earlier revision wrote the second as
+    // `triggerNames(entityOnly).map(m => m[1])`, left over from when this
+    // returned regex matches — mapping strings through `m[1]` yields their
+    // second CHARACTER, so the list was ["u"] and could never contain
+    // "workflow_dispatch". Vacuous, and round 14 caught it. The positive
+    // assertion below is what makes the negative one mean anything: without
+    // it, a `triggerNames` that returned [] would satisfy the negative too.
     for (const src of [mixed, entityOnly]) {
-      expect(
-        triggerNames(src),
-      ).toContain("pull_request");
+      expect(triggerNames(src), "the entity trigger must be present in both halves")
+        .toContain("pull_request");
     }
-    expect(
-      triggerNames(entityOnly).map(
-        m => m[1],
-      ),
-    ).not.toContain("workflow_dispatch");
+    expect(triggerNames(mixed), "the mixed half must DECLARE the dispatch trigger")
+      .toContain("workflow_dispatch");
+    expect(triggerNames(entityOnly), "the entity-only half must NOT declare it")
+      .not.toContain("workflow_dispatch");
 
     // Mixed: caught, because the dispatch path cannot reach the tool.
     expect(kinds(mixed)).toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
