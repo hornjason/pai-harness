@@ -118,16 +118,31 @@ export const ENTITY_TRIGGERS = ["pull_request", "pull_request_target"] as const;
  * The two expressions a job-level condition needs to compare before it can be
  * said to refuse a fork. Spelled out so the check names what is missing rather
  * than reporting that an `if:` "looks wrong".
- *
- * A text match, not an expression evaluator, and the limit is stated rather
- * than hidden: this cannot tell `==` from `!=`. What it can tell — and what
- * was actually missing — is a job that names neither side, which is every
- * revision of this file before the trigger was promoted.
  */
 export const FORK_GUARD_TERMS = [
   "github.event.pull_request.head.repo.full_name",
   "github.repository",
 ] as const;
+
+/**
+ * The comparison itself, in either operand order, with `==` and not `!=`.
+ *
+ * An earlier revision of this check asked only whether both `FORK_GUARD_TERMS`
+ * appeared anywhere in the job header, and said so in a comment: "this cannot
+ * tell `==` from `!=`". **The reviewer this module exists to make work caught
+ * that on the pull request that promoted the trigger**, and it was right —
+ * `.claude/rules/checks-must-be-able-to-fail.md`, fifth shape. An inverted
+ * guard contains both terms, passes a presence check, and runs the job on
+ * forks ONLY, which is the precise opposite of the property the check is
+ * named after. A check satisfied by a dangerously backwards version of its
+ * own subject is worse than no check: it certifies the regression.
+ *
+ * It is also read from the `if:` block rather than the whole job header, for
+ * the same reason every other cut here is bounded — a `name:` or an `env:`
+ * value carrying both substrings would otherwise satisfy it.
+ */
+export const FORK_GUARD_COMPARISON =
+  /github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository|github\.repository\s*==\s*github\.event\.pull_request\.head\.repo\.full_name/;
 
 /**
  * Tools that can put a human-readable finding on a pull request. The property
@@ -420,15 +435,32 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
     });
   }
   if (entityTriggers.length > 0) {
-    const missing = FORK_GUARD_TERMS.filter(term => !withoutComments(jobHeader).includes(term));
-    if (missing.length > 0) {
+    // The `if:` block, not the job header. A `name:` or an `env:` value
+    // carrying both terms would satisfy a header-wide search, and an absent
+    // `if:` is reported as the missing guard it is rather than throwing.
+    let condition = "";
+    try {
+      condition = withoutComments(blockUnder(jobHeader, "if:"));
+    } catch {
+      condition = "";
+    }
+    const missing = FORK_GUARD_TERMS.filter(term => !condition.includes(term));
+    const why =
+      missing.length > 0
+        ? `the job's condition names neither ${missing.join(" nor ")}`
+        : FORK_GUARD_COMPARISON.test(condition)
+          ? null
+          : "the job's condition names both terms but does not compare them with `==` — an " +
+            "inverted comparison runs the job on forks ONLY, which is the opposite of the " +
+            "property this check is named after";
+    if (why !== null) {
       v.push({
         kind: "ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD",
         detail:
           `the workflow triggers on ${entityTriggers.join(", ")}, so it runs on pull requests ` +
-          `from forks, and the job declares no condition naming ${missing.join(" or ")}. A fork ` +
-          `run holds a read-only token and no id-token: write, so every step after auth fails — ` +
-          `and a job that fails on every fork pull request is a red check nobody can act on`,
+          `from forks, and ${why}. A fork run holds a read-only token and no id-token: write, ` +
+          `so every step after auth fails — and a job that fails on every fork pull request is ` +
+          `a red check nobody can act on`,
       });
     }
   }

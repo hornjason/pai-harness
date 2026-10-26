@@ -62,6 +62,7 @@ import { join } from "node:path";
 import {
   AUTOMATION_ONLY_TRIGGERS,
   ENTITY_ONLY_MCP_SERVERS,
+  FORK_GUARD_TERMS,
   POSTING_TOOLS,
   READING_SCRIPT,
   ReviewSourceUnreadableError,
@@ -305,6 +306,62 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     // variable differs between the pair — the trigger — so this measures the
     // interaction rather than the deletion (#585).
     expect(kinds(dispatchOnly(unguarded))).not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
+   * The wrong fix for AC-18, performed. This one is not hypothetical: the
+   * first revision of the check asked only whether both `FORK_GUARD_TERMS`
+   * appeared in the job header, and THE REVIEWER THIS MODULE EXISTS TO MAKE
+   * WORK caught it on the pull request that promoted the trigger — an
+   * inverted guard contains both terms, passes a presence check, and runs the
+   * job on forks ONLY.
+   *
+   * That is the fifth shape in
+   * `.claude/rules/checks-must-be-able-to-fail.md`: a case that fails today
+   * for a true reason and stops failing under the cheapest repair, certifying
+   * the regression it was written to block. The repair here is one character.
+   */
+  test("AC-20: an INVERTED fork condition is caught, though it names both terms", () => {
+    const inverted = mutateOnce(
+      live,
+      "github.event.pull_request.head.repo.full_name == github.repository",
+      "github.event.pull_request.head.repo.full_name != github.repository",
+    );
+    // The control: a presence check over the job header would see no
+    // difference at all between this and the live file.
+    for (const term of FORK_GUARD_TERMS) {
+      expect(reviewWorkflowRegions(inverted).jobHeader).toContain(term);
+    }
+    expect(kinds(inverted)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+    // The operand order is NOT the thing being checked — a reviewer who
+    // writes the comparison the other way round is correct and must not be
+    // refused for it.
+    const swapped = mutateOnce(
+      live,
+      "github.event.pull_request.head.repo.full_name == github.repository",
+      "github.repository == github.event.pull_request.head.repo.full_name",
+    );
+    expect(kinds(swapped)).not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
+   * The second half of the same finding: the terms have to sit in the `if:`,
+   * not merely somewhere in the job header. A `name:` carrying both
+   * substrings satisfied the first revision.
+   */
+  test("AC-21: the terms must be in the condition, not anywhere in the job header", () => {
+    const decorative = mutateOnce(
+      live,
+      "    if: >-\n" +
+        "      github.event_name == 'workflow_dispatch' ||\n" +
+        "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      "    name: >-\n" +
+        "      github.event.pull_request.head.repo.full_name == github.repository\n",
+    );
+    expect(reviewWorkflowRegions(decorative).jobHeader).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(kinds(decorative)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
   });
 
   /**
