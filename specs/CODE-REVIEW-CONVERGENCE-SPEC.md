@@ -709,6 +709,53 @@ arriving inside the section.
 | **5** instruments | Each of CRC-M6's four buckets non-zero, each traced to a **human-authored** disposition | a bucket incremented by `lib/signal-phrases.ts` matching agent boilerplate. "by design" in a generated comment is not a disposition |
 | **6** release and detection | — none of these moves rounds-to-pass; they exit on their own criteria | |
 
+#### Readings taken
+
+The table above says what to observe. This one says what WAS observed, and it
+is the only place a phase may be called done.
+
+**Why it is a second table and not a column.** `bun bin/rungate.ts
+audit-specs` already reports this spec's criteria — 10 ticked of 56 at the
+time of writing — and `scripts/sync-sc-status.ts` maintains that automatically.
+It is a real tracker and it is not this one: it reports whether a criterion is
+**bound by a test**, and a phase exit is an **observation on a live pull
+request** that no unit test can name. Both are needed and conflating them is
+the error the section above this one exists to prevent.
+
+An `EXITED` row must carry a pull request, the head it was read at, and the
+observation. `test/code-review-convergence-spec.test.ts` enforces that: a row
+claiming `EXITED` without all three fails the suite, which is what stops this
+table becoming a place to assert progress.
+
+| Phase | Verdict | PR | Head | What was observed |
+|---|---|---|---|---|
+| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | Every required context SUCCESS (`test`, `ai-review`, `gates`, four shards), `mergeable: MERGEABLE`, and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else |
+| **1** | PENDING | — | — | — |
+| **2** | UNMEASURED — unreachable, see below | — | — | — |
+| **3** | PENDING | — | — | — |
+| **4** | PENDING | — | — | — |
+| **5** | PENDING | — | — | — |
+| **6** | PENDING | — | — | — |
+
+**What Phase 0's reading cost, and why it was nearly missed.** It was taken on
+a pull request opened for something else, and the first attempt at this same
+claim was wrong in the way this document keeps being wrong: the swarm track
+originally cited #1614 as the evidence, and #1614's `BLOCKED` was
+**overdetermined** — `ai-review` was `FAILURE` there at the same time, so the
+threads were not shown to be doing any of the blocking. Two pull requests, the
+same status word, and only one of them says anything.
+
+**A second reading worth more than the first, recorded here because nothing
+else would hold it.** #1616 accumulated **13 review threads carrying 3
+distinct findings** — a stale frontmatter date (×5), a dangling self-reference
+to a superseded draft (×3), and a stale threshold in the pull request body
+(×2 across two rounds), plus carried repeats. The reviewer re-raised the same
+findings across four rounds while the surrounding text moved, so the line
+numbers changed and the carry-forward could not tell they were the same
+finding. **That is CRC-N4 measured on the pull request that defines CRC-N4's
+exit condition**, and it is the strongest evidence in this document for doing
+Phase 1 before anything else.
+
 **Phase 2 cannot currently be satisfied, and that is a finding about the
 pipeline rather than about this table.** In the generated workflow the step
 `Post this round's findings onto the diff` runs `ai-review-threads`, and the

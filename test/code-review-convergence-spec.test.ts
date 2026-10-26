@@ -54,6 +54,52 @@ function citedPaths(body: string): string[] {
   return [...found].sort();
 }
 
+/** One row of the *Readings taken* table. */
+type Reading = { phase: string; verdict: string; pr: string; head: string; observed: string };
+
+/**
+ * Rows of the *Readings taken* table, found by their shape rather than by a
+ * heading offset — a heading is renamed far more often than a five-column row
+ * whose first cell is a bolded digit is invented elsewhere.
+ */
+function readingRows(body: string): Reading[] {
+  const rows: Reading[] = [];
+  for (const line of body.split("\n")) {
+    const m = /^\|\s*\*\*(\d)\*\*\s*\|([^|]*)\|([^|]*)\|([^|]*)\|(.*)\|\s*$/.exec(line);
+    if (!m) continue;
+    rows.push({
+      phase: m[1],
+      verdict: m[2].trim(),
+      pr: m[3].trim(),
+      head: m[4].trim(),
+      observed: m[5].trim(),
+    });
+  }
+  return rows;
+}
+
+/**
+ * The single binding. One function turns the table into a violation list, so
+ * there is one thing to mutate and the planted case below drives exactly the
+ * code the live case drives.
+ *
+ * A full 40-character SHA, not an abbreviation: an abbreviated hash stops
+ * being unique as the repo grows, and a reader checking a two-month-old
+ * reading needs the one that still resolves.
+ */
+function readingDefects(body: string): string[] {
+  const out: string[] = [];
+  for (const r of readingRows(body)) {
+    if (!/^EXITED/.test(r.verdict)) continue;
+    if (!/#\d+/.test(r.pr)) out.push(`phase ${r.phase} is EXITED and names no pull request`);
+    if (!/`[0-9a-f]{40}`/.test(r.head))
+      out.push(`phase ${r.phase} is EXITED and names no full head SHA`);
+    if (r.observed.replace(/[—\-\s]/g, "").length < 40)
+      out.push(`phase ${r.phase} is EXITED and records no observation`);
+  }
+  return out;
+}
+
 describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
   const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
 
@@ -185,6 +231,69 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
       Number(stated![1]),
       `the summary says ${stated![1]} bound and ${ticked} boxes are ticked`,
     ).toBe(ticked);
+  });
+
+  /**
+   * The *Readings taken* table is the only place this spec may call a phase
+   * done, and it is a different claim from a ticked checkbox:
+   * `audit-specs` reports whether a criterion is BOUND BY A TEST, and a phase
+   * exit is an observation on a live pull request that no unit test can name.
+   *
+   * Which makes the table the easiest thing in the document to lie in. These
+   * cases do not — cannot — verify that the observation happened; they verify
+   * that a row claiming `EXITED` carries the evidence a reader needs to go and
+   * check it themselves: a pull request, the head it was read at, and what was
+   * seen. A row that asserts progress and cites nothing fails the suite.
+   */
+  test("the readings table parses, and at least one row is EXITED", () => {
+    // The positive control, and it is load-bearing twice over: a table that
+    // stopped parsing and a project with no phase yet exited produce the same
+    // empty list, and `readingDefects` would return [] for both.
+    const rows = readingRows(body!);
+    expect(rows.length, "the Readings-taken table did not parse").toBeGreaterThanOrEqual(7);
+    expect(
+      rows.filter(r => /^EXITED/.test(r.verdict)).length,
+      "no row is EXITED, so the evidence case below asserts nothing",
+    ).toBeGreaterThan(0);
+  });
+
+  test("every EXITED phase cites a pull request, a head, and what was observed", () => {
+    expect(
+      readingDefects(body!),
+      "a phase is recorded as EXITED without the evidence to check it. An exit is an " +
+        "observation on a real pull request, so the row must name the PR, the full head SHA " +
+        "it was read at, and what was seen. If the reading has not been taken, the verdict " +
+        "is PENDING or UNMEASURED — do not write EXITED and fill the cells in later.",
+    ).toEqual([]);
+  });
+
+  test("an EXITED row with no evidence is caught, so the case above can fail", () => {
+    // Planted, not described. The real table cannot be made to lie on demand,
+    // and the previous case passes against a tree where every phase is PENDING
+    // for reasons that have nothing to do with the check working.
+    const planted = [
+      "| Phase | Verdict | PR | Head | What was observed |",
+      "|---|---|---|---|---|",
+      "| **0** | EXITED 2026-10-26 | — | — | — |",
+      "| **1** | EXITED 2026-10-26 | #1616 | `short` | it looked fine |",
+      "| **2** | PENDING | — | — | — |",
+    ].join("\n");
+    const defects = readingDefects(planted);
+    // Membership, not the count. The count is a poor predictor here and
+    // predicting it wrong was the first thing this case caught: one bad row
+    // yields up to THREE defects, so "two bad rows" is not "two defects".
+    // What the check must get right is WHICH phases it flags — a check that
+    // also flagged the PENDING row would return a longer list and be wrong.
+    const flagged = [...new Set(defects.map(d => /phase (\d)/.exec(d)![1]))].sort();
+    expect(flagged, "the PENDING row must not be flagged and both EXITED rows must be")
+      .toEqual(["0", "1"]);
+    // Phase 0 is missing all three; phase 1 has a PR but an abbreviated SHA
+    // and a one-line observation.
+    expect(defects.filter(d => d.startsWith("phase 0")).length).toBe(3);
+    expect(defects.filter(d => d.startsWith("phase 1")).map(d => d.replace("phase 1 is EXITED and ", ""))).toEqual([
+      "names no full head SHA",
+      "records no observation",
+    ]);
   });
 
   test("a mis-cited path is caught, so the case above is not green by construction", () => {
