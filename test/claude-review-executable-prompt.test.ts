@@ -63,6 +63,7 @@ import {
   AUTOMATION_ONLY_TRIGGERS,
   ENTITY_ONLY_MCP_SERVERS,
   FORK_GUARD_COMPANION_EVENTS,
+  forkGuardDefect,
   FORK_GUARD_TERMS,
   POSTING_TOOLS,
   READING_SCRIPT,
@@ -482,6 +483,46 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     // declared constant rather than only through behaviour.
     expect(FORK_GUARD_COMPANION_EVENTS as readonly string[]).not.toContain("pull_request");
     expect(FORK_GUARD_COMPANION_EVENTS as readonly string[]).not.toContain("pull_request_target");
+  });
+
+  /**
+   * AC-26: the FOURTH finding on this one guard, and the first that is about
+   * the prose rather than the code. Round 8 of #1614 read the docblock on
+   * `forkGuardDefect` claiming an `&&` inside an arm "is left alone", checked
+   * it against the anchored patterns, and found it false.
+   *
+   * It is a false POSITIVE, so nothing was insecure: a narrowed companion arm
+   * runs on a strict subset of what the bare one runs on. The defect was that
+   * a comment made a specific, checkable claim about behaviour and no
+   * assertion contradicted it — which is exactly the shape
+   * `.claude/rules/checks-must-be-able-to-fail.md` names in *In practice*,
+   * the reason nobody checked being a comment saying it was checked.
+   *
+   * So the behaviour is pinned here and the comment now describes it. If a
+   * later change decides narrowing arms SHOULD be accepted, this case goes
+   * red and the docblock has to move with it — which is the point.
+   */
+  test("AC-26: a narrowing && inside a companion arm is refused, and that is on purpose", () => {
+    const FORK = "github.event.pull_request.head.repo.full_name == github.repository";
+    const bare = `${FORK} || github.event_name == 'workflow_dispatch'`;
+    // The control. Without this the case below cannot tell "narrowing is
+    // refused" from "the whole disjunction form is refused".
+    expect(forkGuardDefect(bare), "the bare companion arm must be accepted").toBeNull();
+
+    for (const narrowed of [
+      `${FORK} || (github.event_name == 'workflow_dispatch' && github.actor == 'someone')`,
+      `${FORK} || github.event_name == 'workflow_dispatch' && github.actor == 'someone'`,
+    ]) {
+      expect(
+        forkGuardDefect(narrowed),
+        "a narrowed companion arm is SAFER than the bare one and is still refused — the " +
+          "patterns are anchored and this function does not evaluate GitHub's expression " +
+          "language. If you are changing that, change the docblock on forkGuardDefect too.",
+      ).not.toBeNull();
+    }
+    // And a narrowing `&&` on the fork comparison itself, which is the arm
+    // the docblock's old wording was most likely to be read as being about.
+    expect(forkGuardDefect(`${FORK} && github.actor == 'someone'`)).not.toBeNull();
   });
 
   /** AC-24: the other spelling in the same finding — negation, not addition. */

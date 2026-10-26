@@ -200,8 +200,22 @@ export const FORK_GUARD_COMPANION_ARM = new RegExp(
  * The condition is split on `||` and every arm must be either the fork
  * comparison itself or `FORK_GUARD_COMPANION_ARM`. `true`, `always()` and a
  * parenthesised negation are all arms that match neither, so each is named
- * rather than tolerated. An `&&` inside an arm can only narrow what runs, so
- * it is left alone.
+ * rather than tolerated.
+ *
+ * **A narrowing `&&` inside an arm is refused too, and that is deliberate.**
+ * Both patterns are anchored, so
+ * `github.event_name == 'workflow_dispatch' && github.actor == 'someone'`
+ * matches neither and is reported as a stray arm — even though it runs on a
+ * strict subset of what the bare companion arm runs on, and is therefore
+ * SAFER. That is a false positive, not a bypass: the direction
+ * `.claude/rules/checks-must-be-able-to-fail.md` says to be wrong in. The
+ * cost is a confusing refusal for somebody adding a legitimate narrowing;
+ * the cost of the other direction is that deciding whether an arbitrary `&&`
+ * narrows or widens means evaluating GitHub's expression language, and a
+ * guard that reasons about what it cannot evaluate is the substring search
+ * this function replaced. AC-26 in `test/claude-review-executable-prompt.test.ts`
+ * holds this behaviour, because an earlier revision of this comment claimed
+ * the opposite and nothing contradicted it (#1614, round 8).
  *
  * This is deliberately a CLOSED set. Widening it is how the check dies: the
  * next arm somebody wants is likelier to be the bypass than the exception,
