@@ -486,10 +486,21 @@ near-misses are the expensive ones: each has something in the tree that
 resembles it and is not it. The unit is stated because this line read `34`
 from before CRC-N6 was added until 2026-10-26, when counting it found 29 —
 the number had been stale for long enough that nobody could say what it had
-counted, and incrementing it would have carried the error forward. Two
-further ids are NAMED inside these bullets without leading one (CRC-A6,
-CRC-E9); they are accounted for in their own buckets, which is why 31 ids
-appear here and 29 is the right count of this list.
+counted, and incrementing it would have carried the error forward. One
+further id is NAMED inside these bullets without leading one (CRC-A6); it is
+accounted for in its own bucket, and one bullet leads with TWO ids
+(**CRC-E3, CRC-E9**), which is why 31 ids appear here and 29 is the right
+count of this list.
+
+**Every number in the paragraph above is recomputed from the bullets by
+`test/code-review-convergence-spec.test.ts`, and that is the fix rather than
+the recount.** This sentence drifted three times inside one pull request
+(#1619) and every repair was another hand tally — the instrument that
+produced the drift. Round 4's reviewer said so as an approach finding and was
+right. It had also named CRC-E9 as mentioned-but-not-leading, which it is
+not: it co-leads a bullet with CRC-E3, so 29 bullets carry 30 leading ids.
+Three quantities live in one sentence — bullets, leading ids, ids mentioned
+anywhere — and conflating any two of them is how it moved each time.
 
 - **CRC-A1** `missingEvidenceViolations` requires a runnable command per AC and `gates/workflow.test.ts` enforces it — but only inside a harness ship run, and `ship.mode` is `direct`. Dormant on the lane this project ships on.
 - **CRC-A2** Nothing makes a fresh-context subagent review the diff before the PR opens. The generated pre-push hook runs conformity tests, not a review.
@@ -1126,7 +1137,8 @@ Recorded because each one invalidates a naive reading of the criteria above.
   `Bun.YAML`, which also caught a list form and a scalar form nobody had raised.
   **CRC-N1's cap is three rounds. A cap of three ships both holes.**
 
-  **The cap also counts the wrong unit.** Of the 15 `ai-review` runs on this
+  **The cap also counts the wrong unit, and so did this bullet — twice.** Of
+  the 15 `ai-review` runs on this
   branch, **two concluded `failure` and only one of those was a finding**: run
   `40347808694` was the no-payload refusal — *"the review action exited
   successfully WITHOUT writing a findings payload"* — which is UNMEASURED, not a
@@ -1172,6 +1184,28 @@ Recorded because each one invalidates a naive reading of the criteria above.
   three genuine defects above sits in a commit that no review ever passed
   judgement on, which is the waiver-is-not-a-review distinction costing something
   real rather than being a definitional point.
+
+  **A ledger entry is written per ATTEMPT, not per run, and that is the third
+  unit error in this bullet — found by round 4's reviewer on #1619, as
+  arithmetic rather than as a reading.** Its objection was sound and its
+  conclusion was not: 12 surviving entries plus a `truncated` of 5 is 17
+  entries ever appended, against 15 `ai-review` runs, so it inferred that one
+  of the three numbers must be wrong. **All three are right.** The writer's
+  accumulator is `prior_truncated + evicted_this_write` and it runs once per
+  job execution; a re-run is a second ATTEMPT of the SAME run id, which `gh
+  run list` renders as one row. Two runs on this branch carry
+  `run_attempt: 2` — `40386531604` and `40347808694`, the second of them the
+  no-payload refusal the objection assumed had written nothing — so 15 runs
+  are 17 executions and 17 appends, and `12 + 5` is exactly that. The
+  duplicate round 9 already in the window is one of the two, which is the
+  same mechanism visible from the other side.
+
+  **Three unit errors in one bullet is the finding, not the arithmetic.**
+  Entries read as rounds, runs read as rounds, and now attempts read as runs:
+  every one is a count whose unit was inferred from a plausible name rather
+  than from the writer. **`gh run list` is the shared cause of the second and
+  third** — it is a list of runs, the thing that appends is an attempt, and
+  nothing in its output says so.
 
 
 - **A finding can be regenerated from prose that merely DESCRIBES it, and deduplication cannot see that (#1614, CRC-N6).** Four consecutive rounds each re-raised an already-fixed defect, all four anchored on the same docblock, which QUOTED the deleted regex verbatim — a dead pattern spelled out in a comment is indistinguishable from live code to anything matching on text. `5449750b` removed the last verbatim copy. **The FINAL round then re-raised it again from the paraphrase**, reconstructing a regex literal that appears nowhere in the file, attributing it to a line number, and working out what its output would be on the live workflow — `["workflow_dispatch","inputs","pr","description","required","type","pull_request"]` — against a measured actual of `["workflow_dispatch","pull_request"]`. The symbol it named, `TRIGGER_NAME`, has **0 occurrences at that head**. What survived at that line is a prose row in a history table: *"any indentation is any DEPTH, so every field of the `workflow_dispatch.inputs` schema read as a trigger"*. **Why CRC-N4 cannot absorb this:** the suppression key is `file \0 line-text \0 summary`, and a regenerated finding has a different summary and usually a different line, so it is not a repeat by any key the dedupe can form. It is a NEW finding about code that does not exist. **The cheap fix is wrong in a way worth naming:** "stop quoting dead code in comments" was applied in `5449750b` and the final round defeated it, so the rule that would actually bind is about where a defect's history is allowed to live — the commit and the pull request, which the reviewer does not read as the subject, rather than the docblock, which it does.

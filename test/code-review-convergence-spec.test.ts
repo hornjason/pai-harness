@@ -171,6 +171,107 @@ function readingDefects(body: string): string[] {
   return out;
 }
 
+/**
+ * The "Not done — the remainder" bullet list, and the sentence that tallies it.
+ *
+ * This exists because the tally drifted three times in one pull request
+ * (#1619), each time in the same way: a number hand-counted into prose, read
+ * by nobody until a reviewer re-counted it by eye. A fourth manual recount is
+ * the same instrument that produced the first three. The reviewer's own
+ * meta-finding on round 4 said so and was right — so the count is now
+ * recomputed from the bullets themselves and the prose has to agree with it.
+ *
+ * Three different quantities live in that sentence and conflating any two is
+ * exactly how it drifted:
+ *   - **bullets** — lines beginning `- **CRC-…`
+ *   - **leading ids** — ids in the bold lead of a bullet. One bullet leads
+ *     with TWO (`**CRC-E3, CRC-E9**`), so this exceeds the bullet count.
+ *   - **mentioned ids** — every id anywhere in the section, including ones
+ *     only named inside another bullet's prose.
+ */
+interface BulletTally {
+  bullets: number;
+  leading: string[];
+  mentioned: string[];
+  namedNotLeading: string[];
+}
+
+function remainderSection(body: string): string | null {
+  const at = body.indexOf("**29 bullets");
+  const start = at === -1 ? body.search(/^\*\*\d+ bullets/m) : at;
+  if (start === -1) return null;
+  const rest = body.slice(start);
+  const end = rest.search(/^### /m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+function tally(section: string): BulletTally {
+  const bulletLines = section.match(/^- \*\*CRC-.*$/gm) ?? [];
+  const leading = new Set<string>();
+  for (const line of bulletLines) {
+    const lead = line.match(/^- \*\*((?:CRC-[A-Z]+\d+)(?:, CRC-[A-Z]+\d+)*)\*\*/);
+    for (const id of lead?.[1].match(/CRC-[A-Z]+\d+/g) ?? []) leading.add(id);
+  }
+  const mentioned = new Set(section.match(/CRC-[A-Z]+\d+/g) ?? []);
+  const sort = (s: Set<string>) => [...s].sort();
+  return {
+    bullets: bulletLines.length,
+    leading: sort(leading),
+    mentioned: sort(mentioned),
+    namedNotLeading: sort(mentioned).filter(id => !leading.has(id)),
+  };
+}
+
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the remainder tally is recomputed, not retyped", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+  const section = body === null ? null : remainderSection(body);
+
+  test("the section parses and holds bullets, so the tallies below are not vacuous", () => {
+    // The positive control. Every assertion here is over a parse, and a parse
+    // that found nothing satisfies all of them.
+    expect(section, "the '<N> bullets' paragraph was not found in the spec").not.toBeNull();
+    const t = tally(section!);
+    expect(t.bullets, "no `- **CRC-…` bullets parsed out of the section").toBeGreaterThan(10);
+    expect(t.mentioned.length).toBeGreaterThanOrEqual(t.leading.length);
+  });
+
+  test("the stated bullet count equals the bullets", () => {
+    const t = tally(section!);
+    const stated = section!.match(/^\*\*(\d+) bullets/m);
+    expect(stated, "the paragraph must open `**<N> bullets`").not.toBeNull();
+    expect(
+      Number(stated![1]),
+      `the prose says ${stated![1]} bullets; ${t.bullets} parse out of the section. ` +
+        "Recompute, do not retype — this sentence has drifted three times.",
+    ).toBe(t.bullets);
+  });
+
+  test("the stated id count equals the ids, and names the right non-leading ones", () => {
+    const t = tally(section!);
+    // Matched against COLLAPSED whitespace. The paragraph is hard-wrapped, so
+    // a literal space in the pattern breaks the moment an edit rewraps the
+    // line — a detector narrower than what it detects, and it was: the first
+    // version of this case went red on a rewrap rather than on a wrong count.
+    const flat = section!.replace(/\s+/g, " ");
+    const m = flat.match(
+      /without leading one \(([^)]*)\);[^.]*?why (\d+) ids appear here and (\d+) is the right count/,
+    );
+    expect(
+      m,
+      "the reconciliation sentence must keep its shape: `… without leading one (<ids>); … " +
+        "why <N> ids appear here and <M> is the right count …`",
+    ).not.toBeNull();
+    const named = (m![1].match(/CRC-[A-Z]+\d+/g) ?? []).sort();
+    expect(
+      named,
+      "the ids the sentence names as mentioned-but-not-leading are not the ones that are. " +
+        "CRC-E9 CO-LEADS a bullet with CRC-E3 and is a leading id.",
+    ).toEqual(t.namedNotLeading);
+    expect(Number(m![2]), "the stated total id count").toBe(t.mentioned.length);
+    expect(Number(m![3]), "the stated bullet count, restated in the same sentence").toBe(t.bullets);
+  });
+});
+
 describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
   const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
 
