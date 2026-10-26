@@ -129,6 +129,16 @@ const INLINE_COMMENT_ALLOWLIST =
  */
 const PULL_REQUEST_TRIGGER = "\n  pull_request:\n\npermissions:";
 
+/** The whole `workflow_dispatch` key and its inputs, so a case can take it
+ * away rather than add a second trigger beside it. */
+const DISPATCH_TRIGGER =
+  "  workflow_dispatch:\n    inputs:\n      pr:\n" +
+  '        description: "Pull request number to review"\n' +
+  "        required: true\n        type: number\n";
+
+/** What AC-11 and AC-22 put in its place: an entity trigger, alone. */
+const ENTITY_TRIGGER = "  pull_request:\n    branches: [main]\n";
+
 /**
  * The live workflow with its entity trigger taken away — `workflow_dispatch`
  * and nothing else, which is what this file measured against before #631/#675.
@@ -275,8 +285,58 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     // AC-1 holds the live file at zero violations either way — but the reason
     // is the enumeration argument in the workflow's own comment, not a server
     // that cannot start.
+    // The entity server now starts on the `pull_request` path — but the
+    // grant is still caught, because `workflow_dispatch` is still declared
+    // and a run started THAT way still has no such server. See AC-22.
     const entityAllowed = mutateOnce(live, ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
-    expect(kinds(entityAllowed)).not.toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+    expect(kinds(entityAllowed)).toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+  });
+
+  /**
+   * The precision regression the trigger promotion introduced, and the second
+   * finding THE REVIEWER raised on the pull request that introduced it.
+   *
+   * Check 3 used to ask whether EVERY trigger was automation-only. While this
+   * file had one trigger that was the same question. With `pull_request` and
+   * `workflow_dispatch` side by side it is a strictly weaker one — the check
+   * went silent on a mixed set, even though a dispatch run of the same job
+   * still has no entity-only server. "Never exists on any trigger" quietly
+   * became "does not exist on the intersection of all triggers", with the
+   * name and the comment unchanged.
+   *
+   * The pair below varies ONE thing — whether a second, automation trigger is
+   * declared — and nothing else (#585).
+   */
+  test("AC-22: an entity-only tool is caught per TRIGGER, not over the intersection", () => {
+    const mixed = mutateOnce(live, ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
+    const entityOnly = mutateOnce(mixed, DISPATCH_TRIGGER, "");
+    // The control: the pair differs in the dispatch trigger and in nothing
+    // else, and the entity trigger is present in both.
+    for (const src of [mixed, entityOnly]) {
+      expect(
+        [...reviewWorkflowRegions(src).triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm)].map(m => m[1]),
+      ).toContain("pull_request");
+    }
+    expect(
+      [...reviewWorkflowRegions(entityOnly).triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm)].map(
+        m => m[1],
+      ),
+    ).not.toContain("workflow_dispatch");
+
+    // Mixed: caught, because the dispatch path cannot reach the tool.
+    expect(kinds(mixed)).toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+    // Entity ONLY: not a violation. Every declared trigger can start the
+    // server, so the grant is reachable on all of them. Without this half the
+    // fix could have been "always report", which refuses a correct workflow.
+    expect(kinds(entityOnly)).not.toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+
+    // The message has to say WHICH trigger cannot reach it — "add it to the
+    // allowlist" and "drop the dispatch trigger" are different repairs.
+    const detail = reviewToolAgreement(mixed)
+      .filter(x => x.kind === "ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER")
+      .map(x => x.detail)
+      .join(" ");
+    expect(detail).toContain("workflow_dispatch");
   });
 
   /**
@@ -495,16 +555,16 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
    */
   test("AC-11: the same allowlist under an entity trigger is NOT a violation", () => {
     const dispatchTriggered = mutateOnce(dispatchOnly(live), ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
-    const entityTriggered = mutateOnce(
-      dispatchTriggered,
-      "\non:\n  workflow_dispatch:",
-      "\non:\n  pull_request:\n    branches: [main]\n  workflow_dispatch:",
-    );
+    // The dispatch trigger is REPLACED, not joined. An earlier revision of
+    // this case added `pull_request` beside `workflow_dispatch` and asserted
+    // the mixed set was clean — which was true only while check 3 asked about
+    // the intersection of all triggers, and is false now that it asks per
+    // trigger (AC-22). A dispatch run of a mixed-trigger job still has no
+    // entity server, so the grant is still unreachable on that path.
+    const entityTriggered = mutateOnce(dispatchTriggered, DISPATCH_TRIGGER, ENTITY_TRIGGER);
     // The pair differs in the TRIGGER and in nothing else — asserted, not
     // promised, because a pair that varies two things measures neither (#585).
-    expect(entityTriggered.replace("  pull_request:\n    branches: [main]\n", "")).toEqual(
-      dispatchTriggered,
-    );
+    expect(entityTriggered.replace(ENTITY_TRIGGER, DISPATCH_TRIGGER)).toEqual(dispatchTriggered);
     expect(kinds(entityTriggered)).not.toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
     expect(kinds(dispatchTriggered)).toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
   });

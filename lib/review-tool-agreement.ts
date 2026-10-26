@@ -387,11 +387,24 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
 
   // 3. The door nothing in the prompt can show: a grant whose server the
   //    pinned action never starts under this workflow's triggers.
+  //
+  //    PER-TRIGGER, not over the intersection. The first revision asked
+  //    whether EVERY trigger was automation-only, which was the same question
+  //    while this file had exactly one trigger — and silently became a weaker
+  //    one when #631/#675 added `pull_request` beside `workflow_dispatch`.
+  //    **The reviewer caught that too, on the pull request that made the
+  //    change**: with a mixed trigger set the check went silent, even though
+  //    a `workflow_dispatch` run of the same job still gets the automation
+  //    classification and still has no entity-only server. A grant that works
+  //    on one of two triggers is #732 reintroduced for the other one, and the
+  //    property degraded from "never exists" to "does not exist on the
+  //    intersection of all triggers" without the name or the comment moving.
   const triggers = [...triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm)].map(m => m[1]);
-  const everyTriggerIsAutomation =
-    triggers.length > 0 &&
-    triggers.every(t => (AUTOMATION_ONLY_TRIGGERS as readonly string[]).includes(t));
-  if (everyTriggerIsAutomation) {
+  const automationTriggers = triggers.filter(t =>
+    (AUTOMATION_ONLY_TRIGGERS as readonly string[]).includes(t),
+  );
+  if (automationTriggers.length > 0) {
+    const everyTriggerIsAutomation = automationTriggers.length === triggers.length;
     for (const tool of allowed) {
       const server = mcpServerOf(tool);
       const why = server ? ENTITY_ONLY_MCP_SERVERS[server] : undefined;
@@ -400,8 +413,15 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
           kind: "ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER",
           detail:
             `--allowedTools grants ${tool}, whose MCP server is installed only under an entity ` +
-            `event (${why}). This workflow's triggers are ${triggers.join(", ")}, all of which ` +
-            `the action classifies as automation events, so the tool never exists`,
+            `event (${why}). ` +
+            (everyTriggerIsAutomation
+              ? `This workflow's triggers are ${triggers.join(", ")}, all of which the action ` +
+                `classifies as automation events, so the tool never exists`
+              : `This workflow also triggers on ${automationTriggers.join(", ")}, which the ` +
+                `action classifies as an automation event, so a run started that way has no ` +
+                `such server and the tool does not exist in it. The grant works on ` +
+                `${triggers.filter(t => !automationTriggers.includes(t)).join(", ")} and ` +
+                `silently does nothing on the rest`),
         });
       }
     }
