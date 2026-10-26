@@ -3767,6 +3767,38 @@ export const AI_REVIEW_FINDING_FIELDS = {
 } as const;
 
 /**
+ * The marker that carries a posted thread's identity, so a later round can
+ * ask the thread list whether a finding was already raised.
+ *
+ * Increment 1's prerequisite. The suppression gate's evidence is moving from
+ * the ledger comment to the pull request's review threads, and a thread is
+ * only usable as evidence if it can be reduced back to the key `carryKey`
+ * forms for a fresh finding. Matching on the rendered prose is the near-miss:
+ * a summary is model-written text that GitHub re-wraps, so the two sides
+ * would key in different namespaces and the dedupe would silently suppress
+ * nothing — the state `checkoutLineText`'s docblock measured at `kept: 1,
+ * suppressed: 0` on a planted exact repeat.
+ *
+ * **The payload is base64 and that is load-bearing, not tidiness.** A key is
+ * `file \0 anchor \0 summary` where the anchor is the TEXT at the cited line,
+ * so every key contains a NUL and the text is arbitrary source — including
+ * `-->`, which appears in this repository's own workflow emitters. Spelled
+ * raw, such a key closes its own comment and a reader recovers a prefix,
+ * which is a DIFFERENT key that still looks like one. Standard base64's
+ * alphabet contains no `-`, so no encoded payload can terminate the comment.
+ *
+ * Versioned in the string. A reader meeting a marker it does not know must
+ * treat the thread as unkeyed and re-post, the same one-sided safety
+ * `AI_REVIEW_LEDGER_IDENTITY` has.
+ *
+ * Declared HERE for the reason `AI_REVIEW_FINDING_FIELDS` is: this module has
+ * no relative imports, so it is the one module the mutation batteries that
+ * copy `ai-review-findings.ts` alone into a scratch directory can carry with
+ * it. A marker the deployed path cannot import is a marker it does not use.
+ */
+export const AI_REVIEW_THREAD_KEY_MARKER = "rungate:ai-review-finding-key:v1";
+
+/**
  * The key the verifier group's ballot hangs its per-finding votes off
  * (CRC-B4, #1476).
  *

@@ -130,6 +130,7 @@ import {
   AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_SEVERITIES,
   AI_REVIEW_SEVERITY_KEY,
+  AI_REVIEW_THREAD_KEY_MARKER,
   AI_REVIEW_VERDICT_KEY,
   SEVERITY_RANK,
   type Severity,
@@ -889,6 +890,7 @@ export interface AiReviewThreadRequest {
  */
 export function reviewThreadRequests(
   reading: AiReviewFindingsReading,
+  keyFor?: (finding: Record<string, unknown>) => string | null,
 ): AiReviewThreadRequest[] {
   const f = AI_REVIEW_FINDING_FIELDS;
   if (reading.reported === null) return [];
@@ -917,7 +919,7 @@ export function reviewThreadRequests(
           ? Number(suffixed[2])
           : null;
 
-    requests.push({ path, line, body: threadBody(finding) });
+    requests.push({ path, line, body: threadBody(finding, keyFor?.(finding)) });
   }
   return requests;
 }
@@ -930,7 +932,24 @@ export function reviewThreadRequests(
  * path has never had room for it, which is part of why the annotations were
  * worth so little.
  */
-function threadBody(finding: Record<string, unknown>): string {
+/**
+ * The thread a finding becomes, with the identity it was raised under
+ * appended when the caller could form one.
+ *
+ * `key` is a parameter and not something read here, for the reason
+ * `suppressRepeats` states about its own prior set: only the caller can
+ * reach the checkout to read the text at the cited line, and a function that
+ * fetches its own evidence cannot be given a negative control. It is also
+ * why `carryKey` is not imported — this module is copied ALONE into a
+ * scratch directory by several mutation batteries, and a relative import
+ * added to it resolves to nothing, so the mutant fails to LOAD and reads as
+ * a behavioural difference on every row.
+ *
+ * `null`, `undefined` and `""` all emit NO marker, and that is deliberate.
+ * A caller that could not key the finding has not recorded an empty key; it
+ * has recorded nothing, and the two must not be the same bytes.
+ */
+export function threadBody(finding: Record<string, unknown>, key?: string | null): string {
   const f = AI_REVIEW_FINDING_FIELDS;
   const severity = finding[f.severity] !== undefined ? String(finding[f.severity]) : null;
   const summary =
@@ -939,7 +958,49 @@ function threadBody(finding: Record<string, unknown>): string {
     finding[f.failureScenario] !== undefined ? String(finding[f.failureScenario]) : null;
 
   const head = severity === null ? summary : `**${severity}** — ${summary}`;
-  return scenario === null ? head : `${head}\n\n${scenario}`;
+  const prose = scenario === null ? head : `${head}\n\n${scenario}`;
+  if (typeof key !== "string" || key === "") return prose;
+  const payload = Buffer.from(key, "utf-8").toString("base64");
+  return `${prose}\n\n<!-- ${AI_REVIEW_THREAD_KEY_MARKER} ${payload} -->`;
+}
+
+/**
+ * Recover the key a thread was posted under, or `null`.
+ *
+ * `null` means THIS THREAD CANNOT BE SHOWN TO BE A REPEAT, and every way of
+ * failing collapses to it: no marker, a marker this version does not know, a
+ * payload that is not base64, a payload that does not decode to the bytes it
+ * encoded. That collapse is safe in exactly one direction — a thread read as
+ * unkeyed is re-posted, which is loud and self-correcting, whereas a thread
+ * read under the WRONG key suppresses a live finding silently and
+ * permanently.
+ *
+ * The round-trip check is why a corrupt payload cannot become a key by
+ * accident: `Buffer.from` is lenient and will decode almost any string to
+ * SOME bytes, so re-encoding and comparing is the only reading that
+ * distinguishes a payload this writer produced from one it did not.
+ */
+export function threadKeyFrom(body: unknown): string | null {
+  if (typeof body !== "string") return null;
+  const at = body.lastIndexOf(`<!-- ${AI_REVIEW_THREAD_KEY_MARKER} `);
+  if (at === -1) return null;
+  const rest = body.slice(at + `<!-- ${AI_REVIEW_THREAD_KEY_MARKER} `.length);
+  const end = rest.indexOf("-->");
+  if (end === -1) return null;
+  const payload = rest.slice(0, end).trim();
+  if (payload === "") return null;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(payload, "base64").toString("utf-8");
+  } catch {
+    return null;
+  }
+  if (decoded === "") return null;
+  // THE CONTROL ON THE DECODE. Without it `@@@not base64@@@` decodes to
+  // mojibake and is returned as a key, so every corrupt thread becomes a
+  // repeat of every other corrupt thread.
+  if (Buffer.from(decoded, "utf-8").toString("base64") !== payload) return null;
+  return decoded;
 }
 
 /**
