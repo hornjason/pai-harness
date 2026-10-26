@@ -68,10 +68,16 @@ import {
   aiReviewSuppressionGate,
   carryStateOf,
   checkoutLineText,
+  ledgerPriorKeysFrom,
   priorKeysFrom,
   readOrNull,
   readSnapshot,
 } from "../lib/ai-review-suppression";
+import {
+  THREADS_NOT_A_LIST,
+  THREADS_NOT_READ,
+  THREADS_UNPARSEABLE,
+} from "../lib/ai-review-threads";
 import {
   AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_SUPPRESSED_TITLE,
@@ -80,25 +86,31 @@ import {
   findingMustAlwaysBeReported,
   readAiReviewFindings,
   severityBlocks,
+  threadBody,
   type AiReviewSuppressionGate,
 } from "../lib/scaffold/ai-review-findings";
 import {
   AI_REVIEW_CARRY_ABSENT,
-  AI_REVIEW_CARRY_PATH_VAR,
   AI_REVIEW_CARRY_READ,
   AI_REVIEW_CARRY_STATE_KEY,
+  AI_REVIEW_CARRY_STEP_NAME,
   AI_REVIEW_CARRY_UNMEASURED,
   AI_REVIEW_FINDINGS_KEY,
   AI_REVIEW_LEDGER_IDENTITY_V1,
   AI_REVIEW_LEDGER_MARKER,
   AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR,
   AI_REVIEW_LEDGER_TEXT_FIELD,
+  AI_REVIEW_RUN_STEP_NAME,
   AI_REVIEW_SNAPSHOT_ROUND_KEY,
+  AI_REVIEW_THREADS_PATH_VAR,
+  AI_REVIEW_THREADS_STEP_NAME,
   AI_REVIEW_VERDICT_KEY,
 } from "../lib/scaffold/ai-review-step";
 
 const ROOT = join(import.meta.dir, "..");
 const LIB = join(ROOT, "lib");
+/** The emitted workflow, which is where the step ORDER is decided (AS-4). */
+const WORKFLOW = join(ROOT, ".github", "workflows", "ai-review.yml");
 
 let SCRATCH: string;
 
@@ -197,17 +209,43 @@ function payloadOf(verdict: string, findings: Record<string, unknown>[]): string
   });
 }
 
-/** The gate as the wrapper builds it, over an in-memory carry and snapshot. */
+/**
+ * The thread list exactly as the carry step writes it — the REAL poster's
+ * body, marker and all, around the REAL key.
+ *
+ * Built from `threadBody` and `carryKey` rather than from a literal, because
+ * the mechanism under test is those two agreeing across a round trip. A
+ * hand-written marker would keep every case below green through a change to
+ * either side, which is the shape #1586 spent seven months in.
+ */
+function threadsOf(
+  entries: Array<{ finding?: Record<string, unknown>; resolved?: boolean; key?: string | null }>,
+): string {
+  return JSON.stringify(
+    entries.map(e => {
+      const key =
+        e.key !== undefined ? e.key : carryKey(e.finding ?? advisory(), CITED_LINE);
+      return { isResolved: e.resolved === true, body: threadBody(e.finding ?? advisory(), key) };
+    }),
+  );
+}
+
+/** One OPEN thread for a finding the reviewer is about to raise again. */
+const raisedBefore = (finding: Record<string, unknown> = advisory()) => threadsOf([{ finding }]);
+
+/** The gate as the wrapper builds it, over an in-memory thread list. */
 function gate(opts: {
-  carry?: string | null;
-  snapshot?: string | null;
+  threads?: string | null;
   root?: string;
   withLineText?: boolean;
 }): AiReviewSuppressionGate {
   const root = opts.root ?? checkout("default");
   return aiReviewSuppressionGate({
-    carry: opts.carry === undefined ? carryFile(AI_REVIEW_CARRY_READ) : opts.carry,
-    snapshot: opts.snapshot === undefined ? null : opts.snapshot,
+    // `undefined` means "a pull request with no threads" — MEASURED and
+    // empty. `null` is the separate statement that the list was not read,
+    // and a default that collapsed them would make every refusal row below
+    // pass for the wrong reason.
+    threads: opts.threads === undefined ? "[]" : opts.threads,
     lineTextFor:
       opts.withLineText === false ? () => undefined : checkoutLineText(root),
   });
@@ -225,9 +263,8 @@ const SUBTRACTION_MUTANT = "const kept = list;";
 const EXEMPTION_BINDING = "return severityBlocks(severity) !== false;";
 const EXEMPTION_MUTANT = "return false;";
 
-const ORDERING_BINDING =
-  "const stale = reading.prior.filter(p => typeof p.round === \"number\" && p.round >= round);";
-const ORDERING_MUTANT = "const stale: typeof reading.prior = [];";
+const PRIOR_SET_BINDING = "return { status: \"MEASURED\", keys: reading.threads.map(t => t.key) };";
+const PRIOR_SET_MUTANT = "return { status: \"MEASURED\", keys: [] };";
 
 describe("AS-0: each mutated binding is the only one of its kind", () => {
   test("AS-0a: the subtraction and the exemption appear exactly once each", () => {
@@ -236,9 +273,20 @@ describe("AS-0: each mutated binding is the only one of its kind", () => {
     expect(source.split(EXEMPTION_BINDING).length - 1).toBe(1);
   });
 
-  test("AS-0b: the ordering guard appears exactly once", () => {
+  test("AS-0b: the prior set is formed in exactly one place", () => {
     const source = readFileSync(join(LIB, "ai-review-suppression.ts"), "utf-8");
-    expect(source.split(ORDERING_BINDING).length - 1).toBe(1);
+    expect(source.split(PRIOR_SET_BINDING).length - 1).toBe(1);
+    // And the dormant ledger reader is CALLED from nowhere. Two readers of
+    // "has this been raised before?" would be two deciders that agree, and a
+    // mutation of either would leave the other holding every row up. The
+    // count is of call sites, not of the name: a docblock naming it is prose
+    // and the declaration is one `export function`, so counting mentions
+    // measures how much was written about it.
+    expect(
+      source.split(/\bledgerPriorKeysFrom\(/).length - 1,
+      "the ledger reader is called, so it is a second decider and not a dormant one",
+    ).toBe(1);
+    expect(source).toContain("export function ledgerPriorKeysFrom(");
   });
 
   test("AS-0c: the exemption is the only place the reader decides what to offer", () => {
@@ -302,12 +350,11 @@ async function mutantGate(
 // ── AS-1: a prior ADVISORY that still applies is not re-emitted ──────────
 
 describe("AS-1: the planted prior advisory is suppressed, and the subtraction is what did it", () => {
-  const prior = ledgerBody([round(1, [advisory()])]);
-  const snapshot = snapshotOf(2, prior);
+  const threads = raisedBefore();
   const payload = payloadOf("PASS", [advisory()]);
 
   test("AS-1a: it is named in the suppressed set and absent from the report", () => {
-    const reading = readAiReviewFindings(payload, undefined, gate({ snapshot }));
+    const reading = readAiReviewFindings(payload, undefined, gate({ threads }));
 
     expect(reading.suppressionUnmeasured).toBeNull();
     expect(reading.suppressedReported).toHaveLength(1);
@@ -324,19 +371,19 @@ describe("AS-1: the planted prior advisory is suppressed, and the subtraction is
     const mutant = await mutantReader("subtraction", s =>
       s.replace(SUBTRACTION_BINDING, SUBTRACTION_MUTANT),
     );
-    const forged = mutant.readAiReviewFindings(payload, undefined, gate({ snapshot }));
+    const forged = mutant.readAiReviewFindings(payload, undefined, gate({ threads }));
 
     // Same input, opposite reading: the finding is back in the report.
     expect(forged.reported).toHaveLength(1);
-    expect(readAiReviewFindings(payload, undefined, gate({ snapshot })).reported).toEqual([]);
+    expect(readAiReviewFindings(payload, undefined, gate({ threads })).reported).toEqual([]);
   });
 
   test("AS-1c: a prior round raising something ELSE suppresses nothing", () => {
     // The vacuity control. Every assertion above would also hold if the gate
     // suppressed unconditionally, and this is the input that tells them
-    // apart — same rig, same carry state, a key that does not match.
-    const other = ledgerBody([round(1, [advisory({ summary: "a different complaint" })])]);
-    const reading = readAiReviewFindings(payload, undefined, gate({ snapshot: snapshotOf(2, other) }));
+    // apart — same rig, one OPEN thread, a key that does not match.
+    const other = raisedBefore(advisory({ summary: "a different complaint" }));
+    const reading = readAiReviewFindings(payload, undefined, gate({ threads: other }));
 
     expect(reading.suppressionUnmeasured).toBeNull();
     expect(reading.suppressedReported).toEqual([]);
@@ -347,12 +394,11 @@ describe("AS-1: the planted prior advisory is suppressed, and the subtraction is
 // ── AS-2: a prior BLOCKING finding still blocks ──────────────────────────
 
 describe("AS-2: the planted prior blocking finding is re-emitted and still blocks", () => {
-  const prior = ledgerBody([round(1, [blocking()])]);
-  const snapshot = snapshotOf(2, prior);
+  const threads = raisedBefore(blocking());
   const payload = payloadOf("BLOCK", [blocking()]);
 
   test("AS-2a: it survives the gate, blocks, and is not in the suppressed set", () => {
-    const reading = readAiReviewFindings(payload, undefined, gate({ snapshot }));
+    const reading = readAiReviewFindings(payload, undefined, gate({ threads }));
 
     expect(reading.suppressedReported).toEqual([]);
     expect(reading.reported).toHaveLength(1);
@@ -366,7 +412,7 @@ describe("AS-2: the planted prior blocking finding is re-emitted and still block
     const mutant = await mutantReader("exemption", s =>
       s.replace(EXEMPTION_BINDING, EXEMPTION_MUTANT),
     );
-    const forged = mutant.readAiReviewFindings(payload, undefined, gate({ snapshot }));
+    const forged = mutant.readAiReviewFindings(payload, undefined, gate({ threads }));
 
     // The assertion is `blocked` and the surviving SEVERITIES, not a count.
     // A count can stay right while the thing that gates moves.
@@ -378,7 +424,7 @@ describe("AS-2: the planted prior blocking finding is re-emitted and still block
     ).toEqual([]);
 
     // And the real reader, over the same bytes, blocks.
-    const real = readAiReviewFindings(payload, undefined, gate({ snapshot }));
+    const real = readAiReviewFindings(payload, undefined, gate({ threads }));
     expect(real.blocked).toBe(true);
     expect(real.outcome).toBe("BLOCKED");
   });
@@ -397,7 +443,7 @@ describe("AS-2: the planted prior blocking finding is re-emitted and still block
     const mutant = await mutantReader("exemption", s =>
       s.replace(EXEMPTION_BINDING, EXEMPTION_MUTANT),
     );
-    const forged = mutant.readAiReviewFindings(payload, undefined, gate({ snapshot }));
+    const forged = mutant.readAiReviewFindings(payload, undefined, gate({ threads }));
     expect(forged.outcome).toBe("CONTRADICTION");
     expect(mutant.aiReviewExitCode(forged)).not.toBe(0);
   });
@@ -418,8 +464,8 @@ describe("AS-2: the planted prior blocking finding is re-emitted and still block
       s.replace(EXEMPTION_BINDING, EXEMPTION_MUTANT),
     );
 
-    const real = readAiReviewFindings(disagreeing, undefined, gate({ snapshot }));
-    const forged = mutant.readAiReviewFindings(disagreeing, undefined, gate({ snapshot }));
+    const real = readAiReviewFindings(disagreeing, undefined, gate({ threads }));
+    const forged = mutant.readAiReviewFindings(disagreeing, undefined, gate({ threads }));
 
     expect(real.blocked).toBe(true);
     expect(aiReviewExitCode(real)).not.toBe(0);
@@ -440,7 +486,7 @@ describe("AS-2: the planted prior blocking finding is re-emitted and still block
     const reading = readAiReviewFindings(
       payloadOf("BLOCK", [odd]),
       undefined,
-      gate({ snapshot: snapshotOf(2, ledgerBody([round(1, [odd])])) }),
+      gate({ threads: raisedBefore(odd) }),
     );
     expect(reading.suppressedReported).toEqual([]);
   });
@@ -450,67 +496,31 @@ describe("AS-2: the planted prior blocking finding is re-emitted and still block
 
 describe("AS-3: every refusal reports everything, and says a different thing", () => {
   const payload = payloadOf("PASS", [advisory()]);
-  const prior = ledgerBody([round(1, [advisory()])]);
 
   /**
-   * Eight inputs, and the third column is the FACT each one establishes.
+   * AC-4, as a table: *"an unreadable thread list is UNMEASURED by name,
+   * distinguishable from 'no earlier findings'."*
    *
-   * Two pairs share a fact on purpose and the grouping says which: a carry
-   * file that could not be read and one whose first line is not the state
-   * line are both "the carry step's own reading could not be read", and a
-   * snapshot with no header and one whose header is not an integer are both
-   * "it does not say which round it precedes". Asserting eight distinct
-   * sentences would have been asserting that two identical facts print
-   * differently, which is a worse report, not a better one.
+   * Four inputs, three facts, and the third column is the fact each
+   * establishes. A list nobody wrote and a list that is the empty string are
+   * the SAME fact — "it was not read" — and asserting they print differently
+   * would be asserting that one event reports as two.
+   *
+   * Dropping from the ledger's eight rows to these is not a loss of coverage.
+   * Five of the eight were ways for a PAIR of files to disagree about why one
+   * of them was absent; the thread list is its own reading, so those states do
+   * not exist to be confused.
    */
-  const refusals: Array<[string, { carry: string | null; snapshot: string | null }, string]> = [
-    ["an unreadable carry file", { carry: null, snapshot: snapshotOf(2, prior) }, "carry-unread"],
-    [
-      "a carry file with no state line",
-      { carry: "something else entirely\n", snapshot: snapshotOf(2, prior) },
-      "carry-unread",
-    ],
-    [
-      "the carry step reporting UNMEASURED",
-      { carry: carryFile(AI_REVIEW_CARRY_UNMEASURED), snapshot: snapshotOf(2, prior) },
-      "carry-unmeasured",
-    ],
-    [
-      "a state this reader does not know",
-      { carry: carryFile("AI_REVIEW_CARRY_SOMETHING_NEW"), snapshot: snapshotOf(2, prior) },
-      "carry-unknown-state",
-    ],
-    [
-      "a READ state with no snapshot",
-      { carry: carryFile(AI_REVIEW_CARRY_READ), snapshot: null },
-      "snapshot-unread",
-    ],
-    [
-      "a snapshot with no provenance header",
-      { carry: carryFile(AI_REVIEW_CARRY_READ), snapshot: prior },
-      "snapshot-no-provenance",
-    ],
-    [
-      "a snapshot whose round is not an integer",
-      {
-        carry: carryFile(AI_REVIEW_CARRY_READ),
-        snapshot: `${AI_REVIEW_SNAPSHOT_ROUND_KEY}=later\n${prior}`,
-      },
-      "snapshot-no-provenance",
-    ],
-    [
-      "a ledger that will not parse",
-      {
-        carry: carryFile(AI_REVIEW_CARRY_READ),
-        snapshot: snapshotOf(2, `${AI_REVIEW_LEDGER_MARKER}\n\n\`\`\`json\n{ nope\n\`\`\`\n`),
-      },
-      "ledger-unreadable",
-    ],
+  const refusals: Array<[string, string | null, string]> = [
+    ["a list nobody wrote", null, THREADS_NOT_READ],
+    ["a file with no bytes in it", "", THREADS_NOT_READ],
+    ["a write cut off halfway", '[{"isResolved": false, "body": "half', THREADS_UNPARSEABLE],
+    ["a GraphQL error object", '{"errors":[{"message":"Bad credentials"}]}', THREADS_NOT_A_LIST],
   ];
 
-  for (const [what, inputs] of refusals) {
+  for (const [what, threads] of refusals) {
     test(`AS-3: ${what} suppresses nothing and names itself`, () => {
-      const reading = readAiReviewFindings(payload, undefined, gate(inputs));
+      const reading = readAiReviewFindings(payload, undefined, gate({ threads }));
       expect(reading.suppressedReported).toEqual([]);
       expect(reading.reported).toHaveLength(1);
       expect(reading.suppressionUnmeasured, what).not.toBeNull();
@@ -519,34 +529,37 @@ describe("AS-3: every refusal reports everything, and says a different thing", (
 
   test("AS-3i: one sentence per FACT, and no two facts share one", () => {
     // "Could not parse" and "there was nothing to carry" becoming one
-    // observation is #1568. Six distinct refusals printing one sentence is
-    // the same defect with a larger population, so the distinctness is
-    // asserted rather than hoped for — and so is the agreement inside each
-    // group, which is what stops a later edit from making one of them
-    // unique by accident.
-    const byGroup = new Map<string, Set<string | null>>();
-    for (const [, inputs, group] of refusals) {
-      const said = readAiReviewFindings(payload, undefined, gate(inputs)).suppressionUnmeasured;
-      byGroup.set(group, (byGroup.get(group) ?? new Set()).add(said));
+    // observation is #1568. Distinct refusals printing one sentence is the
+    // same defect with a larger population, so the distinctness is asserted
+    // rather than hoped for — and so is the agreement inside each group,
+    // which is what stops a later edit making one of them unique by accident.
+    const byFact = new Map<string, Set<string | null>>();
+    for (const [, threads, fact] of refusals) {
+      const said = readAiReviewFindings(payload, undefined, gate({ threads })).suppressionUnmeasured;
+      byFact.set(fact, (byFact.get(fact) ?? new Set()).add(said));
     }
-    for (const [group, said] of byGroup) {
-      expect(said.size, `${group} printed more than one sentence`).toBe(1);
+    for (const [fact, said] of byFact) {
+      expect(said.size, `${fact} printed more than one sentence`).toBe(1);
     }
-    const sentences = [...byGroup.values()].map(s => [...s][0]);
-    expect(new Set(sentences).size).toBe(byGroup.size);
-    expect(byGroup.size).toBe(6);
+    const sentences = [...byFact.values()].map(s => [...s][0]);
+    expect(new Set(sentences).size).toBe(byFact.size);
+    expect(byFact.size).toBe(3);
+    // And the sentence the reader prints is the one the module declares —
+    // not a paraphrase that drifted. A `toContain` would go green on a
+    // message narrowed to say less.
+    for (const [, threads, fact] of refusals) {
+      expect(
+        readAiReviewFindings(payload, undefined, gate({ threads })).suppressionUnmeasured,
+      ).toContain(fact);
+    }
   });
 
-  test("AS-3j: ABSENT is MEASURED-with-no-keys, not a refusal", () => {
-    // The one state that is a complete reading whose answer is "nothing".
-    // It must NOT print the unmeasured warning — a pull request on its first
-    // round would carry one on every run, and a warning that fires always is
-    // a warning nobody reads.
-    const reading = readAiReviewFindings(
-      payload,
-      undefined,
-      gate({ carry: carryFile(AI_REVIEW_CARRY_ABSENT), snapshot: null }),
-    );
+  test("AS-3j: an EMPTY list is MEASURED-with-no-keys, not a refusal", () => {
+    // Round one of every pull request. It must NOT print the unmeasured
+    // warning — a warning that fires on every first round is a warning
+    // nobody reads, and this is the state the whole AC-4 split exists to
+    // keep apart from a failed fetch.
+    const reading = readAiReviewFindings(payload, undefined, gate({ threads: "[]" }));
     expect(reading.suppressionUnmeasured).toBeNull();
     expect(reading.suppressedReported).toEqual([]);
     expect(reading.reported).toHaveLength(1);
@@ -579,68 +592,132 @@ describe("AS-3: every refusal reports everything, and says a different thing", (
   });
 });
 
-// ── AS-4: the ordering guard — a snapshot taken at PERSIST is refused ────
+// ── AS-4: self-suppression, prevented by step order rather than a guard ──
 
-describe("AS-4: a snapshot taken after the persist step cannot suppress", () => {
-  // The whole trap, as bytes. The persist step upserts THIS round into the
-  // ledger before the adjudicator runs, so a snapshot taken there is the
-  // same comment fetched the same way and is shaped exactly like a correct
-  // one. The only tell is that it already holds round 2.
-  const afterPersist = ledgerBody([round(1, [advisory()]), round(2, [advisory()])]);
-  const snapshot = snapshotOf(2, afterPersist);
+describe("AS-4: the list is taken before this round can add to it", () => {
   const payload = payloadOf("PASS", [advisory()]);
 
-  test("AS-4a: it is refused, by name, and nothing is suppressed", () => {
-    const reading = readAiReviewFindings(payload, undefined, gate({ snapshot }));
-    expect(reading.suppressedReported).toEqual([]);
-    expect(reading.reported).toHaveLength(1);
-    expect(reading.suppressionUnmeasured).toContain("AFTER this round was recorded");
+  test("AS-4a: the list is fetched before EITHER reader of it runs", () => {
+    // The ledger needed a provenance header because the persist step wrote
+    // this round into the ledger before the adjudicator read it. The thread
+    // list has no such header and cannot have one — a thread records no
+    // round — so the only thing preventing a payload from suppressing itself
+    // is WHERE the list is taken.
+    //
+    // Measured on the emitted workflow, and it corrected an assumption worth
+    // writing down: the POSTER runs BEFORE the adjudicator, not after. So
+    // "fetch it late and it will be fine because posting comes last" is
+    // false, and a gate that fetched its own list in either reader would
+    // read this round's own threads.
+    const yml = readFileSync(WORKFLOW, "utf8");
+    const at = (name: string) => yml.indexOf(`name: ${name}`);
+    const carryAt = at(AI_REVIEW_CARRY_STEP_NAME);
+    const runAt = at(AI_REVIEW_RUN_STEP_NAME);
+    const postAt = at(AI_REVIEW_THREADS_STEP_NAME);
+    expect(carryAt, "the carry step is not in the committed workflow").toBeGreaterThan(-1);
+    expect(runAt, "the adjudicator step is not in the committed workflow").toBeGreaterThan(-1);
+    expect(postAt, "the thread poster is not in the committed workflow").toBeGreaterThan(-1);
+
+    // The WRITER of the list runs before both readers of it. Either
+    // inequality flipping is a round that suppresses its own findings and
+    // reports CLEAN, which is why both are here.
+    expect(carryAt, "the thread list is fetched after the poster has run").toBeLessThan(postAt);
+    expect(carryAt, "the thread list is fetched after the adjudicator has run").toBeLessThan(runAt);
   });
 
-  test("AS-4b: removing the guard makes this round suppress ITSELF", async () => {
-    const mutant = await mutantGate("ordering", s => s.replace(ORDERING_BINDING, ORDERING_MUTANT));
+  test("AS-4e: BOTH readers get the list, or the poster re-posts what the gate dropped", () => {
+    // AC-3's wiring. `reviewThreadRequests` posts `reading.reported`, so a
+    // poster with no gate opens a thread for a finding the adjudicator
+    // suppressed — one new copy per push, which is what 11 threads for 3
+    // findings looks like. The two steps are separate processes and neither
+    // can see the other's answer, so each forms it from the same file.
+    const yml = readFileSync(WORKFLOW, "utf8");
+    const declarations = yml
+      .split("\n")
+      .filter(l => new RegExp(`^\\s+${AI_REVIEW_THREADS_PATH_VAR}: \\S`).test(l));
+    expect(
+      declarations,
+      `the thread list is not declared in the three steps that use it — the carry step writes ` +
+        `it, the adjudicator and the poster each read it, and a step's \`env:\` does not carry ` +
+        `forward:\n${declarations.join("\n")}`,
+    ).toHaveLength(3);
+    expect(new Set(declarations.map(l => l.trim())).size, "the steps name different paths").toBe(1);
+
+    // And the poster's own source forms the gate rather than defaulting to
+    // `null`, which is the state it shipped in and the state that looks
+    // identical in a workflow diff.
+    const poster = readFileSync(join(ROOT, "scripts", "ai-review-threads.ts"), "utf-8");
+    expect(poster, "the poster builds no suppression gate").toContain("aiReviewSuppressionGate({");
+    expect(poster).toContain("readAiReviewFindingsFile(");
+  });
+
+  test("AS-4b: the fetch is in the carry step, not in the adjudicator", () => {
+    // A gate that fetched its own list would read the threads this round is
+    // about to post the moment anybody reorders the steps above. The reader
+    // takes a FILE and the whole module touches no network — asserted on the
+    // source, because "it does not fetch" has no behaviour to observe.
+    const source = readFileSync(join(LIB, "ai-review-suppression.ts"), "utf-8");
+    for (const reach of ["fetch(", "curl", "graphql", "https://"]) {
+      expect(source, `the gate reaches the network with ${reach}`).not.toContain(reach);
+    }
+    const yml = readFileSync(WORKFLOW, "utf8");
+    const carryAt = yml.indexOf(`name: ${AI_REVIEW_CARRY_STEP_NAME}`);
+    const block = yml.slice(carryAt, yml.indexOf("      - name:", carryAt + 10));
+    expect(block, "the carry step does not fetch the review threads").toContain("reviewThreads");
+  });
+
+  test("AS-4c: a RESOLVED thread still suppresses — the gate asks 'raised', not 'answered'", () => {
+    // The disagreement with carry-forward, executed. Carry-forward drops a
+    // finding whose thread a human resolved; this gate must NOT, or the act
+    // of resolving a thread re-posts it on the next push — a duplicate aimed
+    // at the person who just did the work.
+    const reading = readAiReviewFindings(
+      payload,
+      undefined,
+      gate({ threads: threadsOf([{ resolved: true }]) }),
+    );
+    expect(reading.suppressionUnmeasured).toBeNull();
+    expect(reading.suppressedReported, "resolving a thread re-opened the finding").toHaveLength(1);
+    expect(reading.reported).toEqual([]);
+  });
+
+  test("AS-4d: emptying the prior set turns every suppression off", async () => {
+    // The mutation behind AS-1 and AS-4c alike. Without it both are satisfied
+    // by a gate that suppresses for some other reason, and the row that
+    // matters is the SECOND assertion: the real gate, same input, suppresses.
+    const mutant = await mutantGate("prior-set", s =>
+      s.replace(PRIOR_SET_BINDING, PRIOR_SET_MUTANT),
+    );
     const forged = readAiReviewFindings(
       payload,
       undefined,
       mutant.aiReviewSuppressionGate({
-        carry: carryFile(AI_REVIEW_CARRY_READ),
-        snapshot,
-        lineTextFor: mutant.checkoutLineText(checkout("ordering")),
+        threads: raisedBefore(),
+        lineTextFor: mutant.checkoutLineText(checkout("prior-set")),
       }),
     );
-
-    // Same bytes, opposite reading — and the mutant's reading is the one
-    // where a pull request reports CLEAN because the persist step ran first.
-    expect(forged.suppressedReported).toHaveLength(1);
-    expect(forged.reported).toEqual([]);
+    expect(forged.suppressedReported).toEqual([]);
+    expect(forged.reported).toHaveLength(1);
+    // Not a refusal — MEASURED with nothing in it, which is the dangerous
+    // shape: it prints no warning and looks like a round with no repeats.
     expect(forged.suppressionUnmeasured).toBeNull();
-  });
 
-  test("AS-4c: the SAME ledger, snapshotted at carry, suppresses normally", () => {
-    // The control that makes AS-4a about the ORDERING rather than about the
-    // ledger's contents: one variable differs, which round the header names.
-    const reading = readAiReviewFindings(
-      payload,
-      undefined,
-      gate({ snapshot: snapshotOf(3, afterPersist) }),
-    );
-    expect(reading.suppressionUnmeasured).toBeNull();
-    expect(reading.suppressedReported).toHaveLength(1);
+    const real = readAiReviewFindings(payload, undefined, gate({ threads: raisedBefore() }));
+    expect(real.suppressedReported).toHaveLength(1);
   });
 });
 
 // ── AS-5: key symmetry — the half that made the dedupe inert ─────────────
 
 describe("AS-5: without the checkout's line text the keys never meet", () => {
-  const prior = ledgerBody([round(1, [advisory()])]);
-  const snapshot = snapshotOf(2, prior);
+  const threads = raisedBefore();
   const payload = payloadOf("PASS", [advisory()]);
 
   test("AS-5a: a gate with no lineTextFor suppresses nothing, on an exact repeat", () => {
     const reading = readAiReviewFindings(
       payload,
       undefined,
-      gate({ snapshot, withLineText: false }),
+      gate({ threads, withLineText: false }),
     );
     // Not a refusal — a MEASURED reading that found no repeat, which is the
     // dangerous shape: it prints nothing and looks like a round with no
@@ -659,13 +736,13 @@ describe("AS-5: without the checkout's line text the keys never meet", () => {
   });
 
   test("AS-5c: the same rig WITH lineTextFor suppresses it", () => {
-    const reading = readAiReviewFindings(payload, undefined, gate({ snapshot }));
+    const reading = readAiReviewFindings(payload, undefined, gate({ threads }));
     expect(reading.suppressedReported).toHaveLength(1);
   });
 
   test("AS-5d: an unreadable line falls back to the number anchor and is reported", () => {
     const empty = mkdtempSync(join(SCRATCH, "empty-"));
-    const reading = readAiReviewFindings(payload, undefined, gate({ snapshot, root: empty }));
+    const reading = readAiReviewFindings(payload, undefined, gate({ threads, root: empty }));
     expect(reading.suppressedReported).toEqual([]);
     expect(reading.reported).toHaveLength(1);
   });
@@ -705,7 +782,7 @@ describe("AS-7: the same finding twice in one payload", () => {
     const reading = readAiReviewFindings(
       payloadOf("PASS", [advisory(), advisory()]),
       undefined,
-      gate({ carry: carryFile(AI_REVIEW_CARRY_ABSENT), snapshot: null }),
+      gate({ threads: "[]" }),
     );
     expect(reading.reported).toHaveLength(1);
     expect(reading.suppressedReported).toHaveLength(1);
@@ -719,7 +796,7 @@ describe("AS-7: the same finding twice in one payload", () => {
     const reading = readAiReviewFindings(
       payloadOf("BLOCK", [blocking(), blocking()]),
       undefined,
-      gate({ carry: carryFile(AI_REVIEW_CARRY_ABSENT), snapshot: null }),
+      gate({ threads: "[]" }),
     );
     expect(reading.reported).toHaveLength(2);
     expect(reading.blocked).toBe(true);
@@ -769,14 +846,36 @@ describe("AS-8: the files are read as the carry step writes them", () => {
   });
 
   test("AS-8e: priorKeysFrom is pure and is the one place the states are decided", () => {
-    const body = ledgerBody([round(1, [advisory()])]);
-    const measured = priorKeysFrom(carryFile(AI_REVIEW_CARRY_READ), snapshotOf(2, body));
+    const measured = priorKeysFrom(raisedBefore());
     expect(measured.status).toBe("MEASURED");
     if (measured.status !== "MEASURED") throw new Error("unreachable");
     expect(measured.keys).toHaveLength(1);
     const expected = carryKey(advisory(), CITED_LINE);
     expect(expected, "the fixture itself produced no key").not.toBeNull();
     expect(measured.keys[0]).toBe(expected!);
+  });
+
+  test("AS-8g: the dormant ledger reader still keys what the carry step writes", () => {
+    // AC-5 deletes this; until it does, the carry step still WRITES the
+    // snapshot and a writer whose only reader was deleted is a writer nobody
+    // can tell is broken. The name says it is not the gate's.
+    const body = ledgerBody([round(1, [advisory()])]);
+    const measured = ledgerPriorKeysFrom(carryFile(AI_REVIEW_CARRY_READ), snapshotOf(2, body));
+    expect(measured.status).toBe("MEASURED");
+    if (measured.status !== "MEASURED") throw new Error("unreachable");
+    expect(measured.keys).toEqual([carryKey(advisory(), CITED_LINE)!]);
+    // And the ordering guard it carries is still a guard.
+    const afterPersist = ledgerBody([round(1, [advisory()]), round(2, [advisory()])]);
+    expect(
+      ledgerPriorKeysFrom(carryFile(AI_REVIEW_CARRY_READ), snapshotOf(2, afterPersist)).status,
+    ).toBe("UNMEASURED");
+    expect(ledgerPriorKeysFrom(carryFile(AI_REVIEW_CARRY_UNMEASURED), null).status).toBe(
+      "UNMEASURED",
+    );
+    expect(ledgerPriorKeysFrom(carryFile(AI_REVIEW_CARRY_ABSENT), null)).toEqual({
+      status: "MEASURED",
+      keys: [],
+    });
   });
 
   test("AS-8f: the gate's sentence is the one `suppressRepeats` writes", () => {
@@ -790,7 +889,7 @@ describe("AS-8: the files are read as the carry step writes them", () => {
     if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
 
     const viaRounds = suppressRepeats([advisory()], prior.keys, () => CITED_LINE);
-    const viaGate = gate({ snapshot: snapshotOf(2, body) })([advisory()]);
+    const viaGate = gate({ threads: raisedBefore() })([advisory()]);
 
     expect(viaRounds.suppressed).toHaveLength(1);
     expect(viaGate.repeat).toEqual(viaRounds.reasons);
@@ -815,23 +914,20 @@ describe("AS-9: `rungate ai-review-findings` suppresses a repeat", () => {
     });
   }
 
-  const prior = ledgerBody([round(1, [advisory()])]);
-
-  function plant(name: string, state: string, snapshot: string | null): Record<string, string> {
+  /**
+   * The plumbing the generated step sets: one path, holding the thread list.
+   * `null` plants the PATH and no file, which is how a failed fetch reaches
+   * the adjudicator — the variable is always set, the bytes are not.
+   */
+  function plant(name: string, threads: string | null): Record<string, string> {
     const dir = mkdtempSync(join(SCRATCH, `e2e-${name}-`));
-    const carry = join(dir, "carry.txt");
-    writeFileSync(carry, carryFile(state));
-    const env: Record<string, string> = { [AI_REVIEW_CARRY_PATH_VAR]: carry };
-    if (snapshot !== null) {
-      const snap = join(dir, "snapshot.txt");
-      writeFileSync(snap, snapshot);
-      env[AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR] = snap;
-    }
-    return env;
+    const path = join(dir, "threads.json");
+    if (threads !== null) writeFileSync(path, threads);
+    return { [AI_REVIEW_THREADS_PATH_VAR]: path };
   }
 
   test("AS-9a: the advisory repeat is dropped and the notice names it", () => {
-    const r = run(plant("hit", AI_REVIEW_CARRY_READ, snapshotOf(2, prior)), [advisory()]);
+    const r = run(plant("hit", raisedBefore()), [advisory()]);
     const out = `${r.stdout}${r.stderr}`;
 
     expect(out).toContain(`${AI_REVIEW_OUTCOME_LINE} CLEAN`);
@@ -841,8 +937,7 @@ describe("AS-9: `rungate ai-review-findings` suppresses a repeat", () => {
   });
 
   test("AS-9b: the blocking repeat still blocks, through the same wiring", () => {
-    const withPrior = ledgerBody([round(1, [blocking()])]);
-    const r = run(plant("block", AI_REVIEW_CARRY_READ, snapshotOf(2, withPrior)), [blocking()]);
+    const r = run(plant("block", raisedBefore(blocking())), [blocking()]);
     const out = `${r.stdout}${r.stderr}`;
 
     expect(out).toContain(`${AI_REVIEW_OUTCOME_LINE} BLOCKED`);
@@ -850,8 +945,8 @@ describe("AS-9: `rungate ai-review-findings` suppresses a repeat", () => {
     expect(r.status).not.toBe(0);
   });
 
-  test("AS-9c: an unreadable history warns and reports everything", () => {
-    const r = run(plant("unmeasured", AI_REVIEW_CARRY_UNMEASURED, null), [advisory()]);
+  test("AS-9c: a thread list that was never written warns and reports everything", () => {
+    const r = run(plant("unmeasured", null), [advisory()]);
     const out = `${r.stdout}${r.stderr}`;
 
     expect(out).toContain(AI_REVIEW_SUPPRESSED_UNMEASURED_TITLE);
@@ -859,13 +954,12 @@ describe("AS-9: `rungate ai-review-findings` suppresses a repeat", () => {
     expect(r.status).toBe(0);
   });
 
-  test("AS-9d: with no carry path set, the command behaves exactly as before", () => {
+  test("AS-9d: with no threads path set, the command behaves exactly as before", () => {
     const root = checkout("e2e-unwired");
     const payload = join(root, "findings.json");
     writeFileSync(payload, payloadOf("PASS", [advisory()]));
     const env = { ...process.env };
-    delete env[AI_REVIEW_CARRY_PATH_VAR];
-    delete env[AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR];
+    delete env[AI_REVIEW_THREADS_PATH_VAR];
     const r = spawnSync(
       "bun",
       [join(ROOT, "bin", "rungate.ts"), "ai-review-findings", payload],

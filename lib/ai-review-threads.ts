@@ -85,6 +85,55 @@ export function threadReading(
 }
 
 /**
+ * The three ways the file on the runner can fail to be a thread list.
+ *
+ * One sentence per FACT, and no two facts share one. "Nobody fetched it",
+ * "the fetch was cut off mid-write" and "the fetch returned an error object
+ * instead of threads" are three different things to go and look at, and a
+ * reader that prints the same sentence for all three has told the next person
+ * only that something went wrong. Exported so a case can assert on the
+ * sentence rather than on a substring of it — a `toContain` goes green on a
+ * message that was narrowed to say less.
+ */
+export const THREADS_NOT_READ =
+  "the pull request's review threads were not read, so whether a finding was already raised is unknown";
+export const THREADS_UNPARSEABLE =
+  "the review-thread list was written but does not parse, so it was cut off or is not the list it claims to be";
+export const THREADS_NOT_A_LIST =
+  "the review-thread list parsed and is not a list, which is the shape a GraphQL error response has";
+
+/**
+ * The same reading, taken from the bytes a bash step left on the runner.
+ *
+ * `threadReading` takes parsed nodes because that is the shape a test can
+ * drive; this is the production path, and it exists so that the JSON parse —
+ * the one step between GitHub's answer and the decision — is somewhere a
+ * negative control can reach. Every failure produces a NAMED sentence and an
+ * UNMEASURED reading, never an empty list: an empty list is the assertion
+ * "this pull request has no threads", which suppresses nothing while claiming
+ * to have looked, and is exactly how a repeat-suppressor goes quietly dead.
+ *
+ * An empty STRING is absence, not a parse failure. A step that wrote no bytes
+ * and a step that wrote nothing are the same event seen twice.
+ */
+export function threadReadingFromJson(text: string | null | undefined): ThreadReading {
+  if (text === null || text === undefined || text === "") {
+    return { status: "UNMEASURED", reason: THREADS_NOT_READ };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { status: "UNMEASURED", reason: THREADS_UNPARSEABLE };
+  }
+  if (!Array.isArray(parsed)) return { status: "UNMEASURED", reason: THREADS_NOT_A_LIST };
+  // The per-node decisions stay in ONE place. A second loop here would be a
+  // second decider over "is this thread usable", and a mutation of either
+  // would leave the other holding every case up.
+  return threadReading(parsed as readonly RawReviewThread[], THREADS_NOT_READ);
+}
+
+/**
  * The single non-zero exit. Declared once, so a mutant can set it to `0` and
  * a case can observe the refusal disappearing — `.claude/rules/checks-must-be-able-to-fail.md`,
  * *For a script whose job is to exit non-zero*. A `process.exit(1)` or a

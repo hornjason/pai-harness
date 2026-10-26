@@ -8,36 +8,37 @@
  * unresolved set — so a repeat became *marked* rather than *dropped*. This is
  * the half that drops it.
  *
+ * ## Since AC-1 the prior set is the pull request's review threads
+ *
+ * The ledger keyed a repeat by `file + cited line text + summary`, which a
+ * reformat moves — measured on #1616 as 11 threads for 3 findings. A thread
+ * is GitHub's own answer to the same question, so AC-1 moved the gate onto
+ * it: `priorKeysFrom` reads the list the carry step fetched and nothing else.
+ * The ledger reader is kept as `ledgerPriorKeysFrom`, called by no production
+ * path, until AC-5 stops writing the snapshot it parses.
+ *
  * ## Why the prior state arrives as a file and not as a fetch
  *
- * The generated job runs `ai-review-carry` → the reviewer →
- * `ai-review-persist`, **which upserts this round into the ledger comment** →
- * `ai-review-run`, which invokes the adjudicator. A gate that fetched the
- * ledger itself would read a comment that already contains the payload it is
- * deciding about: every finding would match a "prior" key that is its own,
- * every round would suppress everything, and the outcome would be CLEAN
- * forever. The carry step is the last position holding the state as it was
- * before the reviewer ran, so it writes a snapshot and this reads it.
- *
- * ## Two files, because one of them cannot say why it is absent
- *
- * The snapshot carries BYTES and exists only on the READ path. The carry file
- * carries the STATE and is written on every path by the single `carry_state`
- * site. An absent snapshot therefore never means "no earlier findings" — the
- * carry file says which of `AI_REVIEW_CARRY_READ`, `AI_REVIEW_CARRY_ABSENT`
- * and `AI_REVIEW_CARRY_UNMEASURED` produced it. Collapsing those is #1568, in
- * the half that decides a required check.
+ * Unchanged, and for a sharper reason than before. The generated job runs
+ * `ai-review-carry` → the reviewer → `ai-review-run` (this gate) →
+ * `ai-review-threads`, **which posts this round's threads**. Fetching here
+ * would be safe only because of that ordering, and a gate whose correctness
+ * depends on where in a YAML file somebody put a step is a gate one
+ * reordering silently breaks: it would read its own threads as prior,
+ * suppress the entire payload and report CLEAN forever. The carry step runs
+ * before the reviewer, so a list taken there cannot contain this round's
+ * work whatever the later order becomes.
  *
  * ## Every refusal suppresses NOTHING
  *
  * There is one direction of error this module is allowed to make. Re-posting
  * an advisory that was already answered is loud, cheap and self-correcting;
- * dropping a finding that is still live is silent and permanent. So an
- * unreadable carry file, an unreadable snapshot, a stale snapshot, an
- * unrecognised identity rule and a ledger that will not parse all produce the
- * same behaviour — report everything — and each produces a DIFFERENT sentence
- * saying so, because "nothing was a repeat" and "nothing could be compared"
- * are different facts about this round's report.
+ * dropping a finding that is still live is silent and permanent. So a thread
+ * list that was never fetched, one that was cut off mid-write, and one that
+ * parsed into something that is not a list all produce the same behaviour —
+ * report everything — and each produces a DIFFERENT sentence saying so
+ * (AC-4), because "nothing was a repeat" and "nothing could be compared" are
+ * different facts about this round's report.
  *
  * ## It never sees a blocking finding
  *
@@ -56,6 +57,7 @@ import {
   readLedger,
   type ReviewFinding,
 } from "./ai-review-rounds";
+import { threadReadingFromJson } from "./ai-review-threads";
 import {
   AI_REVIEW_CARRY_ABSENT,
   AI_REVIEW_CARRY_READ,
@@ -67,10 +69,12 @@ import type { AiReviewSuppressionGate } from "./scaffold/ai-review-findings";
 
 /** What the gate reads, so a test can drive it without a filesystem. */
 export interface SuppressionInputs {
-  /** The carry file's contents, or `null` when it could not be read. */
-  carry: string | null;
-  /** The snapshot's contents, or `null` when it could not be read. */
-  snapshot: string | null;
+  /**
+   * The review-thread list the carry step fetched, or `null` when the file
+   * was not there. Since AC-1 this is the ONLY thing the gate decides from —
+   * see `priorKeysFrom`.
+   */
+  threads: string | null;
   /** The text at a finding's cited line NOW, or `undefined`. */
   lineTextFor: (finding: ReviewFinding) => string | undefined;
 }
@@ -112,13 +116,67 @@ export function readSnapshot(snapshot: string): { round: number | null; body: st
 }
 
 /**
- * Turn the two files into the keys earlier rounds raised, or the sentence
- * saying they could not be established.
+ * THE PRIOR SET, read from the pull request's own review threads (AC-1).
+ *
+ * ## Why a thread and not the ledger
+ *
+ * The ledger answers "was this raised before?" with a text heuristic —
+ * `file + the text at the cited line + summary` — and a reformat moves the
+ * key, so round 4 cannot tell it is re-raising round 1's finding. Measured on
+ * #1616: **11 threads for 3 distinct findings**, re-raised across four rounds
+ * while the line numbers moved under them. A thread is the authoritative
+ * answer to the same question: the comment is on the pull request, or it is
+ * not.
+ *
+ * ## A RESOLVED thread is still a prior key
+ *
+ * This is the one place this reader and `carryForwardFromThreads` deliberately
+ * disagree, and the difference is the question each is asking:
+ *
+ * | Reader | Question | Resolved thread |
+ * |---|---|---|
+ * | this gate | has this already been **raised**? | yes — do not post it twice |
+ * | carry-forward | is this still **unanswered**? | no — a human answered it |
+ *
+ * A gate that treated resolution as "not raised" would re-post a thread the
+ * moment someone resolved it, which is the duplicate-per-round failure the
+ * whole increment exists to prevent, aimed at the people who are doing the
+ * work.
+ *
+ * ## Self-suppression is prevented by step order, not by a guard
+ *
+ * The ledger reader needed a provenance header because the ledger is written
+ * *during* the job, before the adjudicator reads it. Threads are posted by
+ * `ai-review-threads`, which runs AFTER the adjudicator — so no thread this
+ * round creates can be in this round's list, and there is nothing for a
+ * header to compare against. That property lives in the workflow's step
+ * order and is asserted there; see `test/ai-review-suppression.test.ts`.
  *
  * Exported and pure so the battery can drive every refusal without a
  * filesystem, and so there is one place to mutate.
  */
-export function priorKeysFrom(carry: string | null, snapshot: string | null): PriorKeys {
+export function priorKeysFrom(threads: string | null): PriorKeys {
+  const reading = threadReadingFromJson(threads);
+  if (reading.status !== "MEASURED") {
+    return { status: "UNMEASURED", reason: reading.reason };
+  }
+  // Open and resolved alike. The fold that distinguishes them belongs to
+  // carry-forward, for the reason tabled above.
+  return { status: "MEASURED", keys: reading.threads.map(t => t.key) };
+}
+
+/**
+ * THE LEDGER READER, dormant since AC-1 and deleted by AC-5.
+ *
+ * Nothing in production calls this: `aiReviewSuppressionGate` decides from
+ * threads. It is kept, and kept under a name that says what it reads, because
+ * the carry step still WRITES the snapshot it parses — AC-5 is the increment
+ * that stops writing it and removes the steps rather than leaving them
+ * dormant, and until then `test/ai-review-carry-forward.test.ts` is the only
+ * thing asserting that what bash writes is what a reader can key. A writer
+ * whose only reader was deleted is a writer nobody can tell is broken.
+ */
+export function ledgerPriorKeysFrom(carry: string | null, snapshot: string | null): PriorKeys {
   const state = carryStateOf(carry);
   if (state === null) {
     return {
@@ -201,7 +259,7 @@ export function priorKeysFrom(carry: string | null, snapshot: string | null): Pr
  */
 export function aiReviewSuppressionGate(inputs: SuppressionInputs): AiReviewSuppressionGate {
   return (candidates: readonly unknown[]) => {
-    const prior = priorKeysFrom(inputs.carry, inputs.snapshot);
+    const prior = priorKeysFrom(inputs.threads);
     if (prior.status === "UNMEASURED") {
       return { repeat: candidates.map(() => null), unmeasured: prior.reason };
     }

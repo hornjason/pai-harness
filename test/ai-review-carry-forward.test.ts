@@ -73,7 +73,7 @@ import {
 // snapshot's format are held together by a test rather than by two authors
 // agreeing — the writer is bash and the reader is TypeScript, which is the
 // arrangement #1568 was.
-import { priorKeysFrom, readSnapshot } from "../lib/ai-review-suppression.ts";
+import { ledgerPriorKeysFrom, readSnapshot } from "../lib/ai-review-suppression.ts";
 import {
   AI_REVIEW_LEDGER_COMMENT_MARKER,
   AI_REVIEW_LEDGER_FINDING_TEXT,
@@ -1231,7 +1231,7 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
   test("AC-C7: the snapshot says WHICH round it precedes, in a form the reader accepts", () => {
     // Provenance, and it is not decoration. A snapshot taken at the PERSIST
     // step is the same comment fetched the same way and is byte-shaped like
-    // a correct one; `priorKeysFrom` tells them apart only by comparing the
+    // a correct one; `ledgerPriorKeysFrom` tells them apart only by comparing the
     // rounds inside the body against this number. Written by bash, parsed
     // by the TypeScript that decides — so the agreement is a test, not a
     // convention.
@@ -1267,7 +1267,7 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
     // gate's own reader consumes it, and the prior set is non-empty. Every
     // other row in this describe measures one side.
     const r = runCarry({ list: [botComment(5, body())], files: { "lib/a.ts": "alpha\n" } });
-    const prior = priorKeysFrom(r.file, r.snapshot);
+    const prior = ledgerPriorKeysFrom(r.file, r.snapshot);
     expect(prior.status, JSON.stringify(prior)).toBe("MEASURED");
     if (prior.status !== "MEASURED") throw new Error("unreachable");
     expect(prior.keys).toHaveLength(1);
@@ -1284,7 +1284,7 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
       round(4, [recorded("lib/a.ts", 1, "unchecked index", "alpha")]),
     ]);
     const r = runCarry({ list: [botComment(5, afterPersist)], files: { "lib/a.ts": "alpha\n" } });
-    const prior = priorKeysFrom(r.file, r.snapshot);
+    const prior = ledgerPriorKeysFrom(r.file, r.snapshot);
     expect(prior.status).toBe("UNMEASURED");
     if (prior.status !== "UNMEASURED") throw new Error("unreachable");
     expect(prior.reason).toContain("AFTER this round was recorded");
@@ -1307,10 +1307,10 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
     const m = runCarry({ list: [botComment(5, body())], files, script: mutant });
     expect(m.state, "the mutation moved more than the header").toBe(AI_REVIEW_CARRY_READ);
     expect(m.snapshot, "the mutant wrote no snapshot at all").not.toBeNull();
-    expect(priorKeysFrom(m.file, m.snapshot).status).toBe("UNMEASURED");
+    expect(ledgerPriorKeysFrom(m.file, m.snapshot).status).toBe("UNMEASURED");
     // And the real step, over the same bytes, keys it.
     const real_run = runCarry({ list: [botComment(5, body())], files });
-    expect(priorKeysFrom(real_run.file, real_run.snapshot).status).toBe("MEASURED");
+    expect(ledgerPriorKeysFrom(real_run.file, real_run.snapshot).status).toBe("MEASURED");
   });
 
   test("AC-C7: an unset round leaves a header the reader refuses, and suppresses nothing", () => {
@@ -1324,7 +1324,7 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
       env: { [AI_REVIEW_SNAPSHOT_ROUND_VAR]: "" },
     });
     expect(readSnapshot(r.snapshot!).round).toBeNull();
-    expect(priorKeysFrom(r.file, r.snapshot).status).toBe("UNMEASURED");
+    expect(ledgerPriorKeysFrom(r.file, r.snapshot).status).toBe("UNMEASURED");
   });
 
   test("AC-C7: ABSENT and UNMEASURED write NO snapshot, and the carry file still says which", () => {
