@@ -1,6 +1,6 @@
 {
   "name": "rungate",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "type": "module",
   "description": "Ship harness — conformity tests, scaffold, and agent briefs for AI-first development",
   "repository": {
