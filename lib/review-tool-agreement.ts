@@ -142,7 +142,73 @@ export const FORK_GUARD_TERMS = [
  * value carrying both substrings would otherwise satisfy it.
  */
 export const FORK_GUARD_COMPARISON =
-  /github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository|github\.repository\s*==\s*github\.event\.pull_request\.head\.repo\.full_name/;
+  /^(?:github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository|github\.repository\s*==\s*github\.event\.pull_request\.head\.repo\.full_name)$/;
+
+/**
+ * The only other thing a disjunct of this condition is allowed to be: a guard
+ * naming the event, which is how the dispatch arm earns its place beside the
+ * fork comparison.
+ */
+export const FORK_GUARD_COMPANION_ARM = /^github\.event_name\s*==\s*'[a-z_]+'$/;
+
+/**
+ * Why an ANCHORED per-disjunct test and not a substring search.
+ *
+ * The previous revision of this check asked whether `FORK_GUARD_COMPARISON`
+ * matched anywhere in the condition. **The reviewer caught that too** — the
+ * second time on the same pull request, and the same shape as the `!=`
+ * inversion it had already caught once. A substring search is satisfied by a
+ * condition that contains the correct comparison and then neutralises it:
+ *
+ *     if: >-
+ *       true ||
+ *       github.event.pull_request.head.repo.full_name == github.repository
+ *
+ *     if: >-
+ *       !(github.event.pull_request.head.repo.full_name == github.repository)
+ *
+ * Both contain `A == B`. The first runs on every fork; the second runs on
+ * forks ONLY. So the fix is not a better regex for the comparison — it is
+ * asking a different question: **is that comparison the governing predicate?**
+ *
+ * The condition is split on `||` and every arm must be either the fork
+ * comparison itself or `FORK_GUARD_COMPANION_ARM`. `true`, `always()` and a
+ * parenthesised negation are all arms that match neither, so each is named
+ * rather than tolerated. An `&&` inside an arm can only narrow what runs, so
+ * it is left alone.
+ *
+ * This is deliberately a CLOSED set. Widening it is how the check dies: the
+ * next arm somebody wants is likelier to be the bypass than the exception,
+ * and an allowlist that grows on request is a substring search with extra
+ * steps.
+ */
+export function forkGuardDefect(condition: string): string | null {
+  const flat = condition
+    .replace(/^\s*if:\s*(?:[>|][-+]?)?/, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (flat === "") return "the job has no `if:` condition at all";
+  const arms = flat.split("||").map(a => a.trim());
+  if (!arms.some(a => FORK_GUARD_COMPARISON.test(a))) {
+    return (
+      "the job's condition mentions both terms but no `||` arm of it IS the " +
+      "comparison — a comparison wrapped in a negation, or buried inside a " +
+      "larger expression, is not the predicate that decides whether the job runs"
+    );
+  }
+  const stray = arms.filter(
+    a => !FORK_GUARD_COMPARISON.test(a) && !FORK_GUARD_COMPANION_ARM.test(a),
+  );
+  if (stray.length > 0) {
+    return (
+      `the job's condition compares the two terms, but it is one arm of a ` +
+      `disjunction whose other arm is ${stray.map(a => `\`${a}\``).join(", ")} — ` +
+      `an arm that can be true on a fork makes the comparison beside it decide ` +
+      `nothing. Only a \`github.event_name == '...'\` arm may sit beside it`
+    );
+  }
+  return null;
+}
 
 /**
  * Tools that can put a human-readable finding on a pull request. The property
@@ -468,11 +534,7 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
     const why =
       missing.length > 0
         ? `the job's condition names neither ${missing.join(" nor ")}`
-        : FORK_GUARD_COMPARISON.test(condition)
-          ? null
-          : "the job's condition names both terms but does not compare them with `==` — an " +
-            "inverted comparison runs the job on forks ONLY, which is the opposite of the " +
-            "property this check is named after";
+        : forkGuardDefect(condition);
     if (why !== null) {
       v.push({
         kind: "ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD",

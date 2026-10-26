@@ -405,6 +405,58 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
   });
 
   /**
+   * AC-23 is the reviewer's SECOND finding about this guard, on the same pull
+   * request. AC-20 fixed `!=` by matching the comparison anywhere in the `if:`,
+   * and "anywhere" was the remaining hole: a condition can contain the correct
+   * comparison and neutralise it with an arm beside it. `true ||` runs on every
+   * fork while reading as a guard.
+   *
+   * The control is the live file, which is ITSELF a disjunction — so this
+   * cannot be fixed by refusing `||`, and a case that only asserts the bypass
+   * is caught would also pass against a check that refuses every condition.
+   */
+  test("AC-23: a neutralising arm beside the comparison is caught; the live disjunction is not", () => {
+    const anchor =
+      "    if: >-\n" +
+      "      github.event_name == 'workflow_dispatch' ||\n" +
+      "      github.event.pull_request.head.repo.full_name == github.repository\n";
+    for (const neutraliser of ["true", "always()", "github.event_name != 'push'"]) {
+      const bypass = mutateOnce(
+        live,
+        anchor,
+        "    if: >-\n" +
+          `      ${neutraliser} ||\n` +
+          "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      );
+      // The control for THIS row: the comparison is still present verbatim, so
+      // the substring check AC-20 shipped sees nothing wrong with any of them.
+      expect(reviewWorkflowRegions(bypass).jobHeader).toContain(
+        "github.event.pull_request.head.repo.full_name == github.repository",
+      );
+      expect(kinds(bypass)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+    }
+    // …and the live file's own `||` stays clean, or the check above is just
+    // refusing disjunctions and would catch the bypass for the wrong reason.
+    expect(kinds(live)).not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /** AC-24: the other spelling in the same finding — negation, not addition. */
+  test("AC-24: a comparison wrapped in a negation is not a governing predicate", () => {
+    const negated = mutateOnce(
+      live,
+      "    if: >-\n" +
+        "      github.event_name == 'workflow_dispatch' ||\n" +
+        "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      "    if: >-\n" +
+        "      !(github.event.pull_request.head.repo.full_name == github.repository)\n",
+    );
+    expect(reviewWorkflowRegions(negated).jobHeader).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(kinds(negated)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
    * The second half of the same finding: the terms have to sit in the `if:`,
    * not merely somewhere in the job header. A `name:` carrying both
    * substrings satisfied the first revision.
