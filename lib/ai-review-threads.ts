@@ -23,8 +23,66 @@
  * therefore reachable from a test over a recorded response, including the
  * two that only a live fork or a line outside a hunk would otherwise produce.
  */
-import { reviewThreadRequests, type AiReviewFindingsReading } from "./scaffold/ai-review-findings";
-import type { AiReviewThreadRequest } from "./scaffold/ai-review-findings";
+import type { ThreadReading } from "./ai-review-rounds";
+import { reviewThreadRequests, threadKeyFrom } from "./scaffold/ai-review-findings";
+import type { AiReviewFindingsReading, AiReviewThreadRequest } from "./scaffold/ai-review-findings";
+
+/**
+ * One review thread as the GraphQL query returns it, before anything is
+ * trusted about it. Both fields are `unknown`: a partial response drops
+ * fields rather than failing, so the shape is asserted here and nowhere else.
+ */
+export interface RawReviewThread {
+  isResolved: unknown;
+  /** The body of the thread's FIRST comment — the one the poster wrote. */
+  body: unknown;
+}
+
+/**
+ * Turn what GitHub returned into the reading `carryForwardFromThreads` takes.
+ *
+ * @param raw the threads, or `null`/`undefined` when the list could not be
+ * read at all — a network failure, a missing token, a GraphQL error.
+ * @param reason what to call the unreadable case. Only used when `raw` is
+ * absent, and it is a parameter because the caller is the only thing that
+ * knows which way the fetch failed.
+ *
+ * ## An unmarked thread is DROPPED, not keyed to the empty string
+ *
+ * Only a thread carrying the #1618 marker names a finding. Every thread
+ * posted before #1618 and every thread a person opened carries none, and
+ * they are real threads that are not evidence about any finding. Collapsing
+ * them to `""` would make one resolved human comment answer every unkeyable
+ * finding on the pull request at once.
+ *
+ * ## Only the literal `true` is resolution
+ *
+ * A partial response drops fields rather than failing, and a finding answered
+ * by an omission is the silent direction of error. Anything that is not
+ * exactly `true` reads as open.
+ */
+export function threadReading(
+  raw: readonly RawReviewThread[] | null | undefined,
+  reason: string,
+): ThreadReading {
+  if (raw === null || raw === undefined) return { status: "UNMEASURED", reason };
+  const threads: { key: string; isResolved: boolean }[] = [];
+  for (const t of raw) {
+    // A NULL NODE IS A THREAD, NOT A CRASH. A GraphQL connection returns a
+    // null node for an entry the token cannot see — a thread on a deleted
+    // file, or one hidden by a permission — and `t.body` on it throws a
+    // TypeError straight past this function's callers. That is the one
+    // failure mode this module is built to not have: an undecidable thread
+    // is dropped, which carries its finding, and the whole point is that the
+    // reading degrades rather than exploding. Dropping is also right on the
+    // merits — a node nobody can read names no finding and answers none.
+    if (t === null || typeof t !== "object") continue;
+    const key = threadKeyFrom(t.body);
+    if (key === null) continue;
+    threads.push({ key, isResolved: t.isResolved === true });
+  }
+  return { status: "MEASURED", threads };
+}
 
 /**
  * The single non-zero exit. Declared once, so a mutant can set it to `0` and

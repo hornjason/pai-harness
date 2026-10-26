@@ -691,6 +691,110 @@ export function carryForward(
   return out;
 }
 
+/* ──────────────── the same question, asked of the review threads ──────────
+ *
+ * `carryForward` above decides "is this finding still live" by comparing the
+ * TEXT at its cited line against the text recorded when it was raised. That
+ * is a heuristic over a moving document and #1601 is what it costs when it is
+ * wrong: a required check reported CLEAN over a live blocker for two rounds,
+ * because unrelated edits shifted the file and every finding read as
+ * resolved.
+ *
+ * A review thread answers the same question authoritatively. `isResolved` is
+ * a thing a PERSON did, on the finding itself, and no edit elsewhere in the
+ * file can forge it. #1618 is what makes the match possible at all: a posted
+ * thread now carries, base64 in an HTML comment, the key the finding was
+ * raised under.
+ *
+ * ## The two readings disagree, and the disagreement is the point
+ *
+ * Text-resolution says "the code moved". Thread-resolution says "a human
+ * accepted the answer". Only the second is a decision. The first is the one
+ * that re-raised one observation on #1614 twelve times across fifteen rounds,
+ * because the line numbers moved under it each round while the finding did
+ * not.
+ */
+
+/** One review thread, reduced to the two facts the decision needs. */
+export interface CarryThread {
+  /** The finding key the thread was posted under, per `threadKeyFrom`. */
+  key: string;
+  isResolved: boolean;
+}
+
+/**
+ * What was learned about the pull request's review threads.
+ *
+ * **Evidence is a PARAMETER, never fetched in here.** The decision has to be
+ * runnable against a reading that is empty, a reading that is wrong, and a
+ * reading that could not be taken — and a function that fetches its own
+ * evidence can only ever be tested against whatever the network returned.
+ */
+export type ThreadReading =
+  | { status: "MEASURED"; threads: readonly CarryThread[] }
+  | { status: "UNMEASURED"; reason: string };
+
+/**
+ * Carry forward every prior finding no review thread shows was ANSWERED.
+ *
+ * @returns `carried` — the findings still live — and `unmeasured`, the reason
+ * the thread list could not be read, or `null` when it was read. The two are
+ * reported separately on purpose: an empty `carried` after a failed fetch and
+ * an empty `carried` after a clean read are the same list and completely
+ * different facts.
+ *
+ * ## Every undecidable case CARRIES
+ *
+ * An unreadable thread list, a finding this caller cannot key, and a key no
+ * thread holds all carry. Re-raising something already dealt with is loud,
+ * cheap and self-correcting. Dropping a live finding is silent and permanent.
+ *
+ * ## A finding with any OPEN thread is unanswered
+ *
+ * Not "the first thread found", and not "any resolved thread". One
+ * observation produced twelve threads on #1614, so a reader that stops at the
+ * first key match answers a live finding by coincidence of the API's
+ * ordering. Every thread carrying the key must be resolved before the finding
+ * is.
+ */
+export function carryForwardFromThreads(
+  prior: readonly CarriedFinding[],
+  reading: ThreadReading,
+  keyFor: (f: ReviewFinding) => string | null,
+): { carried: ReviewFinding[]; unmeasured: string | null } {
+  if (reading.status !== "MEASURED") {
+    return { carried: prior.map(e => e.finding), unmeasured: reading.reason };
+  }
+
+  // Fold the threads into one verdict per key BEFORE deciding anything, so
+  // the decision cannot depend on where a key's threads sat in the list.
+  const allResolved = new Map<string, boolean>();
+  for (const t of reading.threads) {
+    allResolved.set(t.key, (allResolved.get(t.key) ?? true) && t.isResolved === true);
+  }
+  // The empty key is refused on the FINDING side only, below, and once. It
+  // was refused here too until a battery showed neither guard alone could be
+  // made to fail: two deciders answering one question are behaviourally one,
+  // and no test can say which of them is live
+  // (`.claude/rules/checks-must-be-able-to-fail.md`). The surviving one is
+  // the stronger — it also refuses the `null` that `keyFor` returns, which a
+  // guard over `t.key` cannot see.
+
+  // ONE decider, and `!== true` is the whole of it. An unkeyable finding, a
+  // key no thread holds, and a key whose threads are not all resolved are
+  // three different reasons and one outcome, and they share a line so that a
+  // mutation of it moves all three. Spelling them as three branches would be
+  // three deciders agreeing — no behavioural test could tell which was live,
+  // and two of them would be dead (`.claude/rules/checks-must-be-able-to-fail.md`).
+  const carried: ReviewFinding[] = [];
+  for (const entry of prior) {
+    const key = keyFor(entry.finding);
+    const answered = typeof key === "string" && key !== "" && allResolved.get(key) === true;
+    if (!answered) carried.push(entry.finding);
+  }
+  return { carried, unmeasured: null };
+}
+
 /* ───────────────── reading the ledger a previous round wrote ──────────────
  *
  * `lib/scaffold/ai-review-step.ts` upserts ONE comment per pull request
