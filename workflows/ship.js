@@ -10184,10 +10184,21 @@ ${proveVerdict === 'PROVEN' ? `   Then label and close it — two commands, in t
    echo '{"ts":"'$ts'","skill":"ship","issue":${ISSUE},"result":"${proveVerdict}","sizing":"${discovery.sizing}","ceremonyTier":"${discovery.ceremonyTier}","regressions":${regressionCount}}' >> ${HOME}/.claude/MEMORY/LEARNING/SIGNALS/harness-telemetry.jsonl
 
 3. Cleanup worktrees:
-   bun -e "import {cleanupWorktrees} from '${HARNESS_ROOT}/lib/worktree-cleanup.ts'; const r = await cleanupWorktrees({projectRoot:'${PROJECT_ROOT}'}); console.log(JSON.stringify(r))" 2>/dev/null || echo "cleanup skipped"
+   bun -e "import {cleanupWorktrees} from '${HARNESS_ROOT}/lib/worktree-cleanup.ts'; const r = await cleanupWorktrees({projectRoot:'${PROJECT_ROOT}'}); console.log(JSON.stringify(r))"
+
+   Report the JSON verbatim, including the \`kept\`, \`skipped\` and
+   \`orphaned\` counts — not just \`removed\`. A worktree that was KEPT is one
+   this run could not clean, and that is the reading worth having.
+
+   If this exits non-zero, report the failure and the stderr. Do NOT retry it
+   and do NOT describe it as skipped: "cleanup refused" and "cleanup removed
+   nothing" are different outcomes and only one of them needs a human.
 
 4. Scan stale issues:
-   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/scan-stale-issues.ts --repo ${ISSUE_REPO} --exclude ${ISSUE} 2>/dev/null || echo "scan skipped"
+   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/scan-stale-issues.ts --repo ${ISSUE_REPO} --exclude ${ISSUE}
+
+   Same rule: a non-zero exit is a failure to report, not a scan that was
+   skipped.
 
 5. Put the shared checkout back, and remove this run's branch (#640). Run
    exactly this:
