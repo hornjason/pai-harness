@@ -75,6 +75,7 @@ import {
   mcpToolsNamedIn,
   reviewToolAgreement,
   reviewWorkflowRegions,
+  triggerNames,
   withoutComments,
   type ReviewToolViolationKind,
 } from "../lib/review-tool-agreement";
@@ -158,7 +159,7 @@ function dispatchOnly(src: string): string {
   // could silently become a no-op and both cases below would keep passing
   // while measuring the wrong tree.
   const triggersOf = (s: string) =>
-    [...reviewWorkflowRegions(s).triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm)].map(m => m[1]);
+    triggerNames(reviewWorkflowRegions(s).triggerBlock);
   expect(triggersOf(stripped)).toEqual(["workflow_dispatch"]);
   expect(triggersOf(src)).toContain("pull_request");
   return stripped;
@@ -277,9 +278,7 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
    * fail, but nothing else here would say which direction the file moved in.
    */
   test("AC-17: the live workflow runs on pull_request, so the entity server exists", () => {
-    const triggers = [
-      ...reviewWorkflowRegions(live).triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm),
-    ].map(m => m[1]);
+    const triggers = triggerNames(reviewWorkflowRegions(live).triggerBlock);
     expect(triggers).toContain("pull_request");
     expect(triggers).toContain("workflow_dispatch");
     // And the consequence, stated where a reader will see it: the allowlist
@@ -316,11 +315,11 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     // else, and the entity trigger is present in both.
     for (const src of [mixed, entityOnly]) {
       expect(
-        [...reviewWorkflowRegions(src).triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm)].map(m => m[1]),
+        triggerNames(reviewWorkflowRegions(src).triggerBlock),
       ).toContain("pull_request");
     }
     expect(
-      [...reviewWorkflowRegions(entityOnly).triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm)].map(
+      triggerNames(reviewWorkflowRegions(entityOnly).triggerBlock).map(
         m => m[1],
       ),
     ).not.toContain("workflow_dispatch");
@@ -571,13 +570,23 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
    * `pull_request_target` runs a job with a WRITE token on a fork's pull
    * request. Two valid YAML spellings of it passed the check.
    *
-   * The fix has two halves and the SECOND is the one that matters. Widening
-   * `TRIGGER_NAME` closes the spellings somebody thought of; refusing an
-   * empty reading closes the ones nobody did. The set of valid YAML
-   * spellings is open and what this file can parse is closed, so the only
-   * safe response to a block it cannot read is to say so. That is the same
-   * lesson as AC-26 one level up: state what you can measure, and refuse
-   * outside it — do not enumerate failures.
+   * The first fix widened the regex to any indentation, and round 11 caught
+   * that too: any indentation is any DEPTH, so the live file read
+   * ["workflow_dispatch", "inputs", "pr", "description", "required", "type",
+   * "pull_request"] — every field of the `workflow_dispatch.inputs` schema
+   * counted as a trigger.
+   *
+   * Three regexes, three different wrong answers, which is the signal that a
+   * regex was the wrong instrument. What separates a trigger from a nested
+   * field is DEPTH, not spelling, so `triggerNames` measures the block's
+   * outermost indentation and takes the keys sitting at it. Two-space and
+   * four-space files work for the same reason and nothing nested is
+   * reachable.
+   *
+   * The refusal is still the load-bearing half. Structural or not, this is
+   * narrower than YAML, so an empty reading reports `TRIGGERS_UNMEASURED`
+   * rather than passing — the same lesson as AC-26 one level up: state what
+   * you can measure and refuse outside it, instead of enumerating failures.
    */
   test("AC-27: every YAML spelling of a trigger is read, and an unreadable block refuses", () => {
     const onAt = live.indexOf("\non:");
@@ -599,6 +608,7 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
       ["block style, two spaces", "\non:\n  pull_request_target:\n"],
       ["block style, four spaces", "\non:\n    pull_request_target:\n"],
       ["flow style", "\non: {pull_request_target: }\n"],
+      ["with a nested body under it", "\non:\n  pull_request_target:\n    types: [opened]\n"],
     ] as const) {
       expect(
         kinds(withOn(block)),
@@ -607,13 +617,32 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
       ).toContain("PULL_REQUEST_TARGET_TRIGGER");
     }
 
+    // The other direction, and the defect round 11 found: a key NESTED under
+    // a trigger must not be read as one. Without this row the check passes
+    // while believing the live file declares seven triggers, five of which
+    // are fields of an inputs schema.
+    expect(
+      triggerNames(reviewWorkflowRegions(live).triggerBlock),
+      "the live file declares exactly two triggers — anything else means nested keys are " +
+        "being counted, which is how `inputs`, `pr` and `description` became triggers",
+    ).toEqual(["workflow_dispatch", "pull_request"]);
+    expect(
+      kinds(
+        withOn(
+          "\non:\n  workflow_dispatch:\n    inputs:\n      pull_request_target:\n" +
+            "        type: string\n  pull_request:\n",
+        ),
+      ),
+      "a nested INPUT named pull_request_target is not a trigger and must not be flagged",
+    ).not.toContain("PULL_REQUEST_TARGET_TRIGGER");
+
     // And the half that covers the spellings nobody has thought of: a block
     // this file cannot read is UNMEASURED, never clean.
     const unreadable = kinds(withOn("\non: !!something-nobody-anticipated\n"));
     expect(
       unreadable,
       "an `on:` block yielding no trigger names must REFUSE. Without this, every future " +
-        "YAML spelling TRIGGER_NAME does not cover is a silent pass — which is exactly how " +
+        "YAML spelling `triggerNames` does not cover is a silent pass — which is exactly how " +
         "the two spellings above got through.",
     ).toContain("TRIGGERS_UNMEASURED");
   });

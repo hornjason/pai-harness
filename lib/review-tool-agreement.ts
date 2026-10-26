@@ -116,20 +116,59 @@ export const AUTOMATION_ONLY_TRIGGERS = [
 export const ENTITY_TRIGGERS = ["pull_request", "pull_request_target"] as const;
 
 /**
- * A trigger name inside the `on:` block, in either YAML style.
+ * The TOP-LEVEL keys of an `on:` block — its trigger names, and nothing
+ * nested underneath them.
  *
- * Group 1 is block style at ANY indentation — the original pattern pinned it
- * at exactly two spaces, and `on:\n    pull_request_target:` slipped past.
- * Group 2 is flow style, `on: {a: , b: }`, which the original did not see at
- * all. One pattern rather than two so there is a single thing to widen and a
- * single thing for a mutation to remove.
+ * A function and not a regex, because the question is structural and three
+ * successive regexes got it wrong in three different ways (#1614, rounds
+ * 10 and 11):
  *
- * This is still a text match and it is still narrower than YAML. That is
- * survivable only because an EMPTY result REFUSES — see `TRIGGERS_UNMEASURED`
- * at the call site. Widen this when a real spelling is found; do not rely on
- * it being complete.
+ *   /^\s{2}([a-z_]+):/gm     block style at EXACTLY two spaces. Every other
+ *                            valid spelling read as `[]`, and `[]` made the
+ *                            callers silent. `on: {pull_request_target: }`
+ *                            passed — a WRITE token on a fork's pull request.
+ *
+ *   /^[ \t]+([a-z_]+):/gm    any indentation, which is any DEPTH. On the live
+ *                            file this returned ["workflow_dispatch", "inputs",
+ *                            "pr", "description", "required", "type",
+ *                            "pull_request"] — every field of the
+ *                            `workflow_dispatch.inputs` schema read as a
+ *                            trigger.
+ *
+ * What separates a trigger from a nested field is not its spelling, it is
+ * its DEPTH: a trigger is a key at the block's outermost indentation. So
+ * measure that depth from the block itself rather than assuming a number,
+ * and take only the keys sitting at it. Four-space files and two-space files
+ * then both work for the same reason, and nothing nested can be reached.
+ *
+ * Flow style has no indentation to measure, so it is read separately — but
+ * only at depth zero, by requiring the brace that opens the mapping.
+ *
+ * Still narrower than YAML, and that is survivable only because an EMPTY
+ * result REFUSES at the call site (`TRIGGERS_UNMEASURED`). Anything this
+ * cannot read is reported, never passed.
  */
-export const TRIGGER_NAME = /^[ \t]+([a-z_]+):|[{,]\s*([a-z_]+)\s*:/gm;
+export function triggerNames(triggerBlock: string): string[] {
+  // Flow style: `on: {a: , b: }`. Take the braced region only, so a brace
+  // elsewhere in the block cannot contribute keys.
+  const flow = /^\s*on:\s*\{([^}]*)\}/m.exec(triggerBlock);
+  if (flow) {
+    return [...flow[1].matchAll(/(?:^|,)\s*([a-z_]+)\s*:/g)].map(m => m[1]);
+  }
+
+  // Block style. Every key line in the block, with its indentation.
+  const keys = [...triggerBlock.matchAll(/^([ \t]+)([a-z_]+):/gm)].map(m => ({
+    indent: m[1].length,
+    name: m[2],
+  }));
+  if (keys.length === 0) return [];
+
+  // The outermost depth present IS the trigger depth — `on:` itself sits at
+  // column zero and is excluded by the `[ \t]+`, so the shallowest key line
+  // in the block is a trigger by construction.
+  const top = Math.min(...keys.map(k => k.indent));
+  return keys.filter(k => k.indent === top).map(k => k.name);
+}
 
 /**
  * The two expressions a job-level condition needs to compare before it can be
@@ -562,7 +601,7 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
   //    and the set of things this function can parse is closed, so the only
   //    safe thing to do with a block it cannot read is say so — an absent
   //    reading is UNMEASURED, never a clean one.
-  const triggers = [...triggerBlock.matchAll(TRIGGER_NAME)].map(m => m[1] ?? m[2]);
+  const triggers = triggerNames(triggerBlock);
   if (triggers.length === 0) {
     v.push({
       kind: "TRIGGERS_UNMEASURED",
@@ -570,8 +609,8 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
         "the `on:` block was found but no trigger name could be read out of it, so the " +
         "pull_request_target and fork-guard checks below have nothing to decide on. That is " +
         "UNMEASURED, not clean: a workflow with no readable triggers is one this check cannot " +
-        "speak about. Either the block uses a YAML spelling TRIGGER_NAME does not cover — " +
-        "widen it and add the spelling to that pattern's test — or the workflow genuinely " +
+        "speak about. Either the block uses a YAML spelling `triggerNames` does not cover — " +
+        "teach it that spelling and add a row to AC-27 — or the workflow genuinely " +
         "declares no triggers, in which case it never runs",
     });
   }
