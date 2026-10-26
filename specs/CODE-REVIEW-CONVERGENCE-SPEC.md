@@ -353,7 +353,7 @@ Do not tick these, and do not count them as remaining work either.
 | Criterion | What exists | Why no test here can read it |
 |---|---|---|
 | CRC-C1 | The security review runs as a local Claude Code plugin an agent invokes per session. | It is not repo CI. `.github/workflows/` contains no security pass, so no artefact in this tree records that one ran. |
-| CRC-C2 | **The bug-review half holds.** `test` and `ai-review` are required contexts on `main` with `enforce_admins` on, so a blocking finding reds the check and the merge is refused. Read from the API on 2026-10-23. | Branch protection is GitHub state, not tree state. The security-review half does not hold at all — there is no security check to require. **`required_conversation_resolution` is `true`** (read 2026-10-25; this cell said `false` until then), so an open thread DOES block — but nothing in this repository opens one for an AI finding, so the setting has no producer to act on and the half still does not hold. The reason changed; the verdict did not. |
+| CRC-C2 | **The bug-review half holds.** `test` and `ai-review` are required contexts on `main` with `enforce_admins` on, so a blocking finding reds the check and the merge is refused. Read from the API on 2026-10-23. | Branch protection is GitHub state, not tree state. The security-review half does not hold at all — there is no security check to require. **`required_conversation_resolution` is `true`** (read 2026-10-25; this cell said `false` until then), so an open thread DOES block. **The producer has since landed** (2026-10-26): the generated workflow's step `Post this round's findings onto the diff` runs `ai-review-threads`, and #1614 carries four `github-actions`-authored review threads. The security-review half still does not hold, for its own reason — there is no security check to require — so the verdict is unchanged, but it no longer rests on the absent-producer claim. |
 | CRC-M2 | `REVIEW_OUTCOME_PLANTS` holds four findings whose outcome was established independently. | Expert confirmation is a human act, and those four grade the outcome sweep rather than an incident case set. |
 | CRC-N3 | `REVIEW.md` asks for the class and not the line, and CRC-A6's check proves the reviewer read it. | Whether it complied is a property of a sampled model. No artefact records a finding the reviewer generalised. |
 | CRC-H1, CRC-H3, CRC-H4, CRC-H5 | Statements about human judgement. | Nothing distinguishes them being honoured from them being ignored. |
@@ -386,7 +386,7 @@ check that reads the API, which is a design decision in its own right.
 
 | Criterion | The setting | What it closes |
 |---|---|---|
-| CRC-C3 — a false positive clears by closing the thread with a reason | `required_conversation_resolution`, **`true` since 2026-10-23** — this row read `currently false` until 2026-10-25 and was stale, while Phase 0 below recorded the setting as applied. | The native mechanism for "a finding blocks merge until it is dispositioned", which is also half of CRC-B8. **It is in force and it has nothing to act on:** no producer in this repository opens a review thread for an AI finding, so there is no unresolved thread for the setting to block on. The setting is no longer what is missing. |
+| CRC-C3 — a false positive clears by closing the thread with a reason | `required_conversation_resolution`, **`true` since 2026-10-23** — this row read `currently false` until 2026-10-25 and was stale, while Phase 0 below recorded the setting as applied. | The native mechanism for "a finding blocks merge until it is dispositioned", which is also half of CRC-B8. **It is in force and, since 2026-10-26, it has something to act on:** the generated workflow's `ai-review-threads` step opens a review thread per finding, and #1614 carries four. This cell read "nothing to act on" until then. What is still missing is not a setting and no longer a producer — it is a **reading**: no pull request has yet been observed blocked by an unresolved thread with every other required context green, so the setting's effect is inferred rather than measured. |
 | CRC-E8 — an approval covers one specific commit | `required_pull_request_reviews` with `dismiss_stale_reviews`. | Nothing today: with no required reviews there is no approval to carry or dismiss. `gh pr merge --match-head-commit` is a convention agents follow by hand. |
 
 ### Contested — this repository gives two opposite instructions
@@ -630,6 +630,10 @@ blocking side.
 
 ### Phase 3 — what the reviewer is told
 
+> **Reordered for one objective.** For the swarm track declared below, Phase 4
+> runs before this phase. The reason and its limits are in *The swarm track*;
+> for the rounds-to-pass objective this phase stays third.
+
 Cheap, mostly prompt and `REVIEW.md` text, and independent of Phases 1 and 2.
 Sequenced third rather than first because a reviewer given more context and
 no falsification step produces more confident false premises — so Phase 2
@@ -646,6 +650,10 @@ reviewer, and what remains of this phase is CRC-B9 and CRC-A7, which need the
 file this phase's other two did not: see each entry for why.
 
 ### Phase 4 — findings get answered, and repeats get fixed at the source
+
+> **Reordered for one objective.** For the swarm track declared below this
+> phase runs before Phase 3, and only **CRC-B8** of it is the swarm's need —
+> CRC-A2 is unrelated. See *The swarm track*.
 
 CRC-B8 (every finding answered — CRC-C3 from Phase 0 is half of it), CRC-A8
 (a repeated finding becomes a rule or a lint, not another finding), CRC-A2
@@ -684,15 +692,34 @@ stated so a reader can be wrong about it — which is the lesson *The thing
 that would make this plan wrong* records below, where a precondition that
 read "the fix has merged" was checkable and was the wrong thing to check.
 
-| Phase | Exits when this is observed | Taken how |
+**Every row below states a negative control**, because the first draft of
+this table did not and an audit found six rows satisfiable by something that
+never happened. Each row therefore names the state that must NOT read as a
+pass. A row without one is the defect this section exists to prevent,
+arriving inside the section.
+
+| Phase | Exits when this is observed | The state that must NOT read as a pass |
 |---|---|---|
-| **0** settings | `required_conversation_resolution` is `true` on `main` **and a pull request has actually been held by it** — a setting nothing has exercised is a setting, not a gate | `mergeStateStatus` is `BLOCKED` with an open thread and `CLEAN` after it is resolved, same PR, nothing else changed |
-| **1** stop the repeats | A pull request pushed **twice** with the same defect still present carries **one** thread for it, not two | count threads on that PR; and re-take CRC-M11 — five-or-more-rounds must be **below 20.5%** |
-| **2** stop the false findings | A finding **known to be false** is voted down by the group and is **never posted** | the ballot carries `VERIFIER_GROUP_SIZE` votes and the disagreement flag; the thread count for that finding is zero |
-| **3** what the reviewer is told | A reading of the **live reviewer** changing behaviour — not a clause added to `REVIEW.md` | the planted subject CRC-A4 already has is flagged on a real round |
-| **4** findings get answered | A finding is fixed, or resolved with a stated reason, **with no human acting on that pull request** | the thread's resolving actor is not a person, and the PR reaches `CLEAN` |
-| **5** instruments | Each of CRC-M6's four buckets has a non-zero count from real dispositions | the ledger, read over a week |
+| **0** settings | Every OTHER required context is green — `test` and `ai-review` both `SUCCESS` — and the pull request is still held, then goes mergeable when **only** the thread is resolved | `BLOCKED` while any other required check is failing or pending. That reading is **overdetermined** and attributes nothing. See the swarm track below, where this spec made exactly that error |
+| **1** stop the repeats | Round two posts **at least one NEW thread** for a different finding, **and zero** for the finding already threaded on round one | round two posting **nothing at all** — which an absent payload, a fork's read-only token or CRC-N2's narrowing all produce. Zero threads is not a deduplication, and without the new thread there is no proof the poster was even live |
+| **1** (the number) | On **measured rounds only**: five-or-more below **4.4%** and mean-to-pass below **1.58** | using the ALL-rounds figures (20.0%, 2.65). Those are dominated by the 41% of rounds that produce no review, which Phase 1 does not touch — the spec says conflating the units "points the whole plan at the smaller half of its own problem" |
+| **2** stop the false findings | A finding **known to be false** is voted down and **no thread is opened for it** | a zero thread-count produced by anything other than the vote. **Today that is the only thing it can be** — see the ordering defect below |
+| **3** what the reviewer is told | **N readings** of the planted subject, N and the full outcome set both stated | a single `DETECTED`. CRC-A4's own promotion condition forbids it: the reviewer is sampled, one reading is one draw. This table said "a real round" and contradicted itself sixty lines later |
+| **4** findings get answered | A pull request that **had at least one open thread**, all of them resolved, no resolving actor a person, then mergeable | a pull request with **no threads at all**. It satisfies every clause vacuously and is precisely the always-empty population this spec was written about |
+| **5** instruments | Each of CRC-M6's four buckets non-zero, each traced to a **human-authored** disposition | a bucket incremented by `lib/signal-phrases.ts` matching agent boilerplate. "by design" in a generated comment is not a disposition |
 | **6** release and detection | — none of these moves rounds-to-pass; they exit on their own criteria | |
+
+**Phase 2 cannot currently be satisfied, and that is a finding about the
+pipeline rather than about this table.** In the generated workflow the step
+`Post this round's findings onto the diff` runs `ai-review-threads`, and the
+adjudicator that consults the ballot runs `ai-review-findings` in a **later**
+step. The threads are already posted by the time any vote is read, and
+CRC-B4's own entry records that a voted-down finding still blocks. So a
+quorum, as currently ordered, can never prevent a thread. **Phase 2 has a
+prerequisite nobody had written down: the vote must be read before the post,
+or the posting step must read the ballot itself.** Until that lands, the
+Phase 2 row is unreachable and should be reported UNMEASURED rather than
+pending.
 
 **Phase 1's second half is the one that will be skipped.** Counting threads
 on one pull request is cheap and will be done; re-taking CRC-M11 costs a
@@ -700,10 +727,21 @@ population and will not be, unless it is written here as a gate. The
 mechanism being present is not the claim this phase makes. The claim is that
 the tail moved.
 
-**And re-take CRC-M11 at a controlled age.** The reading on 2026-10-24
-records why: a naive comparison of a fresh cohort against an older one
-reported a 47-point improvement that vanished entirely when both were read
-at the same age.
+Two things make that re-take valid, and both have already gone wrong once in
+this document. **Control the age** — the 2026-10-24 reading records a naive
+cohort comparison reporting a 47-point improvement that vanished entirely
+when both cohorts were read at the same age. And **reconcile the parse**: the
+reading counts only if it agrees with
+`bun evals/ai-review-control/run.ts rounds` on the same file, because the
+first attempt at this measurement used a second hand-rolled parser, silently
+returned zero rounds for 17 of 43 pull requests, and was caught only by that
+disagreement.
+
+**None of these phases is the largest lever, and the table must not be read
+as claiming otherwise.** This spec already measures that the biggest single
+contributor to 2.65 is the 41% of rounds producing no review at all —
+the structural decline on workflow-editing diffs, and the no-payload tax of
+#1478. Neither is a review-quality problem and neither is in Phases 1–5.
 
 ### The swarm track, and the reorder it asks for
 
@@ -716,32 +754,64 @@ right order for this repository's review loop and it is not the order for a
 second objective the owner has stated: **running many agents against a
 product backlog with no human in the per-pull-request loop.**
 
-Swarm-readiness needs exactly two things, and they are necessary together:
+Swarm-readiness needs **three** of the phases, and they are necessary
+together:
 
 - **Phase 2**, because findings must be mostly right. CRC-B3 already states
   that N generators without a quorum are *strictly worse than one* — N
   chances to block falsely. At a swarm's width that is not a slower loop, it
   is a stalled one.
-- **Phase 4**, because findings must get **answered without a person**. This
-  is the half that is easy to miss, and it is observable today:
-  `required_conversation_resolution` holds a pull request `BLOCKED` on an
-  open thread, measured on #1614. Twenty agents, twenty pull requests, three
-  threads each, and nobody to resolve them is sixty blocked merges. The gate
-  works perfectly and the swarm delivers nothing.
+- **Phase 4**, specifically **CRC-B8**, because findings must get **answered
+  without a person**. Phase 4 carries more than CRC-B8 and the rest is not
+  the swarm's need — CRC-A2, a fresh-context review before the pull request
+  opens, is unrelated to whether a thread gets answered. Name B8, not the
+  phase.
+- **Phase 1**, because an answer has to *stick*. This is the one the first
+  draft of this section omitted, and the omission was load-bearing. CRC-N4
+  is "a finding re-posted every round": under
+  `required_conversation_resolution` a repeat opens a **new** thread, so an
+  agent that resolves every thread on round *n* faces a fresh unresolved one
+  on round *n+1* and the merge re-blocks on each push. Resolution that does
+  not stick is the same stall this section attributes to CRC-B8's absence,
+  arriving by a different route.
 
-**Phase 4 therefore moves ahead of Phase 3 for this objective.** Phase 3 is
-prompt and `REVIEW.md` text; it makes a reviewer better informed and it
-unblocks nothing. The original argument for sequencing Phase 3 third —
-that a reviewer given more context and no falsification step produces more
-confident false premises — is unaffected: it says Phase 3 comes *after*
-Phase 2, and it still does.
+Twenty agents, twenty pull requests, three threads each, and nobody to
+resolve them is sixty blocked merges — the gate working perfectly and the
+swarm delivering nothing.
 
-**What this reorder does NOT do** is change the priority in CRC-M8. Catching
-real bugs still comes before cutting rounds. A swarm that ships faster by
-answering findings wrongly has moved human time into the second half of the
-cost rule, not saved it.
+**That scenario is argued, not measured, and the control has not been run.**
+`required_conversation_resolution` is `true` and the producer has landed —
+`ai-review-threads` posts real review threads, and #1614 carries four of
+them. But `main`'s required contexts are `["test", "ai-review"]`, and on
+#1614 `ai-review` is `FAILURE`, so its `BLOCKED` is **overdetermined**: the
+unresolved thread is not shown to be doing any of the blocking. It is also
+the only open pull request carrying an unresolved thread, so there is no
+unconfounded instance in the live population. **This is exactly the reading
+Phase 0's exit row demands** — `BLOCKED` with an open thread and `CLEAN`
+after it is resolved, same pull request, nothing else changed — and until
+that is taken, the premise under this whole track is inferred from a
+setting rather than observed.
 
-**The thing that would make the swarm track wrong:** if Phase 2 lands and
+**Phase 4 therefore moves ahead of Phase 3 for this objective**, but the
+reason is narrower than "Phase 3 unblocks nothing". Phase 3 is prompt and
+`REVIEW.md` text, and by its own rationale a reviewer given more context
+and no falsification step produces *more confident false premises* — so
+Phase 3 moves the false-positive rate too, in the costly direction. It is
+sequenced after Phase 2 for that reason and that argument is unchanged.
+What Phase 3 cannot do is clear an open thread, and clearing threads is the
+swarm's binding constraint.
+
+**What this reorder does NOT do** is relax the precision requirement. Note
+that CRC-M8's stated order — real bugs first, rounds second — is **inverted
+in this repository by declared decision**; see *Known deviations*, where
+`MISSED` and `FIRED` are weighted equally because nobody absorbs the noise.
+Under that inversion a swarm that ships faster by answering findings wrongly
+is not a faster swarm, it is a louder one.
+
+**What would falsify the swarm track** — named differently from *The thing
+that would make this plan wrong* below on purpose, because two adjacent
+sections with near-identical titles is a navigation hazard and this document
+already carries a forward reference to that one: if Phase 2 lands and
 `FIRED` on `evals/ai-review-control`'s clean subjects does not fall, then the
 quorum is filtering nothing, a swarm is not unblocked by it, and this track is
 ordered against a premise that did not hold. Say so and stop, rather than
@@ -755,6 +825,17 @@ anything. **Take the `FIRED` count BEFORE the quorum lands**, on the same
 subject set — a post-quorum number alone is uninterpretable. And **state N**:
 the reviewer is a sampled instrument (CRC-B3), so one clean subject scoring
 `FIRED` zero times is one draw, not a rate.
+
+**And Phase 2 is necessary only while findings BLOCK.** `ai-review` is a
+required context on `main`, which is what makes a false finding expensive
+enough to need a quorum — but `AI_REVIEW_OVERRIDE_LABEL`
+(`ai-review-override`) is the documented escape, and a swarm running with
+that label has advisory findings and no need of Phase 2 at all. That is a
+real alternative route to the same objective and it is named here so nobody
+takes it silently: it buys throughput by switching the gate off, which
+abandons CRC-M8 rather than satisfying it. If anyone proposes it, the thing
+to argue about is whether the findings were worth having, not whether the
+swarm is faster without them.
 
 A per-attempt rate near 25% has been read elsewhere on this machine and is
 **not** this spec's instrument — it is a different repository's population,
@@ -815,7 +896,7 @@ Recorded because each one invalidates a naive reading of the criteria above.
 - **The dedupe corpus is untrusted.** This repo is public, so any open issue — including one opened by a stranger — is an input that can suppress a legitimate finding.
 - **Until this entry was written, a non-blocking finding was discarded by the reader, not merely unreported.** `AI_REVIEW_SEVERITIES` declares `medium`, `low` and `info` advisory; `readAiReviewFindings` counted them and `aiReviewRefusal` printed only the blocking subset, so a CLEAN payload carrying seven `medium` findings produced **byte-identical output** to one carrying none. The payload lives under `$RUNNER_TEMP`, nothing uploads it, and it dies with the runner — so the finding was unrecoverable the moment the job ended, which is why the drop is invisible in any count taken afterwards. `advisoryNotice` now emits the tail as a `::notice` carrying each finding's file, line, summary and a line-independent key, and `test/ai-review-advisory-findings.test.ts` holds it. **The size of the population this was losing is UNMEASURED and cannot be recovered**: the only readings that would show it were in the payloads that died. It becomes measurable from the first run after this ships.
 - **The waiver cannot waive a finding, and did not.** `ai-review-override` is consulted only on routes where **no findings payload exists** — the structural refusal and the action-did-not-complete routes. A payload that adjudicates to BLOCKED exits non-zero without the label being read, and a payload present alongside the label is its own UNMEASURED refusal. So "a finding was waived past merge" is not a hole in this pipeline, and a gate built over it would have guarded nothing. Recorded because it is the first thing a reader looking for CRC-B8's merge hole reaches for.
-- **GitHub's own implementation of CRC-B8 is ON, and this bullet said the opposite until 2026-10-25.** Read from the API on 2026-10-25: `required_conversation_resolution: true`, alongside `enforce_admins: true`, `strict: false`, and no required reviews. The bullet previously read `false` and concluded that the native mechanism was *"available and unused"* and that CRC-B8 *"cannot be closed by code alone"*. **Correcting the boolean does not leave that inference standing, so it is withdrawn rather than reworded:** the mechanism is not unused, it is in force, and the thing CRC-B8 still lacks is not a setting but a *producer* — nothing in this repository opens a review thread for an AI finding, so a setting that blocks merge on unresolved threads has nothing to block on. The half this document can hold code to is therefore the one above it, and it is the half that matters more than it did when this read `false`. **What is worth more than either fact: the document already contradicted itself.** Phase 0 records *"CRC-C3 is APPLIED as of 2026-10-23"* with the same field read `true`, roughly two hundred lines above this bullet, and the two sat in one file disagreeing because nothing compares two prose statements of one API field — `.claude/rules/checks-must-be-able-to-fail.md`'s *"when a guard enforces a property, ask what other syntax expresses the same property"*, with the guard missing entirely. The audit entries for CRC-C2, CRC-C3 and CRC-E8 each read a different consequence off the same protection document and are deliberately not repeated here; that they are not repeated is now load-bearing rather than tidy.
+- **GitHub's own implementation of CRC-B8 is ON, and this bullet said the opposite until 2026-10-25.** Read from the API on 2026-10-25: `required_conversation_resolution: true`, alongside `enforce_admins: true`, `strict: false`, and no required reviews. The bullet previously read `false` and concluded that the native mechanism was *"available and unused"* and that CRC-B8 *"cannot be closed by code alone"*. **Correcting the boolean does not leave that inference standing, so it is withdrawn rather than reworded:** the mechanism is not unused, it is in force, and the thing CRC-B8 then lacked was not a setting but a *producer*. **That half closed on 2026-10-26** — the generated workflow's `ai-review-threads` step opens a thread per finding and #1614 carries four — so what CRC-B8 lacks now is neither setting nor producer but a **reading**, and the distinction matters because a block observed while another required check is also failing is overdetermined and attributes nothing. The half this document can hold code to is therefore the one above it, and it is the half that matters more than it did when this read `false`. **What is worth more than either fact: the document already contradicted itself.** Phase 0 records *"CRC-C3 is APPLIED as of 2026-10-23"* with the same field read `true`, roughly two hundred lines above this bullet, and the two sat in one file disagreeing because nothing compares two prose statements of one API field — `.claude/rules/checks-must-be-able-to-fail.md`'s *"when a guard enforces a property, ask what other syntax expresses the same property"*, with the guard missing entirely. The audit entries for CRC-C2, CRC-C3 and CRC-E8 each read a different consequence off the same protection document and are deliberately not repeated here; that they are not repeated is now load-bearing rather than tidy.
 - **A required check reported CLEAN over a live blocker for two rounds, because the carry anchored on a LINE NUMBER (#1601).** This is Claim 4 failing inside this repository's own merge gate, with a named instance. On PR #1597 round 5 blocked on a `high` in `lib/issue-filing-gate.ts`, at what was then line 1827 (run `40139615405`, head `89b6cc61` — the number is quoted as the anchor the ledger recorded, not as a position in today's tree, which is the whole subject of this entry); rounds 6 and 7 both reported `CLEAN` and `0 finding(s) from earlier rounds are unanswered`, and the defect was never fixed — the agent working the PR said so in its own report. Unrelated edits had shifted the file, so line 1827 held a comment instead of the recorded code, the comparison failed, and the finding was classified **resolved**. **The drop is permanent, not a one-round blip:** the ledger keeps the original anchor for ever, so once the text at that line stops matching it never starts again. The failure direction is what makes it bite — the carry rule's three branches were deliberately built to fail TOWARD carrying (a null anchor carries, an unreadable anchor carries), and a **successfully read wrong line** is indistinguishable from a genuinely fixed one. **The single fail-open branch is the one ordinary editing produces on every push.** The fix is content-addressing: count the lines equal to the recorded text, carry on one or more, resolve only on zero, and leave an empty recorded anchor on the line path because #1406 established that is a real reading of a genuinely blank line. **The general shape, which is the part worth carrying:** when a check compares a stored observation against the present, ask what the identity of the observation is. A line number is a COORDINATE, and a coordinate is only stable while nothing above it moves.
 - **The "second chance" a full-scope round gives a dropped finding is real, and it is taken once in thirty-three (#1600, #1601).** The argument for fixing #1601 before narrowing was that under `scope=full` the reviewer re-reads the branch and can re-find a defect the carry dropped, while under `scope=diff` a dropped finding in an untouched file is read by nothing. That sentence was shipped unquantified, which makes it unfalsifiable, so it was measured. **Method:** all 828 pull requests walked, 147 parseable ledgers, 193 findings carrying both a non-empty recorded anchor text and a numeric line; for each of the **272** (finding, later round) pairs the blob was fetched at that round's own head sha and the PRE-#1601 rule replayed against it. A drop is a pair where the recorded line no longer holds the recorded text **and** the text is still somewhere in the file — the content rule carries it, the line rule resolves it. Every round in the corpus is full-scope, because narrowing has never shipped; the population is therefore exactly the one the claim is about. **Result: 33 distinct defects were dropped at least once. 2 were raised again by a later round. 31 were never seen again.** Reading the two rather than reporting the count is what makes the answer one: **#1435** is clean — a `medium` raised at round 1, dropped by the anchor at round 2, absent through rounds 2–4, raised again at round 5 — and **#1597**'s is an `info` remark whose anchor is the function signature `export async function filingGate(`, raised at rounds 6, 7, 9 and 10, which is better read as a recurring remark on a declaration than as a re-find. **So the second chance is real and rare: about 3%.** The consequence runs the way that was not expected: narrowing on top of the BROKEN carry would have cost roughly one recovered finding in thirty-three drops, and narrowing on top of the FIXED carry costs nothing through this mechanism, because the drop does not happen. The ordering was still right; the reason it was right is one finding, not a category. **Two controls, because a zero here would have been indistinguishable from a pruned commit:** 272 pairs measured, **0** unmeasured, **0** blob fetches failed. The first pass reported 51 unmeasured and 31 drops, because the head-sha map was built from the findings rather than from the ledger entries, so a round that recorded no finding had no sha and was skipped; rebuilt from the entries, all 333 (pull request, round) pairs carry a sha and the drop count moves to 33. **What this does NOT measure**, said here rather than left as an omission: it is about re-finding a finding the carry once held. It says nothing about the reviewer's recall on code it has never flagged, and conflating the two would make the number mean more than it does.
 - **A completeness check that asks whether what is present PARSES cannot see what is absent (#1600, found in review).** The same shape as the entry above, one level up, and it was caught before it shipped rather than after. CRC-N2's narrowing gate asked `unmeasuredRounds == 0` — the count of recorded rounds whose findings list could not be read. A **truncated** ledger's earlier rounds are not unreadable, they are gone: every entry still present parses perfectly, the count reads `0`, and the scope narrows over history the gate cannot see. Nor does a hole need truncation — rounds 1, 2 and 5 recorded before a snapshot at 6 is a gap that both readings call clean. Re-measured 2026-10-25 by walking **all 828 pull requests** and replaying the decision per round against the ledger as the carry step would have read it at that round: **147** carry a parseable ledger, **333** distinct rounds, **115** at or past the floor. Among those 115 the truncation gate refuses **46** and the round-number gap refuses **15** (#1420 has no round 2, #1391 no round 1). Both gates refuse something real rather than being adoption on paper.
