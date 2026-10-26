@@ -20,6 +20,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { structuralCut } from "../lib/source-slice";
 
 const ROOT = join(import.meta.dir, "..");
 const SHIP = readFileSync(join(ROOT, "workflows", "ship.js"), "utf8");
@@ -52,9 +53,13 @@ describe("worktree cleanup: the run must see the result", () => {
   test("the prompt tells the agent a non-zero exit is a failure to report", () => {
     // Without this the agent is free to read a red exit as noise, which is
     // the same swallow one layer up.
-    const idx = SHIP.indexOf("Cleanup worktrees:");
-    expect(idx, "step 3 heading not found").toBeGreaterThan(-1);
-    const step = SHIP.slice(idx, idx + 700);
+    //
+    // Cut to the construct, not to a character count (#664): step 3 ends
+    // where step 4 begins. A fixed window would silently cross into the next
+    // step and credit step 3 with a word step 4 happened to carry.
+    const step = structuralCut(SHIP, "3. Cleanup worktrees:", {
+      endAnchor: "4. Scan stale issues:",
+    });
     expect(step.toLowerCase()).toInclude("non-zero");
   });
 });
