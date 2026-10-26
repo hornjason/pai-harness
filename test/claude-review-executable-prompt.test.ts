@@ -62,6 +62,9 @@ import { join } from "node:path";
 import {
   AUTOMATION_ONLY_TRIGGERS,
   ENTITY_ONLY_MCP_SERVERS,
+  FORK_GUARD_COMPANION_EVENTS,
+  forkGuardDefect,
+  FORK_GUARD_TERMS,
   POSTING_TOOLS,
   READING_SCRIPT,
   ReviewSourceUnreadableError,
@@ -72,6 +75,7 @@ import {
   mcpToolsNamedIn,
   reviewToolAgreement,
   reviewWorkflowRegions,
+  triggerNames,
   withoutComments,
   type ReviewToolViolationKind,
 } from "../lib/review-tool-agreement";
@@ -112,10 +116,54 @@ const ALLOWLIST =
   "mcp__github__add_comment_to_pending_review," +
   'mcp__github__submit_pending_pull_request_review"';
 
-/** The allowlist both green runs on #732 had: one tool, which this trigger
- * cannot provide. */
+/** The allowlist both green runs on #732 had: one tool, which an automation
+ * trigger cannot provide. */
 const INLINE_COMMENT_ALLOWLIST =
   '--allowedTools "mcp__github_inline_comment__create_inline_comment"';
+
+/**
+ * The trailing lines of the `on:` block, exactly: the `pull_request` trigger
+ * #631/#675 added and the blank line before `permissions:`. Removing it is how
+ * AC-4 and AC-11 reach a dispatch-only tree now that the live one is not.
+ *
+ * Spelled as the whole region rather than `"  pull_request:\n"` on purpose. The
+ * shorter needle also occurs inside the comment above it, and `mutateOnce`
+ * would abort — which is the helper working, but a confusing way to find out.
+ */
+const PULL_REQUEST_TRIGGER = "\n  pull_request:\n\npermissions:";
+
+/** The whole `workflow_dispatch` key and its inputs, so a case can take it
+ * away rather than add a second trigger beside it. */
+const DISPATCH_TRIGGER =
+  "  workflow_dispatch:\n    inputs:\n      pr:\n" +
+  '        description: "Pull request number to review"\n' +
+  "        required: true\n        type: number\n";
+
+/** What AC-11 and AC-22 put in its place: an entity trigger, alone. */
+const ENTITY_TRIGGER = "  pull_request:\n    branches: [main]\n";
+
+/**
+ * The live workflow with its entity trigger taken away — `workflow_dispatch`
+ * and nothing else, which is what this file measured against before #631/#675.
+ *
+ * Two cases below are about a door that only exists on an automation-only
+ * trigger, so they need a tree that has one. Deriving it from `live` by a
+ * single mutation keeps them measuring the live allowlist and the live prompt;
+ * a second checked-in fixture would drift away from both and go green on a
+ * workflow nobody runs.
+ */
+function dispatchOnly(src: string): string {
+  const stripped = mutateOnce(src, PULL_REQUEST_TRIGGER, "\n\npermissions:");
+  // The premise, asserted rather than assumed: this really is automation-only
+  // now, and it really was not before. Without the second half the helper
+  // could silently become a no-op and both cases below would keep passing
+  // while measuring the wrong tree.
+  const triggersOf = (s: string) =>
+    triggerNames(s);
+  expect(triggersOf(stripped)).toEqual(["workflow_dispatch"]);
+  expect(triggersOf(src)).toContain("pull_request");
+  return stripped;
+}
 
 /**
  * The one step that RUNS the reading script, refusing on zero or two.
@@ -215,8 +263,466 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
    * `workflow_dispatch`.
    */
   test("AC-4: inlining the prompt while keeping create_inline_comment is still caught", () => {
-    const halfFix = mutateOnce(live, ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
+    const halfFix = mutateOnce(dispatchOnly(live), ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
     expect(kinds(halfFix)).toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+  });
+
+  /**
+   * The promotion #631/#675 made, as a reading rather than a claim: the live
+   * file's triggers are no longer automation-only, so the door AC-4 measures
+   * is one the live tree does not have.
+   *
+   * Worth its own case because it is the only thing standing between "the
+   * trigger moved" and AC-4 going green for the wrong reason — if `live` were
+   * somehow still dispatch-only, `dispatchOnly` would abort and AC-4 would
+   * fail, but nothing else here would say which direction the file moved in.
+   */
+  test("AC-17: the live workflow runs on pull_request, so the entity server exists", () => {
+    const triggers = triggerNames(live);
+    expect(triggers).toContain("pull_request");
+    expect(triggers).toContain("workflow_dispatch");
+    // And the consequence, stated where a reader will see it: the allowlist
+    // may now legally grant the inline-comment tool. It still does not —
+    // AC-1 holds the live file at zero violations either way — but the reason
+    // is the enumeration argument in the workflow's own comment, not a server
+    // that cannot start.
+    // The entity server now starts on the `pull_request` path — but the
+    // grant is still caught, because `workflow_dispatch` is still declared
+    // and a run started THAT way still has no such server. See AC-22.
+    const entityAllowed = mutateOnce(live, ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
+    expect(kinds(entityAllowed)).toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+  });
+
+  /**
+   * The precision regression the trigger promotion introduced, and the second
+   * finding THE REVIEWER raised on the pull request that introduced it.
+   *
+   * Check 3 used to ask whether EVERY trigger was automation-only. While this
+   * file had one trigger that was the same question. With `pull_request` and
+   * `workflow_dispatch` side by side it is a strictly weaker one — the check
+   * went silent on a mixed set, even though a dispatch run of the same job
+   * still has no entity-only server. "Never exists on any trigger" quietly
+   * became "does not exist on the intersection of all triggers", with the
+   * name and the comment unchanged.
+   *
+   * The pair below varies ONE thing — whether a second, automation trigger is
+   * declared — and nothing else (#585).
+   */
+  test("AC-22: an entity-only tool is caught per TRIGGER, not over the intersection", () => {
+    const mixed = mutateOnce(live, ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
+    const entityOnly = mutateOnce(mixed, DISPATCH_TRIGGER, "");
+    // The control: the pair differs in the dispatch trigger and in nothing
+    // else, and the entity trigger is present in both.
+    //
+    // Both HALVES are asserted. An earlier revision projected this list
+    // through its own second index — left over from when `triggerNames`
+    // returned regex matches rather than strings — which turned each name
+    // into a single character, so the list could never contain
+    // "workflow_dispatch". Vacuous, and round 14 caught it. The expression
+    // is described rather than quoted on purpose: rounds 12 to 15 each
+    // re-raised a defect that existed only inside a comment quoting it, so
+    // a dead expression spelled out verbatim is a liability. The positive
+    // assertion below is what makes the negative one mean anything: without
+    // it, a `triggerNames` that returned [] would satisfy the negative too.
+    for (const src of [mixed, entityOnly]) {
+      expect(triggerNames(src), "the entity trigger must be present in both halves")
+        .toContain("pull_request");
+    }
+    expect(triggerNames(mixed), "the mixed half must DECLARE the dispatch trigger")
+      .toContain("workflow_dispatch");
+    expect(triggerNames(entityOnly), "the entity-only half must NOT declare it")
+      .not.toContain("workflow_dispatch");
+
+    // Mixed: caught, because the dispatch path cannot reach the tool.
+    expect(kinds(mixed)).toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+    // Entity ONLY: not a violation. Every declared trigger can start the
+    // server, so the grant is reachable on all of them. Without this half the
+    // fix could have been "always report", which refuses a correct workflow.
+    expect(kinds(entityOnly)).not.toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+
+    // The message has to say WHICH trigger cannot reach it — "add it to the
+    // allowlist" and "drop the dispatch trigger" are different repairs.
+    const detail = reviewToolAgreement(mixed)
+      .filter(x => x.kind === "ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER")
+      .map(x => x.detail)
+      .join(" ");
+    expect(detail).toContain("workflow_dispatch");
+  });
+
+  /**
+   * The door the promotion opened, and the reason this case exists at all:
+   * the fork decision for `pull_request` moved into a JOB-level `if:`, and
+   * for one draft nothing in this file could see it. A guard nothing asserts
+   * is a guard the next edit deletes for free.
+   *
+   * The mutation is the deletion, performed. `FORK_GUARD_TERMS` is two
+   * strings and the check reports which one is missing, so removing the
+   * condition is caught by name rather than by a bare empty-list assertion.
+   */
+  test("AC-18: deleting the job's fork condition is caught, now the trigger is an entity one", () => {
+    const condition =
+      "    if: >-\n" +
+      "      github.event_name == 'workflow_dispatch' ||\n" +
+      "      github.event.pull_request.head.repo.full_name == github.repository\n";
+    const unguarded = mutateOnce(live, condition, "");
+    // The control, and the whole point of cutting the job header rather than
+    // searching the file: the header's prose about forks is still there, and
+    // a whole-document check would read it as the guard.
+    expect(unguarded).toContain("github.event.pull_request.head.repo.full_name");
+    expect(reviewToolAgreement(unguarded).map(v => v.kind)).toContain(
+      "ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD",
+    );
+    // …and the same deletion on a dispatch-only tree is NOT a violation. One
+    // variable differs between the pair — the trigger — so this measures the
+    // interaction rather than the deletion (#585).
+    expect(kinds(dispatchOnly(unguarded))).not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
+   * The wrong fix for AC-18, performed. This one is not hypothetical: the
+   * first revision of the check asked only whether both `FORK_GUARD_TERMS`
+   * appeared in the job header, and THE REVIEWER THIS MODULE EXISTS TO MAKE
+   * WORK caught it on the pull request that promoted the trigger — an
+   * inverted guard contains both terms, passes a presence check, and runs the
+   * job on forks ONLY.
+   *
+   * That is the fifth shape in
+   * `.claude/rules/checks-must-be-able-to-fail.md`: a case that fails today
+   * for a true reason and stops failing under the cheapest repair, certifying
+   * the regression it was written to block. The repair here is one character.
+   */
+  test("AC-20: an INVERTED fork condition is caught, though it names both terms", () => {
+    const inverted = mutateOnce(
+      live,
+      "github.event.pull_request.head.repo.full_name == github.repository",
+      "github.event.pull_request.head.repo.full_name != github.repository",
+    );
+    // The control: a presence check over the job header would see no
+    // difference at all between this and the live file.
+    for (const term of FORK_GUARD_TERMS) {
+      expect(reviewWorkflowRegions(inverted).jobHeader).toContain(term);
+    }
+    expect(kinds(inverted)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+    // The operand order is NOT the thing being checked — a reviewer who
+    // writes the comparison the other way round is correct and must not be
+    // refused for it.
+    const swapped = mutateOnce(
+      live,
+      "github.event.pull_request.head.repo.full_name == github.repository",
+      "github.repository == github.event.pull_request.head.repo.full_name",
+    );
+    expect(kinds(swapped)).not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
+   * AC-23 is the reviewer's SECOND finding about this guard, on the same pull
+   * request. AC-20 fixed `!=` by matching the comparison anywhere in the `if:`,
+   * and "anywhere" was the remaining hole: a condition can contain the correct
+   * comparison and neutralise it with an arm beside it. `true ||` runs on every
+   * fork while reading as a guard.
+   *
+   * The control is the live file, which is ITSELF a disjunction — so this
+   * cannot be fixed by refusing `||`, and a case that only asserts the bypass
+   * is caught would also pass against a check that refuses every condition.
+   */
+  test("AC-23: a neutralising arm beside the comparison is caught; the live disjunction is not", () => {
+    const anchor =
+      "    if: >-\n" +
+      "      github.event_name == 'workflow_dispatch' ||\n" +
+      "      github.event.pull_request.head.repo.full_name == github.repository\n";
+    for (const neutraliser of ["true", "always()", "github.event_name != 'push'"]) {
+      const bypass = mutateOnce(
+        live,
+        anchor,
+        "    if: >-\n" +
+          `      ${neutraliser} ||\n` +
+          "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      );
+      // The control for THIS row: the comparison is still present verbatim, so
+      // the substring check AC-20 shipped sees nothing wrong with any of them.
+      expect(reviewWorkflowRegions(bypass).jobHeader).toContain(
+        "github.event.pull_request.head.repo.full_name == github.repository",
+      );
+      expect(kinds(bypass)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+    }
+    // …and the live file's own `||` stays clean, or the check above is just
+    // refusing disjunctions and would catch the bypass for the wrong reason.
+    expect(kinds(live)).not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
+   * AC-25 is the reviewer's THIRD finding about this one guard, and it is a
+   * finding about AC-23's own fix. The companion arm was first spelled
+   * `'[a-z_]+'` — any event — to let the live file's dispatch arm through, and
+   * `github.event_name == 'pull_request'` is true on exactly the fork pull
+   * request the guard exists to refuse. The escape hatch reopened the hole.
+   *
+   * So the set is closed, and this case is the reason it must stay closed:
+   * widening it by one plausible-looking event is a one-character edit that
+   * turns the guard off.
+   */
+  test("AC-25: only an event with no pull_request context may sit beside the comparison", () => {
+    const anchor =
+      "    if: >-\n" +
+      "      github.event_name == 'workflow_dispatch' ||\n" +
+      "      github.event.pull_request.head.repo.full_name == github.repository\n";
+    const withArm = (arm: string) =>
+      mutateOnce(
+        live,
+        anchor,
+        "    if: >-\n" +
+          `      github.event_name == '${arm}' ||\n` +
+          "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      );
+    // An arm that CAN be true on a fork's pull request is the bypass.
+    for (const unsafe of ["pull_request", "pull_request_target", "issue_comment"]) {
+      expect(kinds(withArm(unsafe)), `'${unsafe}' must not be accepted beside the comparison`)
+        .toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+    }
+    // …and every member of the declared set still is, or this is just a
+    // check that refuses companion arms and the live file passes by luck.
+    for (const safe of FORK_GUARD_COMPANION_EVENTS) {
+      expect(kinds(withArm(safe)), `'${safe}' is in the declared set and must be accepted`)
+        .not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+    }
+    // The set is non-empty, or both loops above are vacuous.
+    expect(FORK_GUARD_COMPANION_EVENTS.length).toBeGreaterThan(0);
+    // And the events this is all about are NOT in it, asserted over the
+    // declared constant rather than only through behaviour.
+    expect(FORK_GUARD_COMPANION_EVENTS as readonly string[]).not.toContain("pull_request");
+    expect(FORK_GUARD_COMPANION_EVENTS as readonly string[]).not.toContain("pull_request_target");
+  });
+
+  /**
+   * AC-26: the fourth and fifth findings on this one guard, both about the
+   * PROSE rather than the code, and the second was caused by the fix for the
+   * first.
+   *
+   * Round 8 of #1614 read the docblock on `forkGuardDefect` claiming an `&&`
+   * inside an arm "is left alone" and found it false — both patterns are
+   * anchored. I rewrote the comment to say `&&` is refused. Round 9 then
+   * pointed out that a parenthesised arm and a double-quoted event name are
+   * refused identically, so the new sentence named one member of a class and
+   * read as though it were the whole class.
+   *
+   * `.claude/rules/...` has the rule for exactly this and I did not apply it:
+   * when a finding names one site, sweep for the shape. So this case asserts
+   * the TOLERANCE, which is closed, instead of enumerating the refusals,
+   * which are open — whitespace and operand order are accepted and nothing
+   * else is. An equivalent spelling nobody has thought of is then already
+   * covered, and the table in the docblock is this table.
+   *
+   * Every refusal here is a false POSITIVE and none is a bypass: each listed
+   * condition is safe, and the `&&` row is strictly SAFER than the bare arm.
+   * The defect was never the behaviour. It was a comment making a specific,
+   * checkable claim with no assertion behind it — the shape
+   * `.claude/rules/checks-must-be-able-to-fail.md` names in *In practice*.
+   */
+  test("AC-26: the guard tolerates whitespace and operand order, and nothing else", () => {
+    const FORK = "github.event.pull_request.head.repo.full_name == github.repository";
+    const COMPANION = "github.event_name == 'workflow_dispatch'";
+
+    // TOLERATED. These are the control, and they are load-bearing: without
+    // them the refusals below cannot be told from "the disjunction form is
+    // refused outright", which would flag everything and look identical.
+    const tolerated: [string, string][] = [
+      ["the live spelling", `${COMPANION} || ${FORK}`],
+      ["extra inner whitespace", `github.event_name  ==  'workflow_dispatch' || ${FORK}`],
+      [
+        "the fork comparison with its operands reversed",
+        `${COMPANION} || github.repository == github.event.pull_request.head.repo.full_name`,
+      ],
+    ];
+    for (const [name, condition] of tolerated) {
+      expect(forkGuardDefect(condition), `${name} must be accepted`).toBeNull();
+    }
+
+    // REFUSED, and every one of them is a SAFE condition. If you are making
+    // one of these pass, update the table in forkGuardDefect's docblock in
+    // the same commit — that table and this list are the same claim.
+    const refused: [string, string][] = [
+      ["each arm parenthesised", `(${COMPANION}) || (${FORK})`],
+      ["only the fork arm parenthesised", `${COMPANION} || (${FORK})`],
+      ["a double-quoted event name", `github.event_name == "workflow_dispatch" || ${FORK}`],
+      ["a narrowing && in the companion arm", `${FORK} || ${COMPANION} && github.actor == 'x'`],
+      [
+        "a narrowing && in a parenthesised companion arm",
+        `${FORK} || (${COMPANION} && github.actor == 'x')`,
+      ],
+      ["a narrowing && on the fork comparison itself", `${FORK} && github.actor == 'x'`],
+    ];
+    for (const [name, condition] of refused) {
+      expect(
+        forkGuardDefect(condition),
+        `${name} is a SAFE condition and is refused on purpose — the patterns are anchored ` +
+          `and this function does not evaluate GitHub's expression language.`,
+      ).not.toBeNull();
+    }
+
+    // Both halves non-empty, or one loop is vacuous and says nothing.
+    expect(tolerated.length).toBeGreaterThan(0);
+    expect(refused.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * AC-27: round 10's finding, and the first on this guard that was a real
+   * fail-OPEN rather than a false positive.
+   *
+   * `triggers` was read with `/^\s{2}([a-z_]+):/gm` — block style at exactly
+   * two spaces. Measured against the live file with only the `on:` block
+   * swapped, before the fix:
+   *
+   *   on:\n  pull_request_target:     → caught
+   *   on: {pull_request_target: }     → SILENT
+   *   on:\n    pull_request_target:   → SILENT
+   *
+   * `pull_request_target` runs a job with a WRITE token on a fork's pull
+   * request. Two valid YAML spellings of it passed the check.
+   *
+   * Six revisions followed, each correct for the case it was shown and
+   * wrong for the next, and on round 13 the reviewer stopped reporting
+   * instances and named the CLASS: hand-rolled regex parsing of the `on:`
+   * block, patched edge case by edge case. That is the round cap doing the
+   * job it exists for, and it was right.
+   *
+   * So the instrument changed rather than the pattern. `Bun.YAML` is built
+   * in, costs no dependency, and answers every spelling the six revisions
+   * fought over PLUS three nobody had raised: a merge key, a list form and a
+   * scalar form. Those three are the point — they were never going to be
+   * reached by a seventh regex, because the problem was not which regex.
+   *
+   * The refusal stays and is still load-bearing. It is now also the ONLY way
+   * an empty reading happens, since the parser has no spellings it cannot
+   * see: `[]` means the source did not parse or declares no `on`, and either
+   * is UNMEASURED rather than clean.
+   */
+  test("AC-27: every YAML spelling of a trigger is read, and an unreadable block refuses", () => {
+    const onAt = live.indexOf("\non:");
+    const permAt = live.indexOf("\npermissions:", onAt);
+    expect(onAt, "the `on:` block anchor moved — this case cannot stage anything")
+      .toBeGreaterThan(-1);
+    expect(permAt, "the `permissions:` end anchor moved").toBeGreaterThan(onAt);
+    const withOn = (block: string) => live.slice(0, onAt) + block + live.slice(permAt);
+
+    // The control. The live file declares real triggers and is clean, so a
+    // mutation that broke parsing outright would show up here first.
+    const liveKinds = kinds(withOn(live.slice(onAt, permAt)));
+    expect(liveKinds, "the unmodified file must not refuse").not.toContain("TRIGGERS_UNMEASURED");
+    expect(liveKinds).not.toContain("PULL_REQUEST_TARGET_TRIGGER");
+
+    // Three spellings of the SAME dangerous trigger. Two of them were silent
+    // before this fix; all three must be caught now.
+    for (const [name, block] of [
+      ["block style, two spaces", "\non:\n  pull_request_target:\n"],
+      ["block style, four spaces", "\non:\n    pull_request_target:\n"],
+      ["flow style", "\non: {pull_request_target: }\n"],
+      ["with a nested body under it", "\non:\n  pull_request_target:\n    types: [opened]\n"],
+      // The three the regexes could never have reached. The merge key is
+      // round 13's finding; the list and scalar forms nobody raised, and
+      // they are here because the parser gets them for free and a seventh
+      // regex would not have.
+      [
+        "introduced by a YAML merge key",
+        "\nx: &a\n  pull_request_target:\n    types: [opened]\non:\n  <<: *a\n  pull_request:\n",
+      ],
+      ["as a list item", "\non: [workflow_dispatch, pull_request_target]\n"],
+      ["as a bare scalar", "\non: pull_request_target\n"],
+    ] as const) {
+      expect(
+        kinds(withOn(block)),
+        `pull_request_target written in ${name} must be caught — it runs this job with a ` +
+          `WRITE token on a fork's pull request, and the spelling must not decide that`,
+      ).toContain("PULL_REQUEST_TARGET_TRIGGER");
+    }
+
+    // The other direction, and the defect round 11 found: a key NESTED under
+    // a trigger must not be read as one. Without this row the check passes
+    // while believing the live file declares seven triggers, five of which
+    // are fields of an inputs schema.
+    expect(
+      triggerNames(live),
+      "the live file declares exactly two triggers — anything else means nested keys are " +
+        "being counted, which is how `inputs`, `pr` and `description` became triggers",
+    ).toEqual(["workflow_dispatch", "pull_request"]);
+    expect(
+      kinds(
+        withOn(
+          "\non:\n  workflow_dispatch:\n    inputs:\n      pull_request_target:\n" +
+            "        type: string\n  pull_request:\n",
+        ),
+      ),
+      "a nested INPUT named pull_request_target is not a trigger and must not be flagged",
+    ).not.toContain("PULL_REQUEST_TARGET_TRIGGER");
+
+    // And the half that covers the spellings nobody has thought of: a block
+    // this file cannot read is UNMEASURED, never clean.
+    const unreadable = kinds(withOn("\non:\n  - [ unbalanced\n"));
+    expect(
+      unreadable,
+      "an `on:` block yielding no trigger names must REFUSE. Without this, every future " +
+        "source `triggerNames` cannot parse is a silent pass — which is exactly how " +
+        "the two spellings above got through.",
+    ).toContain("TRIGGERS_UNMEASURED");
+  });
+
+  /** AC-24: the other spelling in the same finding — negation, not addition. */
+  test("AC-24: a comparison wrapped in a negation is not a governing predicate", () => {
+    const negated = mutateOnce(
+      live,
+      "    if: >-\n" +
+        "      github.event_name == 'workflow_dispatch' ||\n" +
+        "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      "    if: >-\n" +
+        "      !(github.event.pull_request.head.repo.full_name == github.repository)\n",
+    );
+    expect(reviewWorkflowRegions(negated).jobHeader).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(kinds(negated)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
+   * The second half of the same finding: the terms have to sit in the `if:`,
+   * not merely somewhere in the job header. A `name:` carrying both
+   * substrings satisfied the first revision.
+   */
+  test("AC-21: the terms must be in the condition, not anywhere in the job header", () => {
+    const decorative = mutateOnce(
+      live,
+      "    if: >-\n" +
+        "      github.event_name == 'workflow_dispatch' ||\n" +
+        "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      "    name: >-\n" +
+        "      github.event.pull_request.head.repo.full_name == github.repository\n",
+    );
+    expect(reviewWorkflowRegions(decorative).jobHeader).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(kinds(decorative)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
+   * `pull_request_target` is the trigger somebody reaches for when fork PRs
+   * skip and they want them reviewed. It is the one change to this file that
+   * trades the whole of #677 away in a single word: the base branch's
+   * workflow, a full write token, and the fork's code in the same job.
+   */
+  test("AC-19: swapping pull_request for pull_request_target is refused by name", () => {
+    const target = mutateOnce(live, "\n  pull_request:\n", "\n  pull_request_target:\n");
+    expect(kinds(target)).toContain("PULL_REQUEST_TARGET_TRIGGER");
+    // And it is refused REGARDLESS of the job's condition, which is the
+    // property that matters: the guard is still in place in the mutant above
+    // and the trigger is refused anyway. "Add a condition" is the repair for
+    // the other violation and it is wrong advice for this one — no condition
+    // makes this trigger safe for a job that hands a fork's diff to an agent
+    // holding a write token.
+    const targetUnguarded = mutateOnce(
+      target,
+      "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      "",
+    );
+    expect(kinds(targetUnguarded)).toContain("PULL_REQUEST_TARGET_TRIGGER");
+    expect(kinds(targetUnguarded)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
   });
 
   test("AC-5: a prompt naming a denied tool is caught", () => {
@@ -325,17 +831,17 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
    * the allowlist fixed; AC-4 varies the allowlist and holds the trigger fixed.
    */
   test("AC-11: the same allowlist under an entity trigger is NOT a violation", () => {
-    const dispatchTriggered = mutateOnce(live, ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
-    const entityTriggered = mutateOnce(
-      dispatchTriggered,
-      "\non:\n  workflow_dispatch:",
-      "\non:\n  pull_request:\n    branches: [main]\n  workflow_dispatch:",
-    );
+    const dispatchTriggered = mutateOnce(dispatchOnly(live), ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
+    // The dispatch trigger is REPLACED, not joined. An earlier revision of
+    // this case added `pull_request` beside `workflow_dispatch` and asserted
+    // the mixed set was clean — which was true only while check 3 asked about
+    // the intersection of all triggers, and is false now that it asks per
+    // trigger (AC-22). A dispatch run of a mixed-trigger job still has no
+    // entity server, so the grant is still unreachable on that path.
+    const entityTriggered = mutateOnce(dispatchTriggered, DISPATCH_TRIGGER, ENTITY_TRIGGER);
     // The pair differs in the TRIGGER and in nothing else — asserted, not
     // promised, because a pair that varies two things measures neither (#585).
-    expect(entityTriggered.replace("  pull_request:\n    branches: [main]\n", "")).toEqual(
-      dispatchTriggered,
-    );
+    expect(entityTriggered.replace(ENTITY_TRIGGER, DISPATCH_TRIGGER)).toEqual(dispatchTriggered);
     expect(kinds(entityTriggered)).not.toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
     expect(kinds(dispatchTriggered)).toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
   });

@@ -43,12 +43,22 @@
  *
  * ## Scope, stated rather than implied
  *
- * No YAML parser. This repo ships four runtime dependencies and a guard is not
- * a reason to add a fifth to a published package — the same decision
- * `test/claude-review-no-key.test.ts` records. Everything here is a cut and a
- * regex over the cut, and every cut refuses by name when it cannot find its
- * region, because a slice that missed its section is an empty string and an
- * empty string satisfies every claim of the form "X is not in here".
+ * No ADDED dependency. This repo ships four runtime dependencies and a guard
+ * is not a reason to add a fifth to a published package — the same decision
+ * `test/claude-review-no-key.test.ts` records.
+ *
+ * That rule is about the dependency list, not about parsing, and this
+ * paragraph used to say "no YAML parser" as though the two were the same
+ * thing. They are not: `triggerNames` parses the workflow with `Bun.YAML`,
+ * which is built into the runtime and adds nothing to `package.json`. Six
+ * revisions of hand-rolled trigger matching shipped two fail-open holes
+ * before that distinction was drawn (#1614), so it is drawn here explicitly
+ * — if a real parser is reachable without a dependency, use it.
+ *
+ * Everything else here is a cut and a regex over the cut, and every cut
+ * refuses by name when it cannot find its region, because a slice that
+ * missed its section is an empty string and an empty string satisfies every
+ * claim of the form "X is not in here".
  */
 
 import { structuralCut } from "./source-slice";
@@ -60,6 +70,9 @@ export type ReviewToolViolationKind =
   | "PROMPT_NAMES_A_DENIED_TOOL"
   | "PROMPT_NAMES_AN_UNGRANTED_TOOL"
   | "ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER"
+  | "ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD"
+  | "PULL_REQUEST_TARGET_TRIGGER"
+  | "TRIGGERS_UNMEASURED"
   | "NO_POSTING_TOOL_IS_ALLOWED"
   | "NO_SUBJECT_REACHES_THE_AGENT"
   | "MUTABLE_PLUGIN_MARKETPLACE"
@@ -99,6 +112,226 @@ export const AUTOMATION_ONLY_TRIGGERS = [
   "schedule",
   "workflow_run",
 ] as const;
+
+/**
+ * Triggers that fire on somebody else's pull request, so the job sees a diff
+ * written by a person who is not a collaborator (#631/#675).
+ *
+ * `pull_request_target` is here as a trigger to REFUSE, not one to guard. It
+ * runs the base branch's workflow definition with a full write token against
+ * the fork's code, which is this workflow's egress sink with the credential
+ * handed over on purpose. There is no condition that makes it safe for a job
+ * that runs an agent, so it gets its own violation rather than a guard.
+ */
+export const ENTITY_TRIGGERS = ["pull_request", "pull_request_target"] as const;
+
+/**
+ * The trigger names a workflow declares, parsed as YAML.
+ *
+ * **This was hand-rolled text matching and it should not have been.** Six
+ * revisions on #1614, each correct for the case it was shown and wrong for
+ * the next one, and the reviewer's round-cap assessment on round 13 named
+ * the class rather than the instance: *hand-rolled regex parsing of the
+ * `on:` block, patched edge case by edge case*. It was right, so the
+ * instrument changed instead of the pattern. What the six revisions cost:
+ *
+ *   two-space-only     every other spelling read as `[]`, which made the
+ *                      callers SILENT. `on: {pull_request_target: }` passed
+ *                      — a WRITE token on a fork's pull request
+ *   any-indentation    any indentation is any DEPTH, so every field of the
+ *                      `workflow_dispatch.inputs` schema read as a trigger
+ *   outermost-depth    correct for block and flow style, and still blind to
+ *                      a YAML merge key, a list form and a scalar form
+ *
+ * `Bun.YAML` is built in, so this costs no dependency, and it answers all
+ * three plus the forms nobody had thought to ask about:
+ *
+ *   on: {pull_request_target: }              flow
+ *   on:\n    pull_request_target:            four-space
+ *   on:\n  <<: *anchor                       merge key, resolved
+ *   on: [push, pull_request_target]          list
+ *   on: pull_request_target                  scalar
+ *
+ * The refusal stays and is still load-bearing: a source that will not parse,
+ * or declares no `on`, yields `[]` and the caller reports
+ * `TRIGGERS_UNMEASURED`. A reading that could not be taken is never a clean
+ * one — and that is now the ONLY way this returns empty, because the parser
+ * no longer has spellings it cannot see.
+ */
+export function triggerNames(source: string): string[] {
+  let doc: unknown;
+  try {
+    doc = (Bun as unknown as { YAML: { parse(s: string): unknown } }).YAML.parse(source);
+  } catch {
+    // A workflow that is not YAML has no readable triggers. UNMEASURED, and
+    // never a silent pass — the caller turns `[]` into a reported refusal.
+    return [];
+  }
+  if (doc === null || typeof doc !== "object") return [];
+  // YAML 1.1 resolves a bare `on` to the boolean true, and parsers differ on
+  // whether the key survives as "on" or "true". Read both rather than
+  // depending on which one this runtime picked.
+  const rec = doc as Record<string, unknown>;
+  const on = rec.on ?? rec["true"];
+  if (typeof on === "string") return [on];
+  if (Array.isArray(on)) return on.filter((t): t is string => typeof t === "string");
+  if (on !== null && typeof on === "object") return Object.keys(on as object);
+  return [];
+}
+
+/**
+ * The two expressions a job-level condition needs to compare before it can be
+ * said to refuse a fork. Spelled out so the check names what is missing rather
+ * than reporting that an `if:` "looks wrong".
+ */
+export const FORK_GUARD_TERMS = [
+  "github.event.pull_request.head.repo.full_name",
+  "github.repository",
+] as const;
+
+/**
+ * The comparison itself, in either operand order, with `==` and not `!=`.
+ *
+ * An earlier revision of this check asked only whether both `FORK_GUARD_TERMS`
+ * appeared anywhere in the job header, and said so in a comment: "this cannot
+ * tell `==` from `!=`". **The reviewer this module exists to make work caught
+ * that on the pull request that promoted the trigger**, and it was right —
+ * `.claude/rules/checks-must-be-able-to-fail.md`, fifth shape. An inverted
+ * guard contains both terms, passes a presence check, and runs the job on
+ * forks ONLY, which is the precise opposite of the property the check is
+ * named after. A check satisfied by a dangerously backwards version of its
+ * own subject is worse than no check: it certifies the regression.
+ *
+ * It is also read from the `if:` block rather than the whole job header, for
+ * the same reason every other cut here is bounded — a `name:` or an `env:`
+ * value carrying both substrings would otherwise satisfy it.
+ */
+export const FORK_GUARD_COMPARISON =
+  /^(?:github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository|github\.repository\s*==\s*github\.event\.pull_request\.head\.repo\.full_name)$/;
+
+/**
+ * The only other thing a disjunct of this condition is allowed to be: a guard
+ * naming the event, which is how the dispatch arm earns its place beside the
+ * fork comparison.
+ */
+export const FORK_GUARD_COMPANION_EVENTS = ["workflow_dispatch", "schedule"] as const;
+
+/**
+ * And the event it names must be one that CANNOT carry a fork's head.
+ *
+ * The first spelling of this was `'[a-z_]+'` — any event at all — and the
+ * reviewer caught it, the third real finding about this one guard:
+ *
+ *     if: >-
+ *       github.event_name == 'pull_request' ||
+ *       github.event.pull_request.head.repo.full_name == github.repository
+ *
+ * On a fork's pull request the FIRST arm is true, so the job runs and the
+ * comparison beside it decides nothing. That is the bypass `forkGuardDefect`
+ * was written to close, reopened by the escape hatch added to let the live
+ * file's dispatch arm through.
+ *
+ * `FORK_GUARD_COMPANION_EVENTS` is the closed set, and the membership test is
+ * what the event has in common: no `github.event.pull_request` context at
+ * all, so the fork comparison cannot be the predicate for it and a separate
+ * arm is the only way to express the case. `pull_request` and
+ * `pull_request_target` are excluded by construction rather than by being
+ * listed as denied — an allowlist cannot be widened by forgetting a denial.
+ */
+export const FORK_GUARD_COMPANION_ARM = new RegExp(
+  `^github\\.event_name\\s*==\\s*'(?:${FORK_GUARD_COMPANION_EVENTS.join("|")})'$`,
+);
+
+/**
+ * Why an ANCHORED per-disjunct test and not a substring search.
+ *
+ * The previous revision of this check asked whether `FORK_GUARD_COMPARISON`
+ * matched anywhere in the condition. **The reviewer caught that too** — the
+ * second time on the same pull request, and the same shape as the `!=`
+ * inversion it had already caught once. A substring search is satisfied by a
+ * condition that contains the correct comparison and then neutralises it:
+ *
+ *     if: >-
+ *       true ||
+ *       github.event.pull_request.head.repo.full_name == github.repository
+ *
+ *     if: >-
+ *       !(github.event.pull_request.head.repo.full_name == github.repository)
+ *
+ * Both contain `A == B`. The first runs on every fork; the second runs on
+ * forks ONLY. So the fix is not a better regex for the comparison — it is
+ * asking a different question: **is that comparison the governing predicate?**
+ *
+ * The condition is split on `||` and every arm must be either the fork
+ * comparison itself or `FORK_GUARD_COMPANION_ARM`. `true`, `always()` and a
+ * parenthesised negation are all arms that match neither, so each is named
+ * rather than tolerated.
+ *
+ * **Both patterns are anchored, so each accepts exactly ONE spelling of its
+ * arm and refuses every equivalent rewrite.** Say what is tolerated rather
+ * than listing what is not, because the list of rewrites is open and the
+ * tolerance is closed. Measured, not inferred:
+ *
+ *   clean    github.event_name == 'workflow_dispatch' || <fork comparison>
+ *   clean    extra inner whitespace around either `==`
+ *   clean    the fork comparison with its operands reversed
+ *   FLAGGED  (github.event_name == 'workflow_dispatch') || (<fork comparison>)
+ *   FLAGGED  github.event_name == "workflow_dispatch" || <fork comparison>
+ *   FLAGGED  github.event_name == 'workflow_dispatch' && github.actor == 'x'
+ *
+ * Whitespace and operand order are the whole of the tolerance. A
+ * parenthesised arm, a double-quoted event name and a narrowing `&&` are all
+ * refused, and all three are SAFE conditions — the `&&` one runs on a strict
+ * subset of what the bare arm runs on. So these are false positives, never
+ * bypasses: the direction `.claude/rules/checks-must-be-able-to-fail.md`
+ * says to be wrong in. The cost is a confusing refusal for somebody writing
+ * a legitimate variant; the cost of the other direction is deciding whether
+ * an arbitrary rewrite narrows or widens, which means evaluating GitHub's
+ * expression language, and a guard that reasons about what it cannot
+ * evaluate is the substring search this function replaced.
+ *
+ * AC-26 in `test/claude-review-executable-prompt.test.ts` holds every row of
+ * that table. Two successive revisions of this comment got it wrong and
+ * nothing contradicted either: the first claimed a narrowing `&&` was
+ * tolerated (#1614, round 8), and the fix for that named `&&` alone while
+ * parens and double quotes behaved identically (#1614, round 9). The table
+ * is stated as a tolerance precisely so the next equivalent spelling nobody
+ * has thought of is already covered by it.
+ *
+ * This is deliberately a CLOSED set. Widening it is how the check dies: the
+ * next arm somebody wants is likelier to be the bypass than the exception,
+ * and an allowlist that grows on request is a substring search with extra
+ * steps.
+ */
+export function forkGuardDefect(condition: string): string | null {
+  const flat = condition
+    .replace(/^\s*if:\s*(?:[>|][-+]?)?/, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (flat === "") return "the job has no `if:` condition at all";
+  const arms = flat.split("||").map(a => a.trim());
+  if (!arms.some(a => FORK_GUARD_COMPARISON.test(a))) {
+    return (
+      "the job's condition mentions both terms but no `||` arm of it IS the " +
+      "comparison — a comparison wrapped in a negation, or buried inside a " +
+      "larger expression, is not the predicate that decides whether the job runs"
+    );
+  }
+  const stray = arms.filter(
+    a => !FORK_GUARD_COMPARISON.test(a) && !FORK_GUARD_COMPANION_ARM.test(a),
+  );
+  if (stray.length > 0) {
+    return (
+      `the job's condition compares the two terms, but it is one arm of a ` +
+      `disjunction whose other arm is ${stray.map(a => `\`${a}\``).join(", ")} — ` +
+      `an arm that can be true on a fork makes the comparison beside it decide ` +
+      `nothing. The only arm that may sit beside it is ` +
+      `\`github.event_name == '<e>'\` for e in ${FORK_GUARD_COMPANION_EVENTS.join(", ")} — ` +
+      `events that carry no pull_request context, so the comparison cannot serve them`
+    );
+  }
+  return null;
+}
 
 /**
  * Tools that can put a human-readable finding on a pull request. The property
@@ -261,11 +494,18 @@ function quotedListAfter(claudeArgs: string, flag: string): string[] | null {
  */
 export function reviewWorkflowRegions(source: string): {
   triggerBlock: string;
+  jobHeader: string;
   reviewStep: string;
   prompt: string;
   claudeArgs: string;
 } {
   const triggerBlock = structuralCut(source, "\non:", { endAnchor: "\npermissions:" });
+  // Everything the job declares ABOUT itself — `runs-on`, `timeout-minutes`,
+  // `if:` — and none of what it runs. Cut separately from the steps because a
+  // job-level condition is the only place the fork decision for an entity
+  // trigger can live, and searching the whole document for it would be
+  // satisfied by this file's own header discussing it.
+  const jobHeader = structuralCut(source, "\njobs:", { endAnchor: "\n    steps:" });
   const reviewStep = blockUnder(source, "- name: Review");
 
   // The prompt is a YAML block scalar: `prompt: |` and everything indented
@@ -279,7 +519,7 @@ export function reviewWorkflowRegions(source: string): {
 
   const claudeArgs = blockUnder(reviewStep, "claude_args:");
 
-  return { triggerBlock, reviewStep, prompt, claudeArgs };
+  return { triggerBlock, jobHeader, reviewStep, prompt, claudeArgs };
 }
 
 /**
@@ -289,7 +529,8 @@ export function reviewWorkflowRegions(source: string): {
  * cannot accidentally ask the question of the wrong slice.
  */
 export function reviewToolAgreement(source: string): ReviewToolViolation[] {
-  const { triggerBlock, reviewStep, prompt, claudeArgs } = reviewWorkflowRegions(source);
+  const { triggerBlock, jobHeader, reviewStep, prompt, claudeArgs } =
+    reviewWorkflowRegions(source);
 
   const allowed = quotedListAfter(claudeArgs, "allowedTools") ?? [];
   const denied = quotedListAfter(claudeArgs, "disallowedTools") ?? [];
@@ -335,11 +576,58 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
 
   // 3. The door nothing in the prompt can show: a grant whose server the
   //    pinned action never starts under this workflow's triggers.
-  const triggers = [...triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm)].map(m => m[1]);
-  const everyTriggerIsAutomation =
-    triggers.length > 0 &&
-    triggers.every(t => (AUTOMATION_ONLY_TRIGGERS as readonly string[]).includes(t));
-  if (everyTriggerIsAutomation) {
+  //
+  //    PER-TRIGGER, not over the intersection. The first revision asked
+  //    whether EVERY trigger was automation-only, which was the same question
+  //    while this file had exactly one trigger — and silently became a weaker
+  //    one when #631/#675 added `pull_request` beside `workflow_dispatch`.
+  //    **The reviewer caught that too, on the pull request that made the
+  //    change**: with a mixed trigger set the check went silent, even though
+  //    a `workflow_dispatch` run of the same job still gets the automation
+  //    classification and still has no entity-only server. A grant that works
+  //    on one of two triggers is #732 reintroduced for the other one, and the
+  //    property degraded from "never exists" to "does not exist on the
+  //    intersection of all triggers" without the name or the comment moving.
+  //    HOW THE TRIGGER NAMES ARE READ, and why an empty reading REFUSES
+  //    (#1614, round 10). The first spelling of this was
+  //    `/^\s{2}([a-z_]+):/gm` — exactly two leading spaces, block style only.
+  //    Every other valid YAML spelling of the same trigger set returned `[]`,
+  //    and `[]` made BOTH checks below silent rather than loud. Measured on
+  //    the live file with only the `on:` block swapped:
+  //
+  //      on:\n  pull_request_target:            → ["pull_request_target"], caught
+  //      on: {pull_request_target: }            → [], SILENT
+  //      on:\n    pull_request_target:          → [], SILENT
+  //
+  //    A workflow granting a write token on a fork's pull request therefore
+  //    passed, which is the fail-open shape
+  //    `.claude/rules/checks-must-be-able-to-fail.md` calls *a detector
+  //    narrower than what it detects*.
+  //
+  //    Two changes, and the second is the load-bearing one. Widening the
+  //    pattern closes the spellings we thought of; refusing an EMPTY reading
+  //    closes the ones we did not. The set of valid YAML spellings is open
+  //    and the set of things this function can parse is closed, so the only
+  //    safe thing to do with a block it cannot read is say so — an absent
+  //    reading is UNMEASURED, never a clean one.
+  const triggers = triggerNames(source);
+  if (triggers.length === 0) {
+    v.push({
+      kind: "TRIGGERS_UNMEASURED",
+      detail:
+        "the `on:` block was found but no trigger name could be read out of it, so the " +
+        "pull_request_target and fork-guard checks below have nothing to decide on. That is " +
+        "UNMEASURED, not clean: a workflow with no readable triggers is one this check cannot " +
+        "speak about. Either the block uses a YAML spelling `triggerNames` does not cover — " +
+        "teach it that spelling and add a row to AC-27 — or the workflow genuinely " +
+        "declares no triggers, in which case it never runs",
+    });
+  }
+  const automationTriggers = triggers.filter(t =>
+    (AUTOMATION_ONLY_TRIGGERS as readonly string[]).includes(t),
+  );
+  if (automationTriggers.length > 0) {
+    const everyTriggerIsAutomation = automationTriggers.length === triggers.length;
     for (const tool of allowed) {
       const server = mcpServerOf(tool);
       const why = server ? ENTITY_ONLY_MCP_SERVERS[server] : undefined;
@@ -348,10 +636,71 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
           kind: "ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER",
           detail:
             `--allowedTools grants ${tool}, whose MCP server is installed only under an entity ` +
-            `event (${why}). This workflow's triggers are ${triggers.join(", ")}, all of which ` +
-            `the action classifies as automation events, so the tool never exists`,
+            `event (${why}). ` +
+            (everyTriggerIsAutomation
+              ? `This workflow's triggers are ${triggers.join(", ")}, all of which the action ` +
+                `classifies as automation events, so the tool never exists`
+              : `This workflow also triggers on ${automationTriggers.join(", ")}, which the ` +
+                `action classifies as an automation event, so a run started that way has no ` +
+                `such server and the tool does not exist in it. The grant works on ` +
+                `${triggers.filter(t => !automationTriggers.includes(t)).join(", ")} and ` +
+                `silently does nothing on the rest`),
         });
       }
+    }
+  }
+
+  // 3b. The trigger promotion's own door (#631/#675). An entity trigger means
+  //     the job fires on pull requests opened by people who are not
+  //     collaborators, and on a public repository that is most of them. The
+  //     fork decision then has to exist somewhere a reader can point at.
+  //
+  //     Read from the JOB HEADER, never the document: every revision of
+  //     `claude-review.yml` discusses forks in its header at length, and a
+  //     whole-file search would be satisfied by the prose explaining why the
+  //     guard matters — `.claude/rules/checks-must-be-able-to-fail.md`,
+  //     "search the slice, not the document", which is the defect the
+  //     reviewer found in this very module on #746.
+  //
+  //     Silent on an automation-only workflow, which is why the pre-#732
+  //     fixture does not report it: a dispatch cannot be opened by a
+  //     stranger, and a guard against a case that cannot arise is one more
+  //     thing to keep true for nothing.
+  const entityTriggers = triggers.filter(t => (ENTITY_TRIGGERS as readonly string[]).includes(t));
+  if (triggers.includes("pull_request_target")) {
+    v.push({
+      kind: "PULL_REQUEST_TARGET_TRIGGER",
+      detail:
+        "the workflow triggers on pull_request_target, which runs this job with a WRITE token " +
+        "against a fork's code. For a job that hands a diff to an agent that is the egress sink " +
+        "this file's header describes, with the credential handed over deliberately — use " +
+        "pull_request, whose fork runs are read-only",
+    });
+  }
+  if (entityTriggers.length > 0) {
+    // The `if:` block, not the job header. A `name:` or an `env:` value
+    // carrying both terms would satisfy a header-wide search, and an absent
+    // `if:` is reported as the missing guard it is rather than throwing.
+    let condition = "";
+    try {
+      condition = withoutComments(blockUnder(jobHeader, "if:"));
+    } catch {
+      condition = "";
+    }
+    const missing = FORK_GUARD_TERMS.filter(term => !condition.includes(term));
+    const why =
+      missing.length > 0
+        ? `the job's condition names neither ${missing.join(" nor ")}`
+        : forkGuardDefect(condition);
+    if (why !== null) {
+      v.push({
+        kind: "ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD",
+        detail:
+          `the workflow triggers on ${entityTriggers.join(", ")}, so it runs on pull requests ` +
+          `from forks, and ${why}. A fork run holds a read-only token and no id-token: write, ` +
+          `so every step after auth fails — and a job that fails on every fork pull request is ` +
+          `a red check nobody can act on`,
+      });
     }
   }
 
