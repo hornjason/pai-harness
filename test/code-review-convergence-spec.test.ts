@@ -205,6 +205,71 @@ function remainderSection(body: string): string | null {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
+/**
+ * Every measurement in *Measured non-obvious facts* must be RE-TAKEABLE.
+ *
+ * This document separates two kinds of number, and the separation is stated
+ * in the remainder tally's note above. Document-derived ones are properties
+ * of this file and are recomputed by the cases above. World-derived ones —
+ * `15 ai-review runs`, `147 parseable ledgers`, a blame walk over a merged
+ * branch — cannot be recomputed by a test, because re-measuring gives a
+ * DIFFERENT answer when the world moves. A check that reddened on that would
+ * fire on the truth.
+ *
+ * So their obligation is not verification. It is that a reader can **take
+ * the reading again**: the bullet must name a date, a run, a commit, or the
+ * command. That IS a property of the document, so it is checkable here, and
+ * making it checkable is the point.
+ *
+ * ## Why this exists rather than another recount
+ *
+ * Rounds 4, 5, 6 and 7 of #1619 all raised the same thing — hand-tallied
+ * counts in prose with nothing binding them — and the first three fixes each
+ * narrowed to the one instance cited. Round 7 was right that this does not
+ * converge. It was also right about something sharper: the previous round
+ * DECLARED the re-takeability obligation and then did not discharge it on
+ * the bullets already in the file. Measured when this case was written, six
+ * of them stated numbers and named no date, run, commit or command.
+ *
+ * A declared obligation with no reader is the same defect as a flag with no
+ * reader. This is the reader.
+ */
+function measuredFactsSection(body: string): string | null {
+  const start = body.search(/^## Measured non-obvious facts/m);
+  if (start === -1) return null;
+  const rest = body.slice(start).replace(/^## .*\n/, "");
+  const end = rest.search(/^## /m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/** Bullets that state a measurement and give no way to take it again. */
+function unretakeableBullets(section: string): string[] {
+  const out: string[] = [];
+  for (const bullet of section.split(/\n(?=- )/)) {
+    if (!bullet.startsWith("- ")) continue;
+    // Strip the things that are IDENTIFIERS rather than measurements. An
+    // issue number, a criterion id and a success-criterion id all carry
+    // digits and none of them is a reading. Leaving them in would make every
+    // bullet look like a measurement and the check would demand provenance
+    // for prose that states none — noise, which is how a check gets ignored.
+    const prose = bullet
+      .replace(/#\d+/g, "")
+      .replace(/\b(?:CRC|SC|AC|TC|TR|JG|FG|AR|M|N|B|E|F|H)-[A-Z]*\d+[a-z]?/g, "")
+      .replace(/\bv\d+(?:\.\d+)*/g, "");
+    // A measurement is a number of two or more digits, or a percentage.
+    if (!/\b\d{2,}\b|\d+%/.test(prose)) continue;
+
+    const retakeable =
+      /20\d\d-\d\d-\d\d/.test(bullet) || // a date
+      /`\d{8,}`|run `\d+`|runs? `\d+`/.test(bullet) || // a workflow run
+      /`[0-9a-f]{7,40}`/.test(bullet) || // a commit
+      /`(?:gh|git|bun|bunx|jq|curl|npm) /.test(bullet); // the command itself
+
+    if (!retakeable) out.push(bullet.slice(2, 110).replace(/\s+/g, " "));
+  }
+  return out;
+}
+
 function tally(section: string): BulletTally {
   const bulletLines = section.match(/^- \*\*CRC-.*$/gm) ?? [];
   const leading = new Set<string>();
@@ -280,6 +345,39 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the remainder tally is recomput
     ).toEqual(t.namedNotLeading);
     expect(Number(m![2]), "the stated total id count").toBe(t.mentioned.length);
     expect(Number(m![3]), "the stated bullet count, restated in the same sentence").toBe(t.bullets);
+  });
+});
+
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every measurement can be taken again", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+  const facts = body === null ? null : measuredFactsSection(body);
+
+  test("the section parses and holds bullets that state measurements", () => {
+    // The positive control, and it carries the sharper half: a parse that
+    // found no MEASURING bullets would satisfy the case below vacuously,
+    // which is the shape this document spends its length warning about.
+    expect(facts, "'## Measured non-obvious facts' was not found").not.toBeNull();
+    const bullets = facts!.split(/\n(?=- )/).filter(b => b.startsWith("- "));
+    expect(bullets.length, "no top-level bullets parsed").toBeGreaterThan(10);
+    const measuring = bullets.filter(b => /\b\d{2,}\b/.test(b.replace(/#\d+/g, "")));
+    expect(
+      measuring.length,
+      "no bullet reads as stating a measurement, so the retakeability case below would pass over nothing",
+    ).toBeGreaterThan(5);
+  });
+
+  test("a bullet stating a measurement names a date, a run, a commit or the command", () => {
+    expect(facts, "'## Measured non-obvious facts' was not found").not.toBeNull();
+    expect(
+      unretakeableBullets(facts!),
+      "These bullets state a number and give no way to take the reading again. " +
+        "A world-derived number cannot be recomputed by a test — re-measuring gives a " +
+        "different answer when the world moves — so the obligation is RE-TAKEABILITY: " +
+        "name the date it was read, the workflow run, the commit, or the command. " +
+        "Six bullets were in this state when this check was written; it exists because " +
+        "rounds 4-7 of #1619 raised the same untested-tally finding four times and the " +
+        "prior fix declared this obligation without discharging it.",
+    ).toEqual([]);
   });
 });
 
