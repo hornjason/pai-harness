@@ -202,20 +202,36 @@ export const FORK_GUARD_COMPANION_ARM = new RegExp(
  * parenthesised negation are all arms that match neither, so each is named
  * rather than tolerated.
  *
- * **A narrowing `&&` inside an arm is refused too, and that is deliberate.**
- * Both patterns are anchored, so
- * `github.event_name == 'workflow_dispatch' && github.actor == 'someone'`
- * matches neither and is reported as a stray arm — even though it runs on a
- * strict subset of what the bare companion arm runs on, and is therefore
- * SAFER. That is a false positive, not a bypass: the direction
- * `.claude/rules/checks-must-be-able-to-fail.md` says to be wrong in. The
- * cost is a confusing refusal for somebody adding a legitimate narrowing;
- * the cost of the other direction is that deciding whether an arbitrary `&&`
- * narrows or widens means evaluating GitHub's expression language, and a
- * guard that reasons about what it cannot evaluate is the substring search
- * this function replaced. AC-26 in `test/claude-review-executable-prompt.test.ts`
- * holds this behaviour, because an earlier revision of this comment claimed
- * the opposite and nothing contradicted it (#1614, round 8).
+ * **Both patterns are anchored, so each accepts exactly ONE spelling of its
+ * arm and refuses every equivalent rewrite.** Say what is tolerated rather
+ * than listing what is not, because the list of rewrites is open and the
+ * tolerance is closed. Measured, not inferred:
+ *
+ *   clean    github.event_name == 'workflow_dispatch' || <fork comparison>
+ *   clean    extra inner whitespace around either `==`
+ *   clean    the fork comparison with its operands reversed
+ *   FLAGGED  (github.event_name == 'workflow_dispatch') || (<fork comparison>)
+ *   FLAGGED  github.event_name == "workflow_dispatch" || <fork comparison>
+ *   FLAGGED  github.event_name == 'workflow_dispatch' && github.actor == 'x'
+ *
+ * Whitespace and operand order are the whole of the tolerance. A
+ * parenthesised arm, a double-quoted event name and a narrowing `&&` are all
+ * refused, and all three are SAFE conditions — the `&&` one runs on a strict
+ * subset of what the bare arm runs on. So these are false positives, never
+ * bypasses: the direction `.claude/rules/checks-must-be-able-to-fail.md`
+ * says to be wrong in. The cost is a confusing refusal for somebody writing
+ * a legitimate variant; the cost of the other direction is deciding whether
+ * an arbitrary rewrite narrows or widens, which means evaluating GitHub's
+ * expression language, and a guard that reasons about what it cannot
+ * evaluate is the substring search this function replaced.
+ *
+ * AC-26 in `test/claude-review-executable-prompt.test.ts` holds every row of
+ * that table. Two successive revisions of this comment got it wrong and
+ * nothing contradicted either: the first claimed a narrowing `&&` was
+ * tolerated (#1614, round 8), and the fix for that named `&&` alone while
+ * parens and double quotes behaved identically (#1614, round 9). The table
+ * is stated as a tolerance precisely so the next equivalent spelling nobody
+ * has thought of is already covered by it.
  *
  * This is deliberately a CLOSED set. Widening it is how the check dies: the
  * next arm somebody wants is likelier to be the bypass than the exception,

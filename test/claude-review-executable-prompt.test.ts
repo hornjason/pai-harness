@@ -486,43 +486,74 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
   });
 
   /**
-   * AC-26: the FOURTH finding on this one guard, and the first that is about
-   * the prose rather than the code. Round 8 of #1614 read the docblock on
-   * `forkGuardDefect` claiming an `&&` inside an arm "is left alone", checked
-   * it against the anchored patterns, and found it false.
+   * AC-26: the fourth and fifth findings on this one guard, both about the
+   * PROSE rather than the code, and the second was caused by the fix for the
+   * first.
    *
-   * It is a false POSITIVE, so nothing was insecure: a narrowed companion arm
-   * runs on a strict subset of what the bare one runs on. The defect was that
-   * a comment made a specific, checkable claim about behaviour and no
-   * assertion contradicted it — which is exactly the shape
-   * `.claude/rules/checks-must-be-able-to-fail.md` names in *In practice*,
-   * the reason nobody checked being a comment saying it was checked.
+   * Round 8 of #1614 read the docblock on `forkGuardDefect` claiming an `&&`
+   * inside an arm "is left alone" and found it false — both patterns are
+   * anchored. I rewrote the comment to say `&&` is refused. Round 9 then
+   * pointed out that a parenthesised arm and a double-quoted event name are
+   * refused identically, so the new sentence named one member of a class and
+   * read as though it were the whole class.
    *
-   * So the behaviour is pinned here and the comment now describes it. If a
-   * later change decides narrowing arms SHOULD be accepted, this case goes
-   * red and the docblock has to move with it — which is the point.
+   * `.claude/rules/...` has the rule for exactly this and I did not apply it:
+   * when a finding names one site, sweep for the shape. So this case asserts
+   * the TOLERANCE, which is closed, instead of enumerating the refusals,
+   * which are open — whitespace and operand order are accepted and nothing
+   * else is. An equivalent spelling nobody has thought of is then already
+   * covered, and the table in the docblock is this table.
+   *
+   * Every refusal here is a false POSITIVE and none is a bypass: each listed
+   * condition is safe, and the `&&` row is strictly SAFER than the bare arm.
+   * The defect was never the behaviour. It was a comment making a specific,
+   * checkable claim with no assertion behind it — the shape
+   * `.claude/rules/checks-must-be-able-to-fail.md` names in *In practice*.
    */
-  test("AC-26: a narrowing && inside a companion arm is refused, and that is on purpose", () => {
+  test("AC-26: the guard tolerates whitespace and operand order, and nothing else", () => {
     const FORK = "github.event.pull_request.head.repo.full_name == github.repository";
-    const bare = `${FORK} || github.event_name == 'workflow_dispatch'`;
-    // The control. Without this the case below cannot tell "narrowing is
-    // refused" from "the whole disjunction form is refused".
-    expect(forkGuardDefect(bare), "the bare companion arm must be accepted").toBeNull();
+    const COMPANION = "github.event_name == 'workflow_dispatch'";
 
-    for (const narrowed of [
-      `${FORK} || (github.event_name == 'workflow_dispatch' && github.actor == 'someone')`,
-      `${FORK} || github.event_name == 'workflow_dispatch' && github.actor == 'someone'`,
-    ]) {
+    // TOLERATED. These are the control, and they are load-bearing: without
+    // them the refusals below cannot be told from "the disjunction form is
+    // refused outright", which would flag everything and look identical.
+    const tolerated: [string, string][] = [
+      ["the live spelling", `${COMPANION} || ${FORK}`],
+      ["extra inner whitespace", `github.event_name  ==  'workflow_dispatch' || ${FORK}`],
+      [
+        "the fork comparison with its operands reversed",
+        `${COMPANION} || github.repository == github.event.pull_request.head.repo.full_name`,
+      ],
+    ];
+    for (const [name, condition] of tolerated) {
+      expect(forkGuardDefect(condition), `${name} must be accepted`).toBeNull();
+    }
+
+    // REFUSED, and every one of them is a SAFE condition. If you are making
+    // one of these pass, update the table in forkGuardDefect's docblock in
+    // the same commit — that table and this list are the same claim.
+    const refused: [string, string][] = [
+      ["each arm parenthesised", `(${COMPANION}) || (${FORK})`],
+      ["only the fork arm parenthesised", `${COMPANION} || (${FORK})`],
+      ["a double-quoted event name", `github.event_name == "workflow_dispatch" || ${FORK}`],
+      ["a narrowing && in the companion arm", `${FORK} || ${COMPANION} && github.actor == 'x'`],
+      [
+        "a narrowing && in a parenthesised companion arm",
+        `${FORK} || (${COMPANION} && github.actor == 'x')`,
+      ],
+      ["a narrowing && on the fork comparison itself", `${FORK} && github.actor == 'x'`],
+    ];
+    for (const [name, condition] of refused) {
       expect(
-        forkGuardDefect(narrowed),
-        "a narrowed companion arm is SAFER than the bare one and is still refused — the " +
-          "patterns are anchored and this function does not evaluate GitHub's expression " +
-          "language. If you are changing that, change the docblock on forkGuardDefect too.",
+        forkGuardDefect(condition),
+        `${name} is a SAFE condition and is refused on purpose — the patterns are anchored ` +
+          `and this function does not evaluate GitHub's expression language.`,
       ).not.toBeNull();
     }
-    // And a narrowing `&&` on the fork comparison itself, which is the arm
-    // the docblock's old wording was most likely to be read as being about.
-    expect(forkGuardDefect(`${FORK} && github.actor == 'someone'`)).not.toBeNull();
+
+    // Both halves non-empty, or one loop is vacuous and says nothing.
+    expect(tolerated.length).toBeGreaterThan(0);
+    expect(refused.length).toBeGreaterThan(0);
   });
 
   /** AC-24: the other spelling in the same finding — negation, not addition. */
