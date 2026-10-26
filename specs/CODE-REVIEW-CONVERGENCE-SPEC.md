@@ -664,6 +664,104 @@ ledger that carries a tier to loosen against).
 CRC-F3, CRC-F4, CRC-F5, CRC-N5, CRC-H2. Last because none of them moves
 rounds-to-pass, and CRC-F5 is a gap the source admits on its own side.
 
+### Exit conditions — what must be OBSERVED before the next phase starts
+
+Added 2026-10-26. The phases above order the work and say what each one needs
+from the last. They do not say when one is **done**, and without that the
+honest reading of progress is a checkbox count — which is the wrong
+instrument twice over.
+
+**A tick means a criterion is bound, not that the phase moved the number.**
+`scripts/sync-sc-status.ts` ticks a box when a test names the id, and
+`.claude/rules/claiming-sc-coverage.md` is deliberate about that being a
+declaration of intent. So a phase can reach 100% ticked while rounds-to-pass
+sits where it was: every mechanism present, bound, and not yet making a
+difference to the thing this document exists to move.
+
+So each phase below exits on an **observation taken on a real pull request**,
+not on a count and not on a unit test. One per phase, falsifiable, and
+stated so a reader can be wrong about it — which is the lesson *The thing
+that would make this plan wrong* records below, where a precondition that
+read "the fix has merged" was checkable and was the wrong thing to check.
+
+| Phase | Exits when this is observed | Taken how |
+|---|---|---|
+| **0** settings | `required_conversation_resolution` is `true` on `main` **and a pull request has actually been held by it** — a setting nothing has exercised is a setting, not a gate | `mergeStateStatus` is `BLOCKED` with an open thread and `CLEAN` after it is resolved, same PR, nothing else changed |
+| **1** stop the repeats | A pull request pushed **twice** with the same defect still present carries **one** thread for it, not two | count threads on that PR; and re-take CRC-M11 — five-or-more-rounds must be **below 20.5%** |
+| **2** stop the false findings | A finding **known to be false** is voted down by the group and is **never posted** | the ballot carries `VERIFIER_GROUP_SIZE` votes and the disagreement flag; the thread count for that finding is zero |
+| **3** what the reviewer is told | A reading of the **live reviewer** changing behaviour — not a clause added to `REVIEW.md` | the planted subject CRC-A4 already has is flagged on a real round |
+| **4** findings get answered | A finding is fixed, or resolved with a stated reason, **with no human acting on that pull request** | the thread's resolving actor is not a person, and the PR reaches `CLEAN` |
+| **5** instruments | Each of CRC-M6's four buckets has a non-zero count from real dispositions | the ledger, read over a week |
+| **6** release and detection | — none of these moves rounds-to-pass; they exit on their own criteria | |
+
+**Phase 1's second half is the one that will be skipped.** Counting threads
+on one pull request is cheap and will be done; re-taking CRC-M11 costs a
+population and will not be, unless it is written here as a gate. The
+mechanism being present is not the claim this phase makes. The claim is that
+the tail moved.
+
+**And re-take CRC-M11 at a controlled age.** The reading on 2026-10-24
+records why: a naive comparison of a fresh cohort against an older one
+reported a 47-point improvement that vanished entirely when both were read
+at the same age.
+
+### The swarm track, and the reorder it asks for
+
+Declared 2026-10-26, as a decision with a reason rather than a reordering
+nobody can see — this document exists because work was being "picked by
+whichever looked tractable".
+
+The phases above are ordered by **effect on rounds-to-pass**. That is the
+right order for this repository's review loop and it is not the order for a
+second objective the owner has stated: **running many agents against a
+product backlog with no human in the per-pull-request loop.**
+
+Swarm-readiness needs exactly two things, and they are necessary together:
+
+- **Phase 2**, because findings must be mostly right. CRC-B3 already states
+  that N generators without a quorum are *strictly worse than one* — N
+  chances to block falsely. At a swarm's width that is not a slower loop, it
+  is a stalled one.
+- **Phase 4**, because findings must get **answered without a person**. This
+  is the half that is easy to miss, and it is observable today:
+  `required_conversation_resolution` holds a pull request `BLOCKED` on an
+  open thread, measured on #1614. Twenty agents, twenty pull requests, three
+  threads each, and nobody to resolve them is sixty blocked merges. The gate
+  works perfectly and the swarm delivers nothing.
+
+**Phase 4 therefore moves ahead of Phase 3 for this objective.** Phase 3 is
+prompt and `REVIEW.md` text; it makes a reviewer better informed and it
+unblocks nothing. The original argument for sequencing Phase 3 third —
+that a reviewer given more context and no falsification step produces more
+confident false premises — is unaffected: it says Phase 3 comes *after*
+Phase 2, and it still does.
+
+**What this reorder does NOT do** is change the priority in CRC-M8. Catching
+real bugs still comes before cutting rounds. A swarm that ships faster by
+answering findings wrongly has moved human time into the second half of the
+cost rule, not saved it.
+
+**The thing that would make the swarm track wrong:** if Phase 2 lands and
+`FIRED` on `evals/ai-review-control`'s clean subjects does not fall, then the
+quorum is filtering nothing, a swarm is not unblocked by it, and this track is
+ordered against a premise that did not hold. Say so and stop, rather than
+proceeding to Phase 4 because it is next on a list.
+
+That control is the only false-positive instrument this repository owns, and
+it is a weaker one than the sentence above makes it sound: **CRC-M7 declares
+the criterion's own number UNMEASURED**, because a finding carries no remedy
+anything can apply. So two things have to be true before the reading means
+anything. **Take the `FIRED` count BEFORE the quorum lands**, on the same
+subject set — a post-quorum number alone is uninterpretable. And **state N**:
+the reviewer is a sampled instrument (CRC-B3), so one clean subject scoring
+`FIRED` zero times is one draw, not a rate.
+
+A per-attempt rate near 25% has been read elsewhere on this machine and is
+**not** this spec's instrument — it is a different repository's population,
+recorded in a decision outside this tree. Do not use it as the baseline. It
+is named here only so that a reader who meets it does not mistake it for a
+number this document measured.
+
 ### The thing that would make this plan wrong
 
 Re-take the CRC-M11 reading after #1449 and #1452 land. The 2.64 was measured
