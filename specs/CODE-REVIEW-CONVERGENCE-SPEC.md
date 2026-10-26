@@ -877,18 +877,42 @@ Twenty agents, twenty pull requests, three threads each, and nobody to
 resolve them is sixty blocked merges — the gate working perfectly and the
 swarm delivering nothing.
 
-**That scenario is argued, not measured, and the control has not been run.**
-`required_conversation_resolution` is `true` and the producer has landed —
-`ai-review-threads` posts real review threads, and #1614 carries four of
-them. But `main`'s required contexts are `["test", "ai-review"]`, and on
-#1614 `ai-review` is `FAILURE`, so its `BLOCKED` is **overdetermined**: the
-unresolved thread is not shown to be doing any of the blocking. It is also
-the only open pull request carrying an unresolved thread, so there is no
-unconfounded instance in the live population. **This is exactly the reading
-Phase 0's exit row demands** — `BLOCKED` with an open thread and `CLEAN`
-after it is resolved, same pull request, nothing else changed — and until
-that is taken, the premise under this whole track is inferred from a
-setting rather than observed.
+**That scenario was argued rather than measured when this paragraph was
+written. The control has since been run, and this paragraph said otherwise
+for two days after the readings table above recorded it.**
+
+What it used to say was that no unconfounded instance existed, citing #1614,
+whose `BLOCKED` was overdetermined because `ai-review` was `FAILURE` there at
+the same time. That was true of #1614 and it is not true of the population:
+*Readings taken* above records Phase 0 EXITED on 2026-10-26 at #1616 head
+`7ea82e50`, where resolving two threads and nothing else — no push, no
+re-run — moved `BLOCKED` to `CLEAN`, with a second draw on #1614 at
+`471a5b50` once its other contexts were green.
+
+**A third independent draw, which is why this paragraph is being edited
+rather than deleted.** Read **2026-10-26 at 23:16Z** on **#1619**, head
+`3a4eb10e`, before any resolution:
+
+| Reading | Value |
+|---|---|
+| required contexts | `test,ai-review` — `gh api repos/hornjason/pai-harness/branches/main/protection/required_status_checks` |
+| both | `success` — `gh api repos/hornjason/pai-harness/commits/3a4eb10e2d0675f00711a0b1397d5d5adfd601f9/check-runs` |
+| mergeable / mergeStateStatus | `MERGEABLE` / `BLOCKED` |
+| review threads | 15, exactly **1 unresolved** |
+
+One check was red — `review`, the local plugin's advisory job — and it is
+**not** in the required set, which is the fact that makes the reading
+unconfounded and is why the contexts are read from the API beside it rather
+than remembered. Three draws, and three is still not a population; the boxes
+above stay open for the reason stated there.
+
+**The defect worth keeping from this is not the reading, it is the two days.**
+This paragraph and the readings table disagreed about one observable, in one
+file, and nothing compares two prose statements of one fact — the same shape
+the CRC-B8 bullet below records about `required_conversation_resolution`
+being written `false` here and `true` two hundred lines away. Twice now, and
+the second time the stale half was the one arguing that a whole track's
+premise was unmeasured.
 
 **Phase 4 therefore moves ahead of Phase 3 for this objective**, but the
 reason is narrower than "Phase 3 unblocks nothing". Phase 3 is prompt and
