@@ -54,6 +54,123 @@ function citedPaths(body: string): string[] {
   return [...found].sort();
 }
 
+/** One row of the *Readings taken* table. */
+type Reading = {
+  phase: string;
+  verdict: string;
+  pr: string;
+  head: string;
+  criteria: string;
+  observed: string;
+};
+
+/**
+ * Rows of the *Readings taken* table, found by their shape rather than by a
+ * heading offset — a heading is renamed far more often than a six-column row
+ * whose first cell is a bolded digit is invented elsewhere.
+ */
+function readingRows(body: string): Reading[] {
+  const rows: Reading[] = [];
+  for (const line of body.split("\n")) {
+    const m = /^\|\s*\*\*(\d)\*\*\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|(.*)\|\s*$/.exec(line);
+    if (!m) continue;
+    rows.push({
+      phase: m[1],
+      verdict: m[2].trim(),
+      pr: m[3].trim(),
+      head: m[4].trim(),
+      criteria: m[5].trim(),
+      observed: m[6].trim(),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Every criterion id this spec DECLARES — the checkbox lines, which are the
+ * only position that creates one. Cited ids elsewhere in the document are
+ * references to these and cannot add to the set.
+ */
+function declaredCriteria(body: string): Set<string> {
+  return new Set(
+    [...body.matchAll(/^- \[[ xX]\] (CRC-[A-Z]?\d+):/gm)].map(m => m[1]),
+  );
+}
+
+/**
+ * Rows of the *Work in flight* table: `| PR | phase | criteria | state |`.
+ *
+ * There is deliberately no branch column — a branch is deleted on merge, so
+ * citing one here is a citation that rots on the single event the table
+ * exists to survive. It is also not merely untidy: the path check in this
+ * file reads a backticked `rg/some-branch` as a repo path and reports it
+ * missing, which is how the absence of this column got decided.
+ */
+function inFlightRows(body: string): { pr: string; criteria: string[] }[] {
+  const at = body.indexOf("| PR | Phase / increment |");
+  if (at < 0) return [];
+  const rows: { pr: string; criteria: string[] }[] = [];
+  for (const line of body.slice(at).split("\n")) {
+    if (!line.startsWith("|")) break;
+    const cells = line.split("|").slice(1, -1);
+    if (cells.length < 4 || cells[0].includes("---") || cells[0].trim() === "PR") continue;
+    rows.push({
+      pr: cells[0].trim(),
+      criteria: [...cells[2].matchAll(/CRC-[A-Z]?\d+/g)].map(m => m[0]),
+    });
+  }
+  return rows;
+}
+
+/**
+ * The traceability binding. Both tables point at criteria by id, and an id
+ * that does not resolve is the whole failure mode of a cross-reference table:
+ * it reads as a link and goes nowhere. One function so there is one thing to
+ * mutate.
+ */
+function danglingCriteria(body: string): string[] {
+  const declared = declaredCriteria(body);
+  const out: string[] = [];
+  for (const r of inFlightRows(body)) {
+    if (r.criteria.length === 0) out.push(`in-flight row "${r.pr}" names no criterion`);
+    for (const id of r.criteria) {
+      if (!declared.has(id)) out.push(`in-flight row "${r.pr}" names ${id}, which this spec does not declare`);
+    }
+  }
+  for (const r of readingRows(body)) {
+    for (const id of r.criteria.matchAll(/CRC-[A-Z]?\d+/g)) {
+      if (!declared.has(id[0])) out.push(`reading for phase ${r.phase} names ${id[0]}, which this spec does not declare`);
+    }
+  }
+  return out;
+}
+
+/**
+ * The single binding. One function turns the table into a violation list, so
+ * there is one thing to mutate and the planted case below drives exactly the
+ * code the live case drives.
+ *
+ * A full 40-character SHA, not an abbreviation: an abbreviated hash stops
+ * being unique as the repo grows, and a reader checking a two-month-old
+ * reading needs the one that still resolves.
+ */
+function readingDefects(body: string): string[] {
+  const out: string[] = [];
+  for (const r of readingRows(body)) {
+    if (!/^EXITED/.test(r.verdict)) continue;
+    if (!/#\d+/.test(r.pr)) out.push(`phase ${r.phase} is EXITED and names no pull request`);
+    if (!/`[0-9a-f]{40}`/.test(r.head))
+      out.push(`phase ${r.phase} is EXITED and names no full head SHA`);
+    // The PR→spec half of the cross-reference. A reading that moved nothing
+    // in this document is a reading with no reason to be recorded in it.
+    if (!/CRC-[A-Z]?\d+/.test(r.criteria))
+      out.push(`phase ${r.phase} is EXITED and names no criterion it evidences`);
+    if (r.observed.replace(/[—\-\s]/g, "").length < 40)
+      out.push(`phase ${r.phase} is EXITED and records no observation`);
+  }
+  return out;
+}
+
 describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
   const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
 
@@ -185,6 +302,139 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
       Number(stated![1]),
       `the summary says ${stated![1]} bound and ${ticked} boxes are ticked`,
     ).toBe(ticked);
+  });
+
+  /**
+   * The *Readings taken* table is the only place this spec may call a phase
+   * done, and it is a different claim from a ticked checkbox:
+   * `audit-specs` reports whether a criterion is BOUND BY A TEST, and a phase
+   * exit is an observation on a live pull request that no unit test can name.
+   *
+   * Which makes the table the easiest thing in the document to lie in. These
+   * cases do not — cannot — verify that the observation happened; they verify
+   * that a row claiming `EXITED` carries the evidence a reader needs to go and
+   * check it themselves: a pull request, the head it was read at, and what was
+   * seen. A row that asserts progress and cites nothing fails the suite.
+   */
+  test("the readings table parses, and at least one row is EXITED", () => {
+    // The positive control, and it is load-bearing twice over: a table that
+    // stopped parsing and a project with no phase yet exited produce the same
+    // empty list, and `readingDefects` would return [] for both.
+    const rows = readingRows(body!);
+    expect(rows.length, "the Readings-taken table did not parse").toBeGreaterThanOrEqual(7);
+    expect(
+      rows.filter(r => /^EXITED/.test(r.verdict)).length,
+      "no row is EXITED, so the evidence case below asserts nothing",
+    ).toBeGreaterThan(0);
+  });
+
+  test("every EXITED phase cites a pull request, a head, and what was observed", () => {
+    expect(
+      readingDefects(body!),
+      "a phase is recorded as EXITED without the evidence to check it. An exit is an " +
+        "observation on a real pull request, so the row must name the PR, the full head SHA " +
+        "it was read at, and what was seen. If the reading has not been taken, the verdict " +
+        "is PENDING or UNMEASURED — do not write EXITED and fill the cells in later.",
+    ).toEqual([]);
+  });
+
+  test("an EXITED row with no evidence is caught, so the case above can fail", () => {
+    // Planted, not described. The real table cannot be made to lie on demand,
+    // and the previous case passes against a tree where every phase is PENDING
+    // for reasons that have nothing to do with the check working.
+    const planted = [
+      "| Phase | Verdict | PR | Head | Criteria evidenced | What was observed |",
+      "|---|---|---|---|---|---|",
+      "| **0** | EXITED 2026-10-26 | — | — | — | — |",
+      "| **1** | EXITED 2026-10-26 | #1616 | `short` | CRC-C2 | it looked fine |",
+      "| **2** | PENDING | — | — | — | — |",
+    ].join("\n");
+    const defects = readingDefects(planted);
+    // Membership, not the count. The count is a poor predictor here and
+    // predicting it wrong was the first thing this case caught: one bad row
+    // yields up to FOUR defects, so "two bad rows" is not "two defects".
+    // What the check must get right is WHICH phases it flags — a check that
+    // also flagged the PENDING row would return a longer list and be wrong.
+    const flagged = [...new Set(defects.map(d => /phase (\d)/.exec(d)![1]))].sort();
+    expect(flagged, "the PENDING row must not be flagged and both EXITED rows must be")
+      .toEqual(["0", "1"]);
+    // Phase 0 is missing all four; phase 1 has a PR and a criterion but an
+    // abbreviated SHA and a one-line observation.
+    expect(defects.filter(d => d.startsWith("phase 0")).length).toBe(4);
+    expect(defects.filter(d => d.startsWith("phase 1")).map(d => d.replace("phase 1 is EXITED and ", ""))).toEqual([
+      "names no full head SHA",
+      "records no observation",
+    ]);
+  });
+
+  /**
+   * The cross-reference, both directions. *Work in flight* answers
+   * spec→PR — open the document, see which branches are serving it — and the
+   * readings table's criteria column answers PR→spec.
+   *
+   * Neither can be checked for truthfulness offline: whether #1614 is still
+   * open is a fact about GitHub. What IS checkable, and is the way a table
+   * like this actually rots, is an id that resolves to nothing — a typo, a
+   * renamed criterion, or one invented to make a row look connected.
+   */
+  test("the in-flight table parses and carries rows, so the case below is not vacuous", () => {
+    // The positive control. A renamed heading or a reformatted table empties
+    // `inFlightRows`, and an empty list satisfies every assertion below it.
+    const rows = inFlightRows(body!);
+    expect(rows.length, "the Work-in-flight table did not parse").toBeGreaterThanOrEqual(3);
+    expect(
+      rows.flatMap(r => r.criteria).length,
+      "no in-flight row names a criterion, so the resolution check reads nothing",
+    ).toBeGreaterThan(0);
+    expect(declaredCriteria(body!).size, "no criteria parsed, so every id would read as dangling")
+      .toBeGreaterThan(40);
+  });
+
+  test("every criterion named by a PR or a reading is one this spec declares", () => {
+    expect(
+      danglingCriteria(body!),
+      "a traceability row points at a criterion id that does not exist in this spec. Either " +
+        "the id is a typo, or the criterion was renamed and the row was left behind. Fix the " +
+        "row — do not delete the criteria column, which is the only thing connecting a branch " +
+        "to the part of this document it is meant to move.",
+    ).toEqual([]);
+  });
+
+  test("a fabricated criterion id and an empty criteria cell are both caught", () => {
+    // Planted. The live tables cannot be made to dangle on demand, and the
+    // case above passes on a document whose rows happen to be correct for
+    // reasons that say nothing about the check working.
+    const planted = [
+      "- [ ] CRC-N4: findings do not repeat across rounds",
+      "- [x] CRC-C2: a pull request cannot merge while a finding is open",
+      "",
+      "| PR | Phase / increment | Criteria it is pointed at | State |",
+      "|---|---|---|---|",
+      "| #1614 | increment 1 | CRC-N4 | open |",
+      "| #1620 | increment 9 | CRC-Z9, CRC-C2 | open |",
+      "| — | unclaimed | — | not started |",
+      "",
+      "| Phase | Verdict | PR | Head | Criteria evidenced | What was observed |",
+      "|---|---|---|---|---|---|",
+      `| **0** | EXITED | #1616 | \`${"a".repeat(40)}\` | CRC-Q1 | ${"x".repeat(50)} |`,
+    ].join("\n");
+    // Membership, not a count — a bad row can yield more than one defect, and
+    // predicting the total wrong is what this file's other planted case
+    // already caught once.
+    expect(danglingCriteria(planted)).toEqual([
+      'in-flight row "#1620" names CRC-Z9, which this spec does not declare',
+      'in-flight row "—" names no criterion',
+      "reading for phase 0 names CRC-Q1, which this spec does not declare",
+    ]);
+    // CRC-N4 and CRC-C2 are declared in the planted body and must NOT be
+    // flagged — without that the check could be reporting every id it sees.
+    expect(danglingCriteria(planted).some(d => /CRC-N4|CRC-C2/.test(d))).toBe(false);
+    // And the EXITED row above satisfies the other three evidence clauses, so
+    // a missing criteria cell is what `readingDefects` is being asked about.
+    const noCriteria = planted.replace("| CRC-Q1 |", "| — |");
+    expect(readingDefects(noCriteria)).toEqual([
+      "phase 0 is EXITED and names no criterion it evidences",
+    ]);
   });
 
   test("a mis-cited path is caught, so the case above is not green by construction", () => {
