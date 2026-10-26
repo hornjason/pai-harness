@@ -773,9 +773,15 @@ export function carryForwardFromThreads(
   // the decision cannot depend on where a key's threads sat in the list.
   const allResolved = new Map<string, boolean>();
   for (const t of reading.threads) {
-    if (typeof t.key !== "string" || t.key === "") continue;
     allResolved.set(t.key, (allResolved.get(t.key) ?? true) && t.isResolved === true);
   }
+  // The empty key is refused on the FINDING side only, below, and once. It
+  // was refused here too until a battery showed neither guard alone could be
+  // made to fail: two deciders answering one question are behaviourally one,
+  // and no test can say which of them is live
+  // (`.claude/rules/checks-must-be-able-to-fail.md`). The surviving one is
+  // the stronger — it also refuses the `null` that `keyFor` returns, which a
+  // guard over `t.key` cannot see.
 
   // ONE decider, and `!== true` is the whole of it. An unkeyable finding, a
   // key no thread holds, and a key whose threads are not all resolved are

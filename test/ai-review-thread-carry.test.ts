@@ -99,11 +99,28 @@ describe("carry-forward reads the thread, not the line", () => {
     expect(out.carried, "another finding's resolved thread is not this finding's answer").toEqual([A]);
   });
 
-  test("TC-5: an unkeyable finding carries", () => {
+  test("TC-5: an unkeyable finding carries, even against an EMPTY-keyed thread", () => {
+    // The hostile input, and the only one that makes this path reachable.
+    // `threadKeyFrom` returns null for a thread with no marker — every thread
+    // posted before #1618 — and a caller that spells null as "" hands us a
+    // resolved thread keyed "". An unkeyable finding keys to the same empty
+    // string, so a decider that does not refuse the empty key on BOTH sides
+    // reads "nobody could identify either of these" as "these are the same
+    // finding, and it was answered". Every unkeyable finding then disappears
+    // the moment one unmarked thread is resolved.
+    //
+    // Measured: with no empty-keyed thread in the reading this case cannot
+    // fail under any single mutation of the decider, because the map never
+    // holds an empty key. The thread below is what gives it something to be
+    // wrong about.
     const bare = { severity: "low", line: 3 } as ReviewFinding;
-    const out = carryForwardFromThreads(prior(bare), measured(), keyFor);
     expect(keyFor(bare), "the fixture must really be unkeyable").toBeNull();
-    expect(out.carried).toEqual([bare]);
+    const out = carryForwardFromThreads(
+      prior(bare),
+      measured({ key: "", isResolved: true }),
+      keyFor,
+    );
+    expect(out.carried, "two things nobody could identify are not the same thing").toEqual([bare]);
   });
 
   test("TC-6: one resolved and one OPEN thread for the same finding carries", () => {
