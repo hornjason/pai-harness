@@ -7,7 +7,7 @@ status: active
 owner: jason
 created: 2026-10-22
 source: https://claude.dev/blog/solving-code-review-at-anthropic/
-updated: 2026-10-23
+updated: 2026-10-26
 ---
 
 # Code Review Convergence
@@ -704,7 +704,7 @@ arriving inside the section.
 | **1** stop the repeats | Round two posts **at least one NEW thread** for a different finding, **and zero** for the finding already threaded on round one | round two posting **nothing at all** — which an absent payload, a fork's read-only token or CRC-N2's narrowing all produce. Zero threads is not a deduplication, and without the new thread there is no proof the poster was even live |
 | **1** (the number) | On **measured rounds only**: five-or-more below **4.4%** and mean-to-pass below **1.58** | using the ALL-rounds figures (20.0%, 2.65). Those are dominated by the 41% of rounds that produce no review, which Phase 1 does not touch — the spec says conflating the units "points the whole plan at the smaller half of its own problem" |
 | **2** stop the false findings | A finding **known to be false** is voted down and **no thread is opened for it** | a zero thread-count produced by anything other than the vote. **Today that is the only thing it can be** — see the ordering defect below |
-| **3** what the reviewer is told | **N readings** of the planted subject, N and the full outcome set both stated | a single `DETECTED`. CRC-A4's own promotion condition forbids it: the reviewer is sampled, one reading is one draw. This table said "a real round" and contradicted itself sixty lines later |
+| **3** what the reviewer is told | **N readings** of the planted subject, N and the full outcome set both stated | a single `DETECTED`. CRC-A4's own promotion condition forbids it: the reviewer is sampled, one reading is one draw. The first draft of this row asked for one reading and contradicted that rule, which is in the document twice and was still worth re-deriving |
 | **4** findings get answered | A pull request that **had at least one open thread**, all of them resolved, no resolving actor a person, then mergeable | a pull request with **no threads at all**. It satisfies every clause vacuously and is precisely the always-empty population this spec was written about |
 | **5** instruments | Each of CRC-M6's four buckets non-zero, each traced to a **human-authored** disposition | a bucket incremented by `lib/signal-phrases.ts` matching agent boilerplate. "by design" in a generated comment is not a disposition |
 | **6** release and detection | — none of these moves rounds-to-pass; they exit on their own criteria | |
