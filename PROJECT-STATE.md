@@ -8,7 +8,7 @@ required_conversation_resolution is enforced on the consumer and reads review TH
 
 #1612 was filed blaming a missing `pull-requests: write`. That was WRONG, both halves. lib/scaffold/steps.ts has granted it unconditionally since #1168 and rungate's own workflow carries all four permissions; the consumer carried two because it is 378 commits behind on the re-scaffold channel. The real gap: the grant exists for the LEDGER, which posts to issues/{n}/comments, and a review thread comes from pulls/{n}/comments — an endpoint nothing in lib/, scripts/ or bin/ called. Reading the generator instead of the consumer's file is what found it; the correction is on the issue.
 
-#1613 merged (0b623381) builds the producer: reviewThreadRequests decides which findings become comments, postReviewThreads names what happened when they were sent, and a generated step runs the new ai-review-threads command between the reviewer and the adjudicator — the one slot that needs no `if:`, which lib/conformity.ts forbids on this job.
+#1613 merged (0b623381) builds the producer: reviewThreadRequests decides which findings become comments, postReviewThreads names what happened when they were sent, and a generated step runs the new ai-review-threads command between the reviewer and the adjudicator — the one slot that needs no `if:`, which lib/conformity.ts forbids on this job. Closes #1612.
 
 THREE RESULTS WORTH CARRYING FORWARD, each a near-miss rather than a success:
 
