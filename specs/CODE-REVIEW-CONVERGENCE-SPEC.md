@@ -1156,11 +1156,15 @@ Recorded because each one invalidates a naive reading of the criteria above.
   (#1592 — a re-run appends an entry at the same number). Its earliest entry is
   round 5, **so rounds 1–4 are absent and nothing here characterises them.** Its
   `truncated` count reads **5**, which is five evicted ENTRIES and not five
-  round numbers — the same unit distinction, one line further on, and the first
-  draft of this bullet took the count for a range and wrote "rounds 1–5". The
-  reviewer caught it on #1619 and was right to; the two numbers cannot be
-  reconciled into a round range, because an evicted entry may have been a
-  duplicate exactly as the surviving round 9 is. **What the ledger supports is
+  round numbers — the same unit distinction, one line
+  further on, and the first draft of this bullet ignored it — it wrote
+  "`truncated: 5`, so **rounds 1–4 are gone**", converting an entry count into
+  a round range and then getting even that arithmetic wrong, since five cannot
+  leave four. The reviewer caught the contradiction on #1619 and proposed the
+  range read "1–5"; that is the same category error with better-looking digits,
+  because the two numbers cannot be reconciled into a round range in either
+  direction — an evicted entry may have been a duplicate, exactly as the
+  surviving round 9 is. **What the ledger supports is
   the first present round number, not a derived count of missing ones.** And
   `f71f816e` **was never reviewed**: its no-payload refusal was cleared at 18:27
   by a WAIVER on the unchanged sha, whose annotation reads *"the AI review on
