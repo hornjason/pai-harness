@@ -116,67 +116,57 @@ export const AUTOMATION_ONLY_TRIGGERS = [
 export const ENTITY_TRIGGERS = ["pull_request", "pull_request_target"] as const;
 
 /**
- * The TOP-LEVEL keys of an `on:` block — its trigger names, and nothing
- * nested underneath them.
+ * The trigger names a workflow declares, parsed as YAML.
  *
- * A function and not a regex, because the question is structural and three
- * successive regexes got it wrong in three different ways (#1614, rounds
- * 10 and 11).
+ * **This was hand-rolled text matching and it should not have been.** Six
+ * revisions on #1614, each correct for the case it was shown and wrong for
+ * the next one, and the reviewer's round-cap assessment on round 13 named
+ * the class rather than the instance: *hand-rolled regex parsing of the
+ * `on:` block, patched edge case by edge case*. It was right, so the
+ * instrument changed instead of the pattern. What the six revisions cost:
  *
- * THE TWO PATTERNS BELOW ARE DELETED. They appear nowhere else in this file
- * — grep `TRIGGER_NAME` and you get this comment and nothing else. They are
- * spelled out because a fix whose reasoning is gone gets undone, and the
- * next person reaching for a regex here needs to see what happened to the
- * last three. Round 12 read this very block as live code and re-raised a
- * finding the commit it was reviewing had already fixed, which is its own
- * small lesson: a dead pattern quoted verbatim is indistinguishable from a
- * live one to anything that matches on text.
+ *   two-space-only     every other spelling read as `[]`, which made the
+ *                      callers SILENT. `on: {pull_request_target: }` passed
+ *                      — a WRITE token on a fork's pull request
+ *   any-indentation    any indentation is any DEPTH, so every field of the
+ *                      `workflow_dispatch.inputs` schema read as a trigger
+ *   outermost-depth    correct for block and flow style, and still blind to
+ *                      a YAML merge key, a list form and a scalar form
  *
- *   DELETED  /^\s{2}([a-z_]+):/gm
- *            Block style at EXACTLY two spaces. Every other valid spelling
- *            read as `[]`, and `[]` made the callers silent.
- *            `on: {pull_request_target: }` passed — a WRITE token on a
- *            fork's pull request.
+ * `Bun.YAML` is built in, so this costs no dependency, and it answers all
+ * three plus the forms nobody had thought to ask about:
  *
- *   DELETED  /^[ \t]+([a-z_]+):/gm
- *            Any indentation, which is any DEPTH. On the live file this
- *            returned ["workflow_dispatch", "inputs", "pr", "description",
- *            "required", "type", "pull_request"] — every field of the
- *            `workflow_dispatch.inputs` schema read as a trigger.
+ *   on: {pull_request_target: }              flow
+ *   on:\n    pull_request_target:            four-space
+ *   on:\n  <<: *anchor                       merge key, resolved
+ *   on: [push, pull_request_target]          list
+ *   on: pull_request_target                  scalar
  *
- * What separates a trigger from a nested field is not its spelling, it is
- * its DEPTH: a trigger is a key at the block's outermost indentation. So
- * measure that depth from the block itself rather than assuming a number,
- * and take only the keys sitting at it. Four-space files and two-space files
- * then both work for the same reason, and nothing nested can be reached.
- *
- * Flow style has no indentation to measure, so it is read separately — but
- * only at depth zero, by requiring the brace that opens the mapping.
- *
- * Still narrower than YAML, and that is survivable only because an EMPTY
- * result REFUSES at the call site (`TRIGGERS_UNMEASURED`). Anything this
- * cannot read is reported, never passed.
+ * The refusal stays and is still load-bearing: a source that will not parse,
+ * or declares no `on`, yields `[]` and the caller reports
+ * `TRIGGERS_UNMEASURED`. A reading that could not be taken is never a clean
+ * one — and that is now the ONLY way this returns empty, because the parser
+ * no longer has spellings it cannot see.
  */
-export function triggerNames(triggerBlock: string): string[] {
-  // Flow style: `on: {a: , b: }`. Take the braced region only, so a brace
-  // elsewhere in the block cannot contribute keys.
-  const flow = /^\s*on:\s*\{([^}]*)\}/m.exec(triggerBlock);
-  if (flow) {
-    return [...flow[1].matchAll(/(?:^|,)\s*([a-z_]+)\s*:/g)].map(m => m[1]);
+export function triggerNames(source: string): string[] {
+  let doc: unknown;
+  try {
+    doc = (Bun as unknown as { YAML: { parse(s: string): unknown } }).YAML.parse(source);
+  } catch {
+    // A workflow that is not YAML has no readable triggers. UNMEASURED, and
+    // never a silent pass — the caller turns `[]` into a reported refusal.
+    return [];
   }
-
-  // Block style. Every key line in the block, with its indentation.
-  const keys = [...triggerBlock.matchAll(/^([ \t]+)([a-z_]+):/gm)].map(m => ({
-    indent: m[1].length,
-    name: m[2],
-  }));
-  if (keys.length === 0) return [];
-
-  // The outermost depth present IS the trigger depth — `on:` itself sits at
-  // column zero and is excluded by the `[ \t]+`, so the shallowest key line
-  // in the block is a trigger by construction.
-  const top = Math.min(...keys.map(k => k.indent));
-  return keys.filter(k => k.indent === top).map(k => k.name);
+  if (doc === null || typeof doc !== "object") return [];
+  // YAML 1.1 resolves a bare `on` to the boolean true, and parsers differ on
+  // whether the key survives as "on" or "true". Read both rather than
+  // depending on which one this runtime picked.
+  const rec = doc as Record<string, unknown>;
+  const on = rec.on ?? rec["true"];
+  if (typeof on === "string") return [on];
+  if (Array.isArray(on)) return on.filter((t): t is string => typeof t === "string");
+  if (on !== null && typeof on === "object") return Object.keys(on as object);
+  return [];
 }
 
 /**
@@ -610,7 +600,7 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
   //    and the set of things this function can parse is closed, so the only
   //    safe thing to do with a block it cannot read is say so — an absent
   //    reading is UNMEASURED, never a clean one.
-  const triggers = triggerNames(triggerBlock);
+  const triggers = triggerNames(source);
   if (triggers.length === 0) {
     v.push({
       kind: "TRIGGERS_UNMEASURED",

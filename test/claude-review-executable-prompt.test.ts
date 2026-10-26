@@ -159,7 +159,7 @@ function dispatchOnly(src: string): string {
   // could silently become a no-op and both cases below would keep passing
   // while measuring the wrong tree.
   const triggersOf = (s: string) =>
-    triggerNames(reviewWorkflowRegions(s).triggerBlock);
+    triggerNames(s);
   expect(triggersOf(stripped)).toEqual(["workflow_dispatch"]);
   expect(triggersOf(src)).toContain("pull_request");
   return stripped;
@@ -278,7 +278,7 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
    * fail, but nothing else here would say which direction the file moved in.
    */
   test("AC-17: the live workflow runs on pull_request, so the entity server exists", () => {
-    const triggers = triggerNames(reviewWorkflowRegions(live).triggerBlock);
+    const triggers = triggerNames(live);
     expect(triggers).toContain("pull_request");
     expect(triggers).toContain("workflow_dispatch");
     // And the consequence, stated where a reader will see it: the allowlist
@@ -315,11 +315,11 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     // else, and the entity trigger is present in both.
     for (const src of [mixed, entityOnly]) {
       expect(
-        triggerNames(reviewWorkflowRegions(src).triggerBlock),
+        triggerNames(src),
       ).toContain("pull_request");
     }
     expect(
-      triggerNames(reviewWorkflowRegions(entityOnly).triggerBlock).map(
+      triggerNames(entityOnly).map(
         m => m[1],
       ),
     ).not.toContain("workflow_dispatch");
@@ -570,23 +570,22 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
    * `pull_request_target` runs a job with a WRITE token on a fork's pull
    * request. Two valid YAML spellings of it passed the check.
    *
-   * The first fix widened the regex to any indentation, and round 11 caught
-   * that too: any indentation is any DEPTH, so the live file read
-   * ["workflow_dispatch", "inputs", "pr", "description", "required", "type",
-   * "pull_request"] — every field of the `workflow_dispatch.inputs` schema
-   * counted as a trigger.
+   * Six revisions followed, each correct for the case it was shown and
+   * wrong for the next, and on round 13 the reviewer stopped reporting
+   * instances and named the CLASS: hand-rolled regex parsing of the `on:`
+   * block, patched edge case by edge case. That is the round cap doing the
+   * job it exists for, and it was right.
    *
-   * Three regexes, three different wrong answers, which is the signal that a
-   * regex was the wrong instrument. What separates a trigger from a nested
-   * field is DEPTH, not spelling, so `triggerNames` measures the block's
-   * outermost indentation and takes the keys sitting at it. Two-space and
-   * four-space files work for the same reason and nothing nested is
-   * reachable.
+   * So the instrument changed rather than the pattern. `Bun.YAML` is built
+   * in, costs no dependency, and answers every spelling the six revisions
+   * fought over PLUS three nobody had raised: a merge key, a list form and a
+   * scalar form. Those three are the point — they were never going to be
+   * reached by a seventh regex, because the problem was not which regex.
    *
-   * The refusal is still the load-bearing half. Structural or not, this is
-   * narrower than YAML, so an empty reading reports `TRIGGERS_UNMEASURED`
-   * rather than passing — the same lesson as AC-26 one level up: state what
-   * you can measure and refuse outside it, instead of enumerating failures.
+   * The refusal stays and is still load-bearing. It is now also the ONLY way
+   * an empty reading happens, since the parser has no spellings it cannot
+   * see: `[]` means the source did not parse or declares no `on`, and either
+   * is UNMEASURED rather than clean.
    */
   test("AC-27: every YAML spelling of a trigger is read, and an unreadable block refuses", () => {
     const onAt = live.indexOf("\non:");
@@ -609,6 +608,16 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
       ["block style, four spaces", "\non:\n    pull_request_target:\n"],
       ["flow style", "\non: {pull_request_target: }\n"],
       ["with a nested body under it", "\non:\n  pull_request_target:\n    types: [opened]\n"],
+      // The three the regexes could never have reached. The merge key is
+      // round 13's finding; the list and scalar forms nobody raised, and
+      // they are here because the parser gets them for free and a seventh
+      // regex would not have.
+      [
+        "introduced by a YAML merge key",
+        "\nx: &a\n  pull_request_target:\n    types: [opened]\non:\n  <<: *a\n  pull_request:\n",
+      ],
+      ["as a list item", "\non: [workflow_dispatch, pull_request_target]\n"],
+      ["as a bare scalar", "\non: pull_request_target\n"],
     ] as const) {
       expect(
         kinds(withOn(block)),
@@ -622,7 +631,7 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     // while believing the live file declares seven triggers, five of which
     // are fields of an inputs schema.
     expect(
-      triggerNames(reviewWorkflowRegions(live).triggerBlock),
+      triggerNames(live),
       "the live file declares exactly two triggers — anything else means nested keys are " +
         "being counted, which is how `inputs`, `pr` and `description` became triggers",
     ).toEqual(["workflow_dispatch", "pull_request"]);
@@ -638,11 +647,11 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
 
     // And the half that covers the spellings nobody has thought of: a block
     // this file cannot read is UNMEASURED, never clean.
-    const unreadable = kinds(withOn("\non: !!something-nobody-anticipated\n"));
+    const unreadable = kinds(withOn("\non:\n  - [ unbalanced\n"));
     expect(
       unreadable,
       "an `on:` block yielding no trigger names must REFUSE. Without this, every future " +
-        "YAML spelling `triggerNames` does not cover is a silent pass — which is exactly how " +
+        "source `triggerNames` cannot parse is a silent pass — which is exactly how " +
         "the two spellings above got through.",
     ).toContain("TRIGGERS_UNMEASURED");
   });
