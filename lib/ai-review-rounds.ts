@@ -715,9 +715,6 @@ export function carryForward(
  * not.
  */
 
-/** The name of the state where the thread list could not be read at all. */
-export const CARRY_THREADS_UNMEASURED = "CARRY_THREADS_UNMEASURED";
-
 /** One review thread, reduced to the two facts the decision needs. */
 export interface CarryThread {
   /** The finding key the thread was posted under, per `threadKeyFrom`. */

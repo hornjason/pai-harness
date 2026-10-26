@@ -68,6 +68,15 @@ export function threadReading(
   if (raw === null || raw === undefined) return { status: "UNMEASURED", reason };
   const threads: { key: string; isResolved: boolean }[] = [];
   for (const t of raw) {
+    // A NULL NODE IS A THREAD, NOT A CRASH. A GraphQL connection returns a
+    // null node for an entry the token cannot see — a thread on a deleted
+    // file, or one hidden by a permission — and `t.body` on it throws a
+    // TypeError straight past this function's callers. That is the one
+    // failure mode this module is built to not have: an undecidable thread
+    // is dropped, which carries its finding, and the whole point is that the
+    // reading degrades rather than exploding. Dropping is also right on the
+    // merits — a node nobody can read names no finding and answers none.
+    if (t === null || typeof t !== "object") continue;
     const key = threadKeyFrom(t.body);
     if (key === null) continue;
     threads.push({ key, isResolved: t.isResolved === true });

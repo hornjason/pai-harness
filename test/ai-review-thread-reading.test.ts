@@ -90,6 +90,28 @@ describe("reading a pull request's review threads", () => {
     }
   });
 
+  test("TR-7: a NULL node is dropped, and does not throw past the caller", () => {
+    // Raised on #1620. A GraphQL connection returns a null node for an entry
+    // the token cannot see — a thread on a deleted file, one hidden by a
+    // permission — and `t.body` on it throws a TypeError straight past this
+    // function. That is the one failure mode the module is built to not have:
+    // every undecidable thread degrades to a drop, which CARRIES its finding.
+    //
+    // Asserted as a non-throw AND on the surviving element, because a
+    // `toThrow`-free call that silently returned UNMEASURED would also pass a
+    // bare "does not throw".
+    const raw = [null, { isResolved: true, body: keyed(KEY) }, undefined, 7, "x"] as never;
+    let captured: ReturnType<typeof threadReading> | undefined;
+    expect(() => {
+      captured = threadReading(raw, "unused");
+    }, "a null node must not throw past threadReading").not.toThrow();
+    // Bound to a const so the discriminated union narrows — a `!` on a `let`
+    // does not, and the first draft of this case failed typecheck on it.
+    const r = captured as ReturnType<typeof threadReading>;
+    expect(r.status, "and it must still be a reading, not a refusal").toBe("MEASURED");
+    expect(r.status === "MEASURED" ? r.threads : null).toEqual([{ key: KEY, isResolved: true }]);
+  });
+
   test("TR-6: end to end — the reading drives the carry decision", () => {
     const finding: ReviewFinding = { severity: "high", file: "lib/a.ts", summary: "a is wrong" };
     const keyFor = () => KEY;

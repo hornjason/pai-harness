@@ -42,7 +42,6 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  CARRY_THREADS_UNMEASURED,
   carryForwardFromThreads,
   type CarriedFinding,
   type ReviewFinding,
@@ -86,10 +85,12 @@ describe("carry-forward reads the thread, not the line", () => {
     );
     expect(out.carried, "a reading that could not be taken answers nothing").toEqual([A, B]);
     expect(out.unmeasured).toBe("the thread list could not be read");
-    expect(
-      CARRY_THREADS_UNMEASURED,
-      "the state has a name, so a caller can report it rather than printing zero",
-    ).toBeTruthy();
+    // There was a third assertion here — `expect(CARRY_THREADS_UNMEASURED)
+    // .toBeTruthy()` over an exported constant nothing read. It passed for any
+    // non-empty string and no mutation of the decider could redden it: a flag
+    // with no reader, asserted vacuously. The constant is deleted rather than
+    // wired in, because `reason` already carries what it was meant to name and
+    // a second spelling of one state is two deciders waiting to disagree.
   });
 
   test("TC-4: a key no thread holds carries, and does not read as answered", () => {
