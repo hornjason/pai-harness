@@ -709,10 +709,49 @@ arriving inside the section.
 | **5** instruments | Each of CRC-M6's four buckets non-zero, each traced to a **human-authored** disposition | a bucket incremented by `lib/signal-phrases.ts` matching agent boilerplate. "by design" in a generated comment is not a disposition |
 | **6** release and detection | — none of these moves rounds-to-pass; they exit on their own criteria | |
 
+#### Work in flight
+
+Which pull requests are serving this spec right now, and which criteria each
+one is pointed at. **This is the cross-reference in the spec→code direction**:
+open the spec, read this table, and you have the open branches. The reverse
+direction is the PR body, which must name the criteria it serves.
+
+**No branch column.** A branch name is deleted when the pull request merges,
+so a column of them is a column of citations that rot on the one event this
+table is meant to survive. The number is the durable identifier and it
+resolves to the branch in one click.
+
+**Naming a criterion here is not ticking it.** A row says what a branch is
+aimed at, which is a statement of intent and nothing more — the box is ticked
+by `scripts/sync-sc-status.ts` when a test claims the id, and a phase is
+called done only in *Readings taken* below, on an observation. Three different
+claims, deliberately kept in three places, and the reason is in that section.
+
+| PR | Phase / increment | Criteria it is pointed at | State |
+|---|---|---|---|
+| #1614 | prerequisite — the reviewer has to run on a pull request at all before any phase can be read off one | CRC-F2, CRC-N1 | open; carries `ai-review-override`, so it merges by hand |
+| #1617 | records Phase 0's exit, and this table | CRC-C2, CRC-C3, CRC-B8 | open |
+| — | Increment 1 — the suppression gate and carry-forward read the review-thread endpoint and GraphQL `isResolved`, and the ledger comment goes | CRC-N4, CRC-B5 | not started; **Phase 1 depends on it** |
+| — | Increment 2 — a verifier invocation writes a ballot, three invocations with per-verifier directories | CRC-B4, CRC-B3 | blocked on the ordering defect below |
+
+**A row with no pull request is work this spec says is next and nobody has
+claimed.** That is the state worth seeing, and it is the one a tracker of
+merged work cannot show: `bun bin/rungate.ts audit-specs` reports 46 of this
+spec's 56 criteria unmatched and has no way to say which of them anybody is
+moving. Every row here, with or without a number, names criteria from the list
+below, and `test/code-review-convergence-spec.test.ts` fails on an id this
+spec does not declare — so a row cannot point at a criterion that does not
+exist, which is the cheapest way for a traceability table to go quietly wrong.
+
+**When a pull request merges, its row moves to *Readings taken* or is
+deleted.** A merged branch sitting here is the same defect as a stale
+citation: it reads as current work and is not.
+
 #### Readings taken
 
-The table above says what to observe. This one says what WAS observed, and it
-is the only place a phase may be called done.
+*Exit conditions* says what to observe and *Work in flight* says who is going
+to observe it. This table says what WAS observed, and it is the only place a
+phase may be called done.
 
 **Why it is a second table and not a column.** `bun bin/rungate.ts
 audit-specs` already reports this spec's criteria — 10 ticked of 56 at the
@@ -722,20 +761,32 @@ It is a real tracker and it is not this one: it reports whether a criterion is
 request** that no unit test can name. Both are needed and conflating them is
 the error the section above this one exists to prevent.
 
-An `EXITED` row must carry a pull request, the head it was read at, and the
-observation. `test/code-review-convergence-spec.test.ts` enforces that: a row
-claiming `EXITED` without all three fails the suite, which is what stops this
-table becoming a place to assert progress.
+An `EXITED` row must carry a pull request, the head it was read at, the
+criteria the reading feeds, and the observation.
+`test/code-review-convergence-spec.test.ts` enforces all four: a row claiming
+`EXITED` without them fails the suite, which is what stops this table becoming
+a place to assert progress. The criteria column is the **PR→spec** direction
+of the cross-reference — given a merged branch, which part of this document it
+moved.
 
-| Phase | Verdict | PR | Head | What was observed |
-|---|---|---|---|---|
-| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | Every required context SUCCESS (`test`, `ai-review`, `gates`, four shards), `mergeable: MERGEABLE`, and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else |
-| **1** | PENDING | — | — | — |
-| **2** | UNMEASURED — unreachable, see below | — | — | — |
-| **3** | PENDING | — | — | — |
-| **4** | PENDING | — | — | — |
-| **5** | PENDING | — | — | — |
-| **6** | PENDING | — | — | — |
+| Phase | Verdict | PR | Head | Criteria evidenced | What was observed |
+|---|---|---|---|---|---|
+| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Every required context SUCCESS (`test`, `ai-review`, `gates`, four shards), `mergeable: MERGEABLE`, and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second, independent draw the same day on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6`: nine required contexts SUCCESS and exactly one unresolved thread, which carried **no finding at all** — an informational note — and resolving it alone moved `BLOCKED` to `UNSTABLE` on an unchanged head |
+| **1** | PENDING | — | — | — | — |
+| **2** | UNMEASURED — unreachable, see below | — | — | — | — |
+| **3** | PENDING | — | — | — | — |
+| **4** | PENDING | — | — | — | — |
+| **5** | PENDING | — | — | — | — |
+| **6** | PENDING | — | — | — | — |
+
+**Four criteria named, none of them ticked, and that is the point.** CRC-C2
+(*a pull request cannot merge while a finding is open*), CRC-C3 (*a false
+positive clears by closing the thread with a reason*) and CRC-B8 (*every
+finding gets answered*) were each exercised twice on 2026-10-26 — and twice is
+two draws, not a population. CRC-N4's reading is the 13-threads-for-3-findings
+count below. Ticking any of them on this evidence is the error CRC-A4's own
+promotion condition exists to prevent, so the column records what the reading
+feeds and the boxes stay open.
 
 **What Phase 0's reading cost, and why it was nearly missed.** It was taken on
 a pull request opened for something else, and the first attempt at this same
