@@ -837,6 +837,112 @@ export function findingPathScope(
 }
 
 /**
+ * One inline review comment, as the REST API wants it minus the parts only
+ * the caller knows (`commit_id`, the pull request number, the token).
+ *
+ * `line` is `null` when the finding named no line this reader could use. That
+ * is a FILE-LEVEL comment — `POST /pulls/{n}/comments` documents `line` as
+ * "Required unless using subject_type:file" — and not a finding to drop.
+ */
+export interface AiReviewThreadRequest {
+  /** Repository-relative, in the spelling the finding wrote. */
+  path: string;
+  line: number | null;
+  body: string;
+}
+
+/**
+ * The comments a reading should become — the whole of the decision, in one
+ * binding, with no network in it.
+ *
+ * Measured 2026-10-25 across every merged pull request on the consumer that
+ * runs this: zero review threads, ever. The review's output has only ever
+ * been a GitHub Actions annotation, which lives as long as the run log and
+ * is not something `required_conversation_resolution` can read. So a repo
+ * that switches that protection on gets a gate with no producer — satisfied
+ * by construction, because nothing it governs is ever created.
+ *
+ * Three decisions are worth stating, because each has a cheaper wrong answer:
+ *
+ * **`unlocatableReported` is subtracted, and `null` subtracts nothing.** A
+ * finding naming a file the pull request does not touch has no line in this
+ * diff to hang off, so the API would refuse it. `null` is the scope check not
+ * having run — see `AiReviewFindingsReading.unlocatableReported` — and a
+ * reading that could not locate anything must not be read as one that located
+ * everything. Membership is by IDENTITY, not by a key rebuilt from the
+ * finding's fields: the field set is caller-supplied and two findings can
+ * share every value in it, and `unlocatableReported` is already a subset of
+ * `reported` by reference.
+ *
+ * **`normaliseRepoPath` decides whether a path is readable and never supplies
+ * the value.** It lowercases, deliberately, because its job is to make two
+ * spellings of one path compare equal. The API's job is the opposite: `path`
+ * is matched against the diff exactly and a case difference is a 422. Those
+ * two requirements fit in one function only if you never notice they are
+ * different.
+ *
+ * **An unreadable line demotes rather than drops.** Being in the changed set
+ * makes a finding locatable to a FILE; it does not prove the line sits inside
+ * a hunk, which is a separate 422 the caller has to be able to fall back
+ * from. Dropping here would silently lose findings whose only defect is that
+ * the reviewer wrote no line number.
+ */
+export function reviewThreadRequests(
+  reading: AiReviewFindingsReading,
+): AiReviewThreadRequest[] {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  if (reading.reported === null) return [];
+  const unlocatable = new Set(reading.unlocatableReported ?? []);
+
+  const requests: AiReviewThreadRequest[] = [];
+  for (const item of reading.reported) {
+    if (unlocatable.has(item)) continue;
+    if (typeof item !== "object" || item === null) continue;
+    const finding = item as Record<string, unknown>;
+
+    const raw = finding[f.file];
+    // Readability is asked of the normalised spelling; the answer is carried
+    // by the raw one. A `:line` suffix is the one edit applied to it, because
+    // `src/a.ts:88` is not a path the API can match and the number in it is
+    // the only line the finding gave.
+    if (normaliseRepoPath(raw) === null) continue;
+    const suffixed = String(raw).trim().replace(/\\/g, "/").match(/^(.*?):(\d+)(?::\d+)?$/);
+    const path = suffixed ? suffixed[1]! : String(raw).trim().replace(/\\/g, "/");
+
+    const declared = finding[f.line];
+    const line =
+      typeof declared === "number" && Number.isInteger(declared) && declared > 0
+        ? declared
+        : suffixed
+          ? Number(suffixed[2])
+          : null;
+
+    requests.push({ path, line, body: threadBody(finding) });
+  }
+  return requests;
+}
+
+/**
+ * What one comment says.
+ *
+ * The failure scenario is carried whenever the finding wrote one. It is the
+ * half a reader acts on — a summary alone is a label — and the annotation
+ * path has never had room for it, which is part of why the annotations were
+ * worth so little.
+ */
+function threadBody(finding: Record<string, unknown>): string {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const severity = finding[f.severity] !== undefined ? String(finding[f.severity]) : null;
+  const summary =
+    finding[f.summary] !== undefined ? String(finding[f.summary]) : "(no summary recorded)";
+  const scenario =
+    finding[f.failureScenario] !== undefined ? String(finding[f.failureScenario]) : null;
+
+  const head = severity === null ? summary : `**${severity}** — ${summary}`;
+  return scenario === null ? head : `${head}\n\n${scenario}`;
+}
+
+/**
  * CRC-B7's tag for one finding — `Important`, `Nit` or `Pre-existing`.
  *
  * A COMPOSITION of the two deciders that already exist, and not a third

@@ -3103,6 +3103,141 @@ export const AI_REVIEW_PERSIST_STEP_ID = "ai-review-persist";
 export const AI_REVIEW_PERSIST_STEP_NAME = "Persist this round's findings to the pull request";
 
 /**
+ * The step that puts the findings ON THE DIFF, as review threads (#1612).
+ *
+ * ## Why this is not what the persist step already does
+ *
+ * The persist step upserts the findings LEDGER, and a ledger is an issue
+ * comment: `POST /repos/{o}/{r}/issues/{n}/comments`. A review thread comes
+ * from a different endpoint — `POST /repos/{o}/{r}/pulls/{n}/comments` — and
+ * the difference is not presentational. `required_conversation_resolution`
+ * reads review threads and nothing else, so a repository that switches that
+ * protection on while its reviewer posts issue comments has a required gate
+ * over a population that is always empty: green by construction, forever.
+ *
+ * Measured 2026-10-25 across every merged pull request on the first consumer
+ * to run this job: zero review threads. The reviewer's entire output has been
+ * a GitHub Actions annotation, which lives as long as the run log and cannot
+ * be replied to, resolved, or found again from the pull request.
+ *
+ * ## Position: BETWEEN the reviewer and the adjudicator
+ *
+ * The same slot the persist step occupies, for the same reason stated there.
+ * The payload exists by here, and the adjudicator — which exits non-zero on a
+ * blocking finding — has not run yet. So this step needs no `if:`, which
+ * matters because `aiReviewAuthScript` in `lib/conformity.ts` refuses an
+ * `if:` on any step in this job for every consumer: a step skipped by a
+ * condition reports `skipped`, and a skipped required check can be configured
+ * to count as satisfied.
+ *
+ * Putting it AFTER the adjudicator would need exactly that forbidden `if:`,
+ * and would post comments only on reviews that found nothing.
+ *
+ * ## It does not decide the pull request's fate
+ *
+ * The adjudicator does. This step refuses only when it HAD comments to post
+ * and could not post them — its own job failing, which is a different fact
+ * from a finding. A fork pull request, whose token GitHub downgrades to
+ * read-only whatever this workflow declares, degrades with a warning instead:
+ * the annotation still carries the review, and reddening every fork for
+ * something a contributor cannot fix would teach everyone to ignore the red.
+ */
+export const AI_REVIEW_THREADS_STEP_ID = "ai-review-threads";
+
+export const AI_REVIEW_THREADS_STEP_NAME = "Post this round's findings onto the diff";
+
+/** The registered CLI name. One declaration, read by the generator and the tests. */
+export const AI_REVIEW_THREADS_COMMAND = "ai-review-threads";
+
+export const AI_REVIEW_THREADS_PR_VAR = "AI_REVIEW_THREADS_PR";
+export const AI_REVIEW_THREADS_REPO_VAR = "AI_REVIEW_THREADS_REPO";
+export const AI_REVIEW_THREADS_SHA_VAR = "AI_REVIEW_THREADS_SHA";
+export const AI_REVIEW_THREADS_TOKEN_VAR = "AI_REVIEW_THREADS_TOKEN";
+
+/**
+ * The script the threads step runs.
+ *
+ * Everything it decides, it decides in the shell and not in an `if:`, for the
+ * reason the step id documents. Two of those decisions are worth naming:
+ *
+ * **No pull request means nothing to post, and that is not a failure.** A
+ * `merge_group` run carries no `github.event.pull_request`, so the variable
+ * arrives empty. The same reading the ledger step takes, rather than a second
+ * `github.event_name` test, so there is one decider.
+ *
+ * **An absent payload is UNMEASURED and exits 0.** A review that wrote
+ * nothing has not found nothing. The adjudicator is the step that turns that
+ * into a verdict; this one says what it saw and gets out of the way, because
+ * two steps refusing over the same reading are a pair of deciders no
+ * behavioural test can tell apart.
+ *
+ * **A pin that predates the command is UNMEASURED, and is told apart from a
+ * failure.** The generated job runs `bunx rungate@<version>`, a PUBLISHED
+ * version, and this YAML reaches every consumer the moment it is merged —
+ * while the npm release happens later, from a tag. So there is a window in
+ * which the live workflow asks a published package for a subcommand it does
+ * not have. `bin/rungate.ts` answers that with exit 1 and the exact string
+ * `unknown command "<name>"`, which is the one signal that separates *the
+ * release has not landed yet* from *the producer is broken* — and they are
+ * otherwise the same non-zero exit. Without this branch, merging this file
+ * reds every pull request in every consumer until a release ships.
+ *
+ * The capture consumes its own status with a top-level `|| threads_code=$?`,
+ * which is #1110's lesson and the form the rest of this file uses. A
+ * generated `run:` block executes under `bash -e`, so an assignment whose
+ * command substitution fails aborts the step before the next line — and the
+ * branch above would be dead code that reads as live.
+ *
+ * `set +e` would also work and is the wrong answer twice over: AC-2 in
+ * `test/ai-review-runner-shell-parity.test.ts` is textual and cannot see it,
+ * so the guard against this exact defect would go quiet; and an `-e`
+ * suspension at a distance is the kind of line a later edit deletes without
+ * knowing what depended on it. The initialiser above the assignment is what
+ * keeps `set -u` happy on the success path.
+ */
+export function buildThreadsScript(version: string): string {
+  const poster =
+    `bunx ${AI_REVIEW_ADJUDICATOR_PACKAGE}@${version} ${AI_REVIEW_THREADS_COMMAND}`;
+  // Matched with `grep -qF` inside SINGLE quotes, where a double quote is
+  // literal and needs no escaping. The quotes are part of the signal:
+  // `bin/rungate.ts` prints the name quoted, and an unquoted match would
+  // also hit a findings summary that happened to mention the command.
+  const skew = `unknown command "${AI_REVIEW_THREADS_COMMAND}"`;
+  return [
+    `set -uo pipefail`,
+    ``,
+    `if [ -z "\${${AI_REVIEW_THREADS_PR_VAR}:-}" ]; then`,
+    `  echo "${AI_REVIEW_THREADS_COMMAND}: no pull request on this event (merge_group), nothing to post"`,
+    `  exit 0`,
+    `fi`,
+    ``,
+    `if [ ! -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]; then`,
+    `  echo "::warning title=AI review threads::UNMEASURED - no findings payload was written, so no review threads were posted. This is not a review that found nothing."`,
+    `  exit 0`,
+    `fi`,
+    ``,
+    `# \`run:\` is \`bash -e\`, so the assignment consumes its own status with a`,
+    `# top-level \`||\` — see buildThreadsScript. Without it the step aborts`,
+    `# here and the version-skew branch below never runs.`,
+    `threads_code=0`,
+    `threads_out="$(GITHUB_TOKEN="\${${AI_REVIEW_THREADS_TOKEN_VAR}}" ${poster} \\`,
+    `  "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" \\`,
+    `  --repo "\${${AI_REVIEW_THREADS_REPO_VAR}}" \\`,
+    `  --pr "\${${AI_REVIEW_THREADS_PR_VAR}}" \\`,
+    `  --commit "\${${AI_REVIEW_THREADS_SHA_VAR}}" \\`,
+    `  --changed-files "\${${AI_REVIEW_CHANGED_FILES_PATH_VAR}}" 2>&1)" || threads_code=$?`,
+    `printf '%s\\n' "$threads_out"`,
+    ``,
+    `if [ "$threads_code" -ne 0 ] && printf '%s' "$threads_out" | grep -qF '${skew}'; then`,
+    `  echo "::warning title=AI review threads::UNMEASURED - rungate@${version} does not carry the ${AI_REVIEW_THREADS_COMMAND} command yet, so no review threads were posted. This workflow is ahead of the published package; it resolves itself on the next release."`,
+    `  exit 0`,
+    `fi`,
+    ``,
+    `exit "$threads_code"`,
+  ].join("\n");
+}
+
+/**
  * ## The witness on the UNMEASURED route (#1307)
  *
  * A run that writes no findings payload leaves no trace of the DECISION not
@@ -11023,6 +11158,41 @@ export function buildReviewRunStep(
     ...buildPersistScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
+  // #1612. BESIDE the persist step and in the same slot, for the same
+  // reason — see `AI_REVIEW_THREADS_STEP_ID`. The reviewer has written its
+  // payload by here and the adjudicator has not run, so this needs no `if:`,
+  // which `lib/conformity.ts` would refuse.
+  //
+  // It posts to a DIFFERENT endpoint from the persist step beside it:
+  // `pulls/{n}/comments` opens a review thread, `issues/{n}/comments` does
+  // not, and only the former is a thing `required_conversation_resolution`
+  // can read.
+  const threads = [
+    `- name: ${AI_REVIEW_THREADS_STEP_NAME}`,
+    `  id: ${AI_REVIEW_THREADS_STEP_ID}`,
+    `  env:`,
+    `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
+    // The prepare step's directory, not the changed-files step's output —
+    // the writer and the reader then agree by construction rather than
+    // through a step output the writer might not have reached. Same binding
+    // the adjudicator takes, and restated rather than inherited because a
+    // step's `env:` does not carry to a later step (#826).
+    `    ${AI_REVIEW_CHANGED_FILES_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_CHANGED_FILES_BASENAME}`,
+    // Empty on a merge_group run, which is how the script knows there is no
+    // pull request to comment on. Read from the event rather than from a
+    // second `github.event_name` test, so there is one decider.
+    `    ${AI_REVIEW_THREADS_PR_VAR}: \${{ github.event.pull_request.number }}`,
+    // The HEAD sha, because `commit_id` anchors a review comment and a
+    // comment anchored to the wrong commit is 422 or, worse, lands outdated.
+    // Not `GITHUB_SHA`: on a `pull_request` event that is the merge ref, not
+    // the head the diff is against.
+    `    ${AI_REVIEW_THREADS_SHA_VAR}: \${{ github.event.pull_request.head.sha }}`,
+    `    ${AI_REVIEW_THREADS_REPO_VAR}: \${{ github.repository }}`,
+    `    ${AI_REVIEW_THREADS_TOKEN_VAR}: \${{ secrets.GITHUB_TOKEN }}`,
+    `  run: |`,
+    ...buildThreadsScript(version).trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
+
   // #1242. The consequence of a waiver, and LAST for that reason — see
   // `AI_REVIEW_DISARM_STEP_ID`. It carries no `if:`, like every other step in
   // this job: the waived marker is resolved inside `run:` so the step reports
@@ -11077,6 +11247,11 @@ export function buildReviewRunStep(
     indented(baseline, indent) +
     indented(review, indent) +
     indented(persist, indent) +
+    // #1612. After the ledger and before the report, for the reason
+    // `AI_REVIEW_THREADS_STEP_ID` gives: the payload exists, the adjudicator
+    // has not refused yet, and a step placed after the refusal would need an
+    // `if:` the conformity suite forbids.
+    indented(threads, indent) +
     // #1307. Both BEFORE the report step — see `stageExecution` for why the
     // obvious ordering is not available.
     indented(stageExecution, indent) +

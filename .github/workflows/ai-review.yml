@@ -1,4 +1,4 @@
-# generated-sha: 5c7bab2ac4d2d74d
+# generated-sha: 7514011135fc663d
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -3210,6 +3210,46 @@ jobs:
           fi
 
           exit 0
+      - name: Post this round's findings onto the diff
+        id: ai-review-threads
+        env:
+          AI_REVIEW_FINDINGS_PATH: ${{ steps.ai-review-prepare.outputs.path }}
+          AI_REVIEW_CHANGED_FILES_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-changed-files.txt
+          AI_REVIEW_THREADS_PR: ${{ github.event.pull_request.number }}
+          AI_REVIEW_THREADS_SHA: ${{ github.event.pull_request.head.sha }}
+          AI_REVIEW_THREADS_REPO: ${{ github.repository }}
+          AI_REVIEW_THREADS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${AI_REVIEW_THREADS_PR:-}" ]; then
+            echo "ai-review-threads: no pull request on this event (merge_group), nothing to post"
+            exit 0
+          fi
+
+          if [ ! -s "${AI_REVIEW_FINDINGS_PATH:-}" ]; then
+            echo "::warning title=AI review threads::UNMEASURED - no findings payload was written, so no review threads were posted. This is not a review that found nothing."
+            exit 0
+          fi
+
+          # `run:` is `bash -e`, so the assignment consumes its own status with a
+          # top-level `||` — see buildThreadsScript. Without it the step aborts
+          # here and the version-skew branch below never runs.
+          threads_code=0
+          threads_out="$(GITHUB_TOKEN="${AI_REVIEW_THREADS_TOKEN}" bunx rungate@0.8.6 ai-review-threads \
+            "${AI_REVIEW_FINDINGS_PATH}" \
+            --repo "${AI_REVIEW_THREADS_REPO}" \
+            --pr "${AI_REVIEW_THREADS_PR}" \
+            --commit "${AI_REVIEW_THREADS_SHA}" \
+            --changed-files "${AI_REVIEW_CHANGED_FILES_PATH}" 2>&1)" || threads_code=$?
+          printf '%s\n' "$threads_out"
+
+          if [ "$threads_code" -ne 0 ] && printf '%s' "$threads_out" | grep -qF 'unknown command "ai-review-threads"'; then
+            echo "::warning title=AI review threads::UNMEASURED - rungate@0.8.6 does not carry the ai-review-threads command yet, so no review threads were posted. This workflow is ahead of the published package; it resolves itself on the next release."
+            exit 0
+          fi
+
+          exit "$threads_code"
       - name: Stage the reviewer's execution file when no findings payload was written
         id: ai-review-execution-stage
         env:

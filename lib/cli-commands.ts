@@ -166,6 +166,27 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
   // project tree at all — it talks to the GitHub API about a repository it
   // is told the name of, so an appended `--project-root <cwd>` would be
   // refused by `parseArgs` as an unknown argument.
+  // Registered for the same reachability reason as the two around it
+  // (#1612): the generated `ai-review` job runs in a consumer's repository,
+  // which holds no copy of rungate's sources at any path a workflow could
+  // name. This registry is that path.
+  //
+  // SEPARATE from `ai-review-findings` on purpose. That command exits
+  // non-zero on a blocking finding — so a poster sharing its entry point
+  // could never run on the review that actually found something, which is
+  // the only review worth posting.
+  //
+  // No `projectRootFlag`: the payload lives outside the checkout in
+  // `RUNNER_TEMP`, everything else is a flag, and an appended
+  // `--project-root <cwd>` would arrive as a second positional, which
+  // `parse` refuses by name rather than silently reading as the payload.
+  "ai-review-threads": {
+    script: "scripts/ai-review-threads.ts",
+    summary: "Post an AI review's findings onto the pull request's diff as review threads",
+    usage:
+      "rungate ai-review-threads <path-to-findings.json> --repo <owner/name> " +
+      "--pr <n> --commit <sha> [--changed-files <path>]",
+  },
   "record-ai-review-unmeasured": {
     script: "scripts/record-ai-review-unmeasured.ts",
     summary: "Record WHICH kind of unmeasured each unmeasured AI-review round was",

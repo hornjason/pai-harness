@@ -342,6 +342,13 @@ describe("#1356 / CF: the generated job supplies the changed-file list", () => {
     // with no list is worse than `full` — and `ai-review-action` needs it
     // because the prompt now tells the reviewer to read it.
     //
+    // FIVE as of #1612. `ai-review-threads` is the fifth: it posts the
+    // findings onto the diff as review comments, and the list is what holds
+    // back a finding naming a file this pull request does not touch. Without
+    // it the poster sends that comment, the API refuses it with a 422, and
+    // the reading is "the producer is broken" rather than "this finding was
+    // never anchorable".
+    //
     // What must not happen is a second SPELLING, and that is the assertion
     // above: the census over the generator's source holds the literal at its
     // own declaration and nothing else. This count is the weaker claim and
@@ -354,14 +361,15 @@ describe("#1356 / CF: the generated job supplies the changed-file list", () => {
     ).toBe(1);
     expect(
       JOB.split(AI_REVIEW_CHANGED_FILES_BASENAME).length - 1,
-      "the env bindings for the list no longer number four. The consumers are " +
+      "the env bindings for the list no longer number five. The consumers are " +
         "`ai-review-changed-files` (writes it), `ai-review-carry` (decides " +
         "`review_scope` from it, #1600), `ai-review-action` (the prompt reads " +
-        "it, #1600) and `ai-review-run` (reports on it). If you added or " +
+        "it, #1600), `ai-review-run` (reports on it) and `ai-review-threads` " +
+        "(holds back a finding it cannot anchor, #1612). If you added or " +
         "removed a consumer, update this number and name it in the comment " +
         "above; if you did not, a binding has gone missing and a step is " +
         "about to read a path nothing set.",
-    ).toBe(4);
+    ).toBe(5);
     expect(AI_REVIEW_CHANGED_FILES_STEP_NAME.length).toBeGreaterThan(0);
   });
 
