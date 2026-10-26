@@ -112,10 +112,44 @@ const ALLOWLIST =
   "mcp__github__add_comment_to_pending_review," +
   'mcp__github__submit_pending_pull_request_review"';
 
-/** The allowlist both green runs on #732 had: one tool, which this trigger
- * cannot provide. */
+/** The allowlist both green runs on #732 had: one tool, which an automation
+ * trigger cannot provide. */
 const INLINE_COMMENT_ALLOWLIST =
   '--allowedTools "mcp__github_inline_comment__create_inline_comment"';
+
+/**
+ * The trailing lines of the `on:` block, exactly: the `pull_request` trigger
+ * #631/#675 added and the blank line before `permissions:`. Removing it is how
+ * AC-4 and AC-11 reach a dispatch-only tree now that the live one is not.
+ *
+ * Spelled as the whole region rather than `"  pull_request:\n"` on purpose. The
+ * shorter needle also occurs inside the comment above it, and `mutateOnce`
+ * would abort — which is the helper working, but a confusing way to find out.
+ */
+const PULL_REQUEST_TRIGGER = "\n  pull_request:\n\npermissions:";
+
+/**
+ * The live workflow with its entity trigger taken away — `workflow_dispatch`
+ * and nothing else, which is what this file measured against before #631/#675.
+ *
+ * Two cases below are about a door that only exists on an automation-only
+ * trigger, so they need a tree that has one. Deriving it from `live` by a
+ * single mutation keeps them measuring the live allowlist and the live prompt;
+ * a second checked-in fixture would drift away from both and go green on a
+ * workflow nobody runs.
+ */
+function dispatchOnly(src: string): string {
+  const stripped = mutateOnce(src, PULL_REQUEST_TRIGGER, "\n\npermissions:");
+  // The premise, asserted rather than assumed: this really is automation-only
+  // now, and it really was not before. Without the second half the helper
+  // could silently become a no-op and both cases below would keep passing
+  // while measuring the wrong tree.
+  const triggersOf = (s: string) =>
+    [...reviewWorkflowRegions(s).triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm)].map(m => m[1]);
+  expect(triggersOf(stripped)).toEqual(["workflow_dispatch"]);
+  expect(triggersOf(src)).toContain("pull_request");
+  return stripped;
+}
 
 /**
  * The one step that RUNS the reading script, refusing on zero or two.
@@ -215,8 +249,86 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
    * `workflow_dispatch`.
    */
   test("AC-4: inlining the prompt while keeping create_inline_comment is still caught", () => {
-    const halfFix = mutateOnce(live, ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
+    const halfFix = mutateOnce(dispatchOnly(live), ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
     expect(kinds(halfFix)).toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+  });
+
+  /**
+   * The promotion #631/#675 made, as a reading rather than a claim: the live
+   * file's triggers are no longer automation-only, so the door AC-4 measures
+   * is one the live tree does not have.
+   *
+   * Worth its own case because it is the only thing standing between "the
+   * trigger moved" and AC-4 going green for the wrong reason — if `live` were
+   * somehow still dispatch-only, `dispatchOnly` would abort and AC-4 would
+   * fail, but nothing else here would say which direction the file moved in.
+   */
+  test("AC-17: the live workflow runs on pull_request, so the entity server exists", () => {
+    const triggers = [
+      ...reviewWorkflowRegions(live).triggerBlock.matchAll(/^\s{2}([a-z_]+):/gm),
+    ].map(m => m[1]);
+    expect(triggers).toContain("pull_request");
+    expect(triggers).toContain("workflow_dispatch");
+    // And the consequence, stated where a reader will see it: the allowlist
+    // may now legally grant the inline-comment tool. It still does not —
+    // AC-1 holds the live file at zero violations either way — but the reason
+    // is the enumeration argument in the workflow's own comment, not a server
+    // that cannot start.
+    const entityAllowed = mutateOnce(live, ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
+    expect(kinds(entityAllowed)).not.toContain("ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER");
+  });
+
+  /**
+   * The door the promotion opened, and the reason this case exists at all:
+   * the fork decision for `pull_request` moved into a JOB-level `if:`, and
+   * for one draft nothing in this file could see it. A guard nothing asserts
+   * is a guard the next edit deletes for free.
+   *
+   * The mutation is the deletion, performed. `FORK_GUARD_TERMS` is two
+   * strings and the check reports which one is missing, so removing the
+   * condition is caught by name rather than by a bare empty-list assertion.
+   */
+  test("AC-18: deleting the job's fork condition is caught, now the trigger is an entity one", () => {
+    const condition =
+      "    if: >-\n" +
+      "      github.event_name == 'workflow_dispatch' ||\n" +
+      "      github.event.pull_request.head.repo.full_name == github.repository\n";
+    const unguarded = mutateOnce(live, condition, "");
+    // The control, and the whole point of cutting the job header rather than
+    // searching the file: the header's prose about forks is still there, and
+    // a whole-document check would read it as the guard.
+    expect(unguarded).toContain("github.event.pull_request.head.repo.full_name");
+    expect(reviewToolAgreement(unguarded).map(v => v.kind)).toContain(
+      "ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD",
+    );
+    // …and the same deletion on a dispatch-only tree is NOT a violation. One
+    // variable differs between the pair — the trigger — so this measures the
+    // interaction rather than the deletion (#585).
+    expect(kinds(dispatchOnly(unguarded))).not.toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
+  });
+
+  /**
+   * `pull_request_target` is the trigger somebody reaches for when fork PRs
+   * skip and they want them reviewed. It is the one change to this file that
+   * trades the whole of #677 away in a single word: the base branch's
+   * workflow, a full write token, and the fork's code in the same job.
+   */
+  test("AC-19: swapping pull_request for pull_request_target is refused by name", () => {
+    const target = mutateOnce(live, "\n  pull_request:\n", "\n  pull_request_target:\n");
+    expect(kinds(target)).toContain("PULL_REQUEST_TARGET_TRIGGER");
+    // And it is refused REGARDLESS of the job's condition, which is the
+    // property that matters: the guard is still in place in the mutant above
+    // and the trigger is refused anyway. "Add a condition" is the repair for
+    // the other violation and it is wrong advice for this one — no condition
+    // makes this trigger safe for a job that hands a fork's diff to an agent
+    // holding a write token.
+    const targetUnguarded = mutateOnce(
+      target,
+      "      github.event.pull_request.head.repo.full_name == github.repository\n",
+      "",
+    );
+    expect(kinds(targetUnguarded)).toContain("PULL_REQUEST_TARGET_TRIGGER");
+    expect(kinds(targetUnguarded)).toContain("ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD");
   });
 
   test("AC-5: a prompt naming a denied tool is caught", () => {
@@ -325,7 +437,7 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
    * the allowlist fixed; AC-4 varies the allowlist and holds the trigger fixed.
    */
   test("AC-11: the same allowlist under an entity trigger is NOT a violation", () => {
-    const dispatchTriggered = mutateOnce(live, ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
+    const dispatchTriggered = mutateOnce(dispatchOnly(live), ALLOWLIST, INLINE_COMMENT_ALLOWLIST);
     const entityTriggered = mutateOnce(
       dispatchTriggered,
       "\non:\n  workflow_dispatch:",

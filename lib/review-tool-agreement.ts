@@ -60,6 +60,8 @@ export type ReviewToolViolationKind =
   | "PROMPT_NAMES_A_DENIED_TOOL"
   | "PROMPT_NAMES_AN_UNGRANTED_TOOL"
   | "ALLOWED_TOOL_CANNOT_EXIST_ON_THIS_TRIGGER"
+  | "ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD"
+  | "PULL_REQUEST_TARGET_TRIGGER"
   | "NO_POSTING_TOOL_IS_ALLOWED"
   | "NO_SUBJECT_REACHES_THE_AGENT"
   | "MUTABLE_PLUGIN_MARKETPLACE"
@@ -98,6 +100,33 @@ export const AUTOMATION_ONLY_TRIGGERS = [
   "repository_dispatch",
   "schedule",
   "workflow_run",
+] as const;
+
+/**
+ * Triggers that fire on somebody else's pull request, so the job sees a diff
+ * written by a person who is not a collaborator (#631/#675).
+ *
+ * `pull_request_target` is here as a trigger to REFUSE, not one to guard. It
+ * runs the base branch's workflow definition with a full write token against
+ * the fork's code, which is this workflow's egress sink with the credential
+ * handed over on purpose. There is no condition that makes it safe for a job
+ * that runs an agent, so it gets its own violation rather than a guard.
+ */
+export const ENTITY_TRIGGERS = ["pull_request", "pull_request_target"] as const;
+
+/**
+ * The two expressions a job-level condition needs to compare before it can be
+ * said to refuse a fork. Spelled out so the check names what is missing rather
+ * than reporting that an `if:` "looks wrong".
+ *
+ * A text match, not an expression evaluator, and the limit is stated rather
+ * than hidden: this cannot tell `==` from `!=`. What it can tell — and what
+ * was actually missing — is a job that names neither side, which is every
+ * revision of this file before the trigger was promoted.
+ */
+export const FORK_GUARD_TERMS = [
+  "github.event.pull_request.head.repo.full_name",
+  "github.repository",
 ] as const;
 
 /**
@@ -261,11 +290,18 @@ function quotedListAfter(claudeArgs: string, flag: string): string[] | null {
  */
 export function reviewWorkflowRegions(source: string): {
   triggerBlock: string;
+  jobHeader: string;
   reviewStep: string;
   prompt: string;
   claudeArgs: string;
 } {
   const triggerBlock = structuralCut(source, "\non:", { endAnchor: "\npermissions:" });
+  // Everything the job declares ABOUT itself — `runs-on`, `timeout-minutes`,
+  // `if:` — and none of what it runs. Cut separately from the steps because a
+  // job-level condition is the only place the fork decision for an entity
+  // trigger can live, and searching the whole document for it would be
+  // satisfied by this file's own header discussing it.
+  const jobHeader = structuralCut(source, "\njobs:", { endAnchor: "\n    steps:" });
   const reviewStep = blockUnder(source, "- name: Review");
 
   // The prompt is a YAML block scalar: `prompt: |` and everything indented
@@ -279,7 +315,7 @@ export function reviewWorkflowRegions(source: string): {
 
   const claudeArgs = blockUnder(reviewStep, "claude_args:");
 
-  return { triggerBlock, reviewStep, prompt, claudeArgs };
+  return { triggerBlock, jobHeader, reviewStep, prompt, claudeArgs };
 }
 
 /**
@@ -289,7 +325,8 @@ export function reviewWorkflowRegions(source: string): {
  * cannot accidentally ask the question of the wrong slice.
  */
 export function reviewToolAgreement(source: string): ReviewToolViolation[] {
-  const { triggerBlock, reviewStep, prompt, claudeArgs } = reviewWorkflowRegions(source);
+  const { triggerBlock, jobHeader, reviewStep, prompt, claudeArgs } =
+    reviewWorkflowRegions(source);
 
   const allowed = quotedListAfter(claudeArgs, "allowedTools") ?? [];
   const denied = quotedListAfter(claudeArgs, "disallowedTools") ?? [];
@@ -352,6 +389,47 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
             `the action classifies as automation events, so the tool never exists`,
         });
       }
+    }
+  }
+
+  // 3b. The trigger promotion's own door (#631/#675). An entity trigger means
+  //     the job fires on pull requests opened by people who are not
+  //     collaborators, and on a public repository that is most of them. The
+  //     fork decision then has to exist somewhere a reader can point at.
+  //
+  //     Read from the JOB HEADER, never the document: every revision of
+  //     `claude-review.yml` discusses forks in its header at length, and a
+  //     whole-file search would be satisfied by the prose explaining why the
+  //     guard matters — `.claude/rules/checks-must-be-able-to-fail.md`,
+  //     "search the slice, not the document", which is the defect the
+  //     reviewer found in this very module on #746.
+  //
+  //     Silent on an automation-only workflow, which is why the pre-#732
+  //     fixture does not report it: a dispatch cannot be opened by a
+  //     stranger, and a guard against a case that cannot arise is one more
+  //     thing to keep true for nothing.
+  const entityTriggers = triggers.filter(t => (ENTITY_TRIGGERS as readonly string[]).includes(t));
+  if (triggers.includes("pull_request_target")) {
+    v.push({
+      kind: "PULL_REQUEST_TARGET_TRIGGER",
+      detail:
+        "the workflow triggers on pull_request_target, which runs this job with a WRITE token " +
+        "against a fork's code. For a job that hands a diff to an agent that is the egress sink " +
+        "this file's header describes, with the credential handed over deliberately — use " +
+        "pull_request, whose fork runs are read-only",
+    });
+  }
+  if (entityTriggers.length > 0) {
+    const missing = FORK_GUARD_TERMS.filter(term => !withoutComments(jobHeader).includes(term));
+    if (missing.length > 0) {
+      v.push({
+        kind: "ENTITY_TRIGGER_WITHOUT_A_FORK_GUARD",
+        detail:
+          `the workflow triggers on ${entityTriggers.join(", ")}, so it runs on pull requests ` +
+          `from forks, and the job declares no condition naming ${missing.join(" or ")}. A fork ` +
+          `run holds a read-only token and no id-token: write, so every step after auth fails — ` +
+          `and a job that fails on every fork pull request is a red check nobody can act on`,
+      });
     }
   }
 
