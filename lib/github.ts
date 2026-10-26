@@ -42,6 +42,31 @@ export interface GitHubClient {
       get: (params: { owner: string; repo: string; pull_number: number }) => Promise<{ data: any }>;
       update: (params: { owner: string; repo: string; pull_number: number; [key: string]: any }) => Promise<{ data: any }>;
       list: (params: { owner: string; repo: string; [key: string]: any }) => Promise<{ data: any[] }>;
+      /**
+       * One INLINE review comment, anchored to the diff (#1612).
+       *
+       * Not `issues.createComment`, which is the other endpoint and the one
+       * the findings ledger uses. The difference is not cosmetic: only a
+       * comment created here opens a review THREAD, and a review thread is
+       * the only thing `required_conversation_resolution` can read. A
+       * repository that turns that protection on while its reviewer posts
+       * issue comments has a required gate over an always-empty population.
+       *
+       * `line` is omitted and `subject_type: "file"` sent in its place when
+       * the finding could not be anchored to a line — the API documents
+       * `line` as "Required unless using subject_type:file", and answers 422
+       * for a line outside a diff hunk.
+       */
+      createReviewComment: (params: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+        body: string;
+        commit_id: string;
+        path: string;
+        line?: number;
+        subject_type?: "line" | "file";
+      }) => Promise<{ data: any }>;
     };
     repos: {
       /** Repository metadata. `owner.type` and `default_branch` are what PROTECT-1 reads (#909). */
