@@ -236,6 +236,12 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the remainder tally is recomput
   });
 
   test("the stated bullet count equals the bullets", () => {
+    // Guarded here too, not only in the control above. Each `test()` runs
+    // independently, so a `section` that failed to parse would reach `tally`
+    // as null and throw a bare TypeError rather than saying what went wrong
+    // (raised on #1619). The suite still goes red either way; this is about
+    // whether the next reader can tell WHY.
+    expect(section, "the '<N> bullets' paragraph was not found in the spec").not.toBeNull();
     const t = tally(section!);
     const stated = section!.match(/^\*\*(\d+) bullets/m);
     expect(stated, "the paragraph must open `**<N> bullets`").not.toBeNull();
@@ -247,6 +253,7 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the remainder tally is recomput
   });
 
   test("the stated id count equals the ids, and names the right non-leading ones", () => {
+    expect(section, "the '<N> bullets' paragraph was not found in the spec").not.toBeNull();
     const t = tally(section!);
     // Matched against COLLAPSED whitespace. The paragraph is hard-wrapped, so
     // a literal space in the pattern breaks the moment an edit rewraps the

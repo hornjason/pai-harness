@@ -502,6 +502,33 @@ not: it co-leads a bullet with CRC-E3, so 29 bullets carry 30 leading ids.
 Three quantities live in one sentence — bullets, leading ids, ids mentioned
 anywhere — and conflating any two of them is how it moved each time.
 
+**Round 5 then asked the right question about the rest of the document, and
+one of its two proposed answers is wrong.** It observed that this file
+hand-types dozens of other tallies — *272 (finding, later round) pairs*,
+*147 parseable ledgers*, *161 distinct rounds*, *31 review threads of which
+12 were one note* — none of them bound by anything, and offered two ways out:
+machine-verify them, or declare them exempt. **Machine-verifying them is not
+possible and would be wrong if it were.** The numbers fall into two classes
+and only one of them is a property of this document:
+
+| Class | Example | Can a test recompute it? | Rule |
+|---|---|---|---|
+| **Document-derived** | the bullet count, the id set, which criteria sit in which bucket | Yes — it is in the file | **Must be computed.** A hand-typed one is a defect |
+| **World-derived** | `15 ai-review runs`, `147 parseable ledgers`, `12 entries and truncated 5` | No | **Must carry its date and the command that took it** |
+
+A world-derived number re-measured gives a **different** answer, because the
+world moved — that is what makes it a measurement rather than a tally. Re-
+running `gh run list` against a branch next month and reddening the document
+when the count changed would be a check that fires on the truth. So the
+obligation on those is not verification but **re-takeability**: state when it
+was read and with what, so the next reader can take the reading again and see
+for themselves that it moved.
+
+All three drifts this pull request fixed were document-derived, and the one
+test now added covers that class where it is concentrated. The world-derived
+readings in this file are dated where they are stated and are not, and cannot
+be, bound by a test.
+
 - **CRC-A1** `missingEvidenceViolations` requires a runnable command per AC and `gates/workflow.test.ts` enforces it — but only inside a harness ship run, and `ship.mode` is `direct`. Dormant on the lane this project ships on.
 - **CRC-A2** Nothing makes a fresh-context subagent review the diff before the PR opens. The generated pre-push hook runs conformity tests, not a review.
 - **CRC-A3** `scripts/check-instruction-surface.ts` holds `CLAUDE.md` under a byte budget. Nothing checks it states stack, conventions, goals and non-goals.
