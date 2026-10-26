@@ -121,19 +121,28 @@ export const ENTITY_TRIGGERS = ["pull_request", "pull_request_target"] as const;
  *
  * A function and not a regex, because the question is structural and three
  * successive regexes got it wrong in three different ways (#1614, rounds
- * 10 and 11):
+ * 10 and 11).
  *
- *   /^\s{2}([a-z_]+):/gm     block style at EXACTLY two spaces. Every other
- *                            valid spelling read as `[]`, and `[]` made the
- *                            callers silent. `on: {pull_request_target: }`
- *                            passed — a WRITE token on a fork's pull request.
+ * THE TWO PATTERNS BELOW ARE DELETED. They appear nowhere else in this file
+ * — grep `TRIGGER_NAME` and you get this comment and nothing else. They are
+ * spelled out because a fix whose reasoning is gone gets undone, and the
+ * next person reaching for a regex here needs to see what happened to the
+ * last three. Round 12 read this very block as live code and re-raised a
+ * finding the commit it was reviewing had already fixed, which is its own
+ * small lesson: a dead pattern quoted verbatim is indistinguishable from a
+ * live one to anything that matches on text.
  *
- *   /^[ \t]+([a-z_]+):/gm    any indentation, which is any DEPTH. On the live
- *                            file this returned ["workflow_dispatch", "inputs",
- *                            "pr", "description", "required", "type",
- *                            "pull_request"] — every field of the
- *                            `workflow_dispatch.inputs` schema read as a
- *                            trigger.
+ *   DELETED  /^\s{2}([a-z_]+):/gm
+ *            Block style at EXACTLY two spaces. Every other valid spelling
+ *            read as `[]`, and `[]` made the callers silent.
+ *            `on: {pull_request_target: }` passed — a WRITE token on a
+ *            fork's pull request.
+ *
+ *   DELETED  /^[ \t]+([a-z_]+):/gm
+ *            Any indentation, which is any DEPTH. On the live file this
+ *            returned ["workflow_dispatch", "inputs", "pr", "description",
+ *            "required", "type", "pull_request"] — every field of the
+ *            `workflow_dispatch.inputs` schema read as a trigger.
  *
  * What separates a trigger from a nested field is not its spelling, it is
  * its DEPTH: a trigger is a key at the block's outermost indentation. So
