@@ -136,6 +136,7 @@ showed **~59%** of what the reviewer kept flagging was code present at its first
 - [ ] CRC-N3: **Flag the class of bug**, so the author fixes every instance rather than one line.
 - [ ] CRC-N4: **No repeats** of findings already posted.
 - [ ] CRC-N5: Review agents run **nightly over existing code**.
+- [ ] CRC-N6: **A fixed defect stays fixed.** A finding must not be re-raised from text that merely DESCRIBES it — a docblock quoting the code that was removed, or prose narrating what the bug used to be.
 
 Their result, which is our target: pass-after-one-round 65% → 78%; five-or-more rounds
 8.9% → 1.5%; mean reviews to pass 2.08 → 1.32.
@@ -480,8 +481,15 @@ deviate, so CRC-B8 counts with the remainder below and these two do not.
 
 ### Not done — the remainder, with what is there instead
 
-34 criteria, listed because the near-misses are the expensive ones: each has
-something in the tree that resembles it and is not it.
+**29 bullets, one per criterion that leads one**, listed because the
+near-misses are the expensive ones: each has something in the tree that
+resembles it and is not it. The unit is stated because this line read `34`
+from before CRC-N6 was added until 2026-10-26, when counting it found 29 —
+the number had been stale for long enough that nobody could say what it had
+counted, and incrementing it would have carried the error forward. Two
+further ids are NAMED inside these bullets without leading one (CRC-A6,
+CRC-E9); they are accounted for in their own buckets, which is why 31 ids
+appear here and 29 is the right count of this list.
 
 - **CRC-A1** `missingEvidenceViolations` requires a runnable command per AC and `gates/workflow.test.ts` enforces it — but only inside a harness ship run, and `ship.mode` is `direct`. Dormant on the lane this project ships on.
 - **CRC-A2** Nothing makes a fresh-context subagent review the diff before the PR opens. The generated pre-push hook runs conformity tests, not a review.
@@ -510,6 +518,7 @@ something in the tree that resembles it and is not it.
 - **CRC-M10** Nothing tracks revert or incident rates.
 - **CRC-N4** **Half of it shipped in #1381 and the half the criterion is named for did not.** The walker exists: the generated `ai-review-carry` step reads the ledger, searches each prior finding's file for the recorded anchor TEXT at this commit (#1601 — it compared the text at the recorded LINE NUMBER until 2026-10-24, and an edit anywhere above a finding dropped it as resolved), and hands the reviewer the unresolved set under one of three readings that may not collapse — `AI_REVIEW_CARRY_READ`, `AI_REVIEW_CARRY_ABSENT`, `AI_REVIEW_CARRY_UNMEASURED`. It restates `readLedger → priorFindings → carryForward` in bash and is bound to the library over one matrix by `test/ai-review-carry-forward.test.ts`, because `lib/scaffold/ai-review-step.ts` may not import: the step is deliberately import-free so that the 27 suites copying it into a temp directory can build mutants that load. What remained was **suppression**, and #1586 built it: `lib/ai-review-suppression.ts` turns the carry step's state file and a ledger snapshot into the prior key set, and `scripts/ai-review-findings.ts` hands the adjudicator a gate over it. Three things keep this criterion unticked. **It is dormant** — the generated job runs `bunx rungate@<pinned>`, so this reaches CI only when the pin moves, and a tick is read as *running*. **It is advisory-only by declared deviation** — a blocking repeat is re-reported and still blocks; see the deviations table. **The key symmetry is new** — before #1586 the adjudicator formed `n:<line>` keys and the ledger held `t:<text>` keys, so a dedupe built on it would have matched nothing while reporting cleanly; `lineTextFor` reads the checkout and `test/ai-review-suppression.test.ts` AS-5 is the control that holds it.
 - **CRC-N5** Nothing runs review agents nightly over existing code.
+- **CRC-N6** **Named because it was measured, with nothing built.** Five consecutive rounds on #1614 re-raised one already-fixed defect: rounds 12–15 from a docblock that QUOTED the removed regex, and round 16 — after the quotation was deleted — from the PARAPHRASE that replaced it, reconstructing a regex literal that appears nowhere in the tree. CRC-N4's dedupe cannot absorb it, because the suppression key is `file \0 line-text \0 summary` and a regenerated finding carries a new summary: it is not a repeat, it is a new finding about code that does not exist. The near-miss is *"do not quote dead code in comments"*, which was applied and then defeated. The reading is in *Measured non-obvious facts*. **It is deliberately NOT a request for new machinery** — the prior-art section above found that a verification gate re-checking each finding against the real code at the cited line is the documented mitigation for the wider class it belongs to, and that gate is CRC-B4. This criterion names the case so a verifier can be held to it; it does not ask for a second mechanism beside one already planned.
 - **CRC-H2** Risky code requires a human. There is no `CODEOWNERS` and no required approval, so nothing does.
 
 ### Shipped since this audit was taken
@@ -729,10 +738,16 @@ claims, deliberately kept in three places, and the reason is in that section.
 
 | PR | Phase / increment | Criteria it is pointed at | State |
 |---|---|---|---|
-| #1614 | prerequisite — the reviewer has to run on a pull request at all before any phase can be read off one | CRC-F2, CRC-N1 | open; carries `ai-review-override`, so it merges by hand |
-| #1617 | records Phase 0's exit, and this table | CRC-C2, CRC-C3, CRC-B8 | open |
-| — | Increment 1 — the suppression gate and carry-forward read the review-thread endpoint and GraphQL `isResolved`, and the ledger comment goes | CRC-N4, CRC-B5 | not started; **Phase 1 depends on it** |
+| — | Increment 1b — carry-forward decides "still unanswered" from an OPEN thread and treats a RESOLVED one as answered | CRC-N4, CRC-B5 | next. **1a merged in #1618**: a posted thread now carries the key it was raised under, base64 in an HTML comment, which is what makes a thread re-keyable at all |
+| — | Increment 1c — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4 | gated on 1b. Not before: the producer posts the repeat-SUPPRESSED set and the gate that suppresses reads the ledger, so removing it first opens a duplicate thread per finding per round |
 | — | Increment 2 — a verifier invocation writes a ballot, three invocations with per-verifier directories | CRC-B4, CRC-B3 | blocked on the ordering defect below |
+| — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
+
+**Merged, and kept out of this table on purpose.** #1614 (`1b9ffce3`), #1616
+(`1804ae9d`), #1617 (`aed22884`) and #1618 (`fe1f9292`) all landed on
+2026-10-26. A merged branch is not work in flight, and its record lives in
+*Readings taken* and in git rather than in a row that would otherwise
+accumulate for ever.
 
 **A row with no pull request is work this spec says is next and nobody has
 claimed.** That is the state worth seeing, and it is the one a tracker of
@@ -977,9 +992,169 @@ A deviation is legitimate when it is written here with its reason. An undeclared
 | **A correctly-carried ADVISORY that the reviewer re-reports is suppressed, and no exemption is made for it.** An exemption was specified while the carry was DROPPING findings (#1601), when a suppressed advisory appeared nowhere at all. With the anchor content-addressed the premise is gone, and the question was re-asked rather than inherited. | **What a reader loses is the advisory's TEXT in this round's annotations, and nothing else.** Three things are unaffected, each read from source rather than assumed. **It is in the record:** the job order is `ai-review-carry` → the reviewer → `ai-review-persist`, *which upserts this round into the ledger comment*, → `ai-review-run`, which invokes the adjudicator — so persistence happens BEFORE suppression and the re-reported advisory is in the ledger for that round whether or not the report shows it. **It was reported in full once**, on the round it was first raised, where nothing suppressed it. **Its absence is announced**: the carry step emits `ai-review carry-forward: ${carried_count} finding(s) from earlier rounds are unanswered at this commit` on every round. **The one real cost, stated so nobody re-derives it:** that annotation is a COUNT and not a list, so a reader who wants to know WHICH advisory is outstanding opens the ledger comment. That is an indirection, not a lost record. **So: nothing a human sees today is lost, and the exemption is not needed.** This row exists so the next person does not re-derive the question from the #1601-era specification of it. | The carry annotation stops reporting a count, or an advisory becomes something a merge decision reads. Either makes the indirection a gap rather than a click. |
 | **CRC-N4 suppression applies to ADVISORY findings only. A blocking finding is re-reported on every round, at any key.** The criterion as written at CRC-N4 above asks for *"no repeats of findings already posted"*, without qualification, and the audit line at **CRC-N4** in *What the criteria say we have not built* names the remaining work as *"until the adjudicator drops a finding matching an earlier round's key"*. It does not drop one that blocks. | **Two of our own artefacts disagree, and the newer one is right.** `buildReviewPrompt` in `lib/scaffold/ai-review-step.ts` tells the reviewer: *"CHECK EACH CARRIED FINDING AGAINST THE CODE AND RE-REPORT THE ONES THAT ARE STILL TRUE, at the severity each deserves. … A carried finding you silently leave out is a finding that has stopped being reported, and that is how a live defect reaches a green check."* So on every round after the first, a live unresolved finding is **supposed** to be in the payload and is key-identical to the ledger's. Subtracting it is not de-duplication; it is deleting the only signal the gate has. **Measured on the real functions before the code was written** — a round-1 blocking finding, re-reported on round 2 exactly as instructed, through `priorFindings` → `suppressRepeats` with the ledger's keys: `kept: 0`, `severity of what survives: []`, therefore `blocked: false` and the outcome `CLEAN`. That is a green required check over a defect an earlier round blocked on, which is SUCCESS.md claim 4 failing inside this repository's own merge gate. The exemption is **structural** rather than a rule the gate is trusted to follow: `findingMustAlwaysBeReported` in `lib/scaffold/ai-review-findings.ts` filters before `AiReviewSuppressionGate` is handed anything, so no answer the gate can give drops a blocking finding, and an UNRECOGNISED severity is protected too (`severityBlocks` answers `null`, which is not `false`). `test/ai-review-suppression.test.ts` AS-2 is the measurement executed, with a mutant that removes the exemption and turns the verdict from a refusal into a green check. | Blocking findings stop being carried into the payload — i.e. the carry step hands the reviewer a resolved/unresolved verdict the adjudicator can trust, so a re-emission is distinguishable from an unanswered repeat. Not before, and not by widening the predicate. |
 
+## Prior art — what the industry does about non-convergence
+
+Searched 2026-10-26, after the #1614 round-economics reading below and
+**before** building anything from it. Recorded because three of the four
+mechanisms this document was about to specify already exist by name, and in
+two cases the external design is better than the one proposed here.
+
+**Where we agree, and need not change.**
+
+- **Finding fingerprints.** The common shape is
+  `fingerprint(path, line, rule, snippetHash)` persisted in a sidecar store,
+  gated fail-open: an unreadable store posts as before rather than dropping
+  findings. That is `carryKey` and `aiReviewSuppressionGate`, including the
+  fail-open direction. **Ours anchors on line TEXT rather than line number**,
+  which is the #1601 lesson and which the common shape does not have —
+  keeping a line number in the identity is the defect we already paid for.
+- **Where the fingerprint lives.** Others keep a sidecar JSON or SQLite keyed
+  by fingerprint plus commit range. #1618 puts it in the review thread
+  itself. That is not a worse answer: GitHub already owns thread resolution
+  state, so there is no second store to corrupt and no reconciliation between
+  the store's idea of "answered" and the platform's.
+
+**Where the industry does something we do not.**
+
+- **Scope, not suppression, is the primary mechanism.** CodeRabbit's docs are
+  explicit: `@coderabbitai review` *"does only incremental review (what
+  changed since last review)"*, against `full review`, which *"disregards any
+  comments that CodeRabbit has already made"*. Greptile tracks a last-reviewed
+  commit per pull request. **That is CRC-N2**, which this document specifies,
+  ships as a scope WORD, and has never verified the reviewer obeys. We have
+  been investing in the secondary mechanism while the primary one is
+  UNMEASURED.
+- **Prior comments go into the reviewer's CONTEXT, not only into a filter
+  after it.** An incremental pass *"takes all comments that CodeRabbit has
+  made since its most recent full review into consideration"*. Our carry step
+  hands over the unresolved set, and our suppression gate then filters the
+  output — but a reviewer that re-raises a finding it was told about is a
+  reviewer whose context did not bind, and filtering afterwards hides that
+  rather than measuring it.
+- **A round cap keyed to SEVERITY, not to a count.** The pattern reported in
+  the field: past round 4, if findings are mostly NEW LOW-severity issues
+  absent from prior rounds, emit a non-convergence meta-finding recommending
+  human review, **suppress the new low-severity findings**, and downgrade the
+  verdict to COMMENT — **unless a medium-or-higher finding exists, which
+  blocks early termination.** Accept-count decay (10 → 2 → 1 accepted
+  findings) is used the same way. **CRC-N1's flat cap of three is strictly
+  worse than this and #1614 shows the cost**: the two guard bypasses were
+  found at rounds 10 and 11, the second as the run's only `BLOCKED` verdict,
+  and a flat cap of three ships both. A severity-aware cap does not.
+- **The cap is the airbag; the brake is no-progress detection.** Oscillation
+  is classified over a recent window as converging / stalled / oscillating /
+  diverging, from required-tier finding count, distinct affected files,
+  repeated-or-adjacent fingerprints and remediation diff size. **The
+  "self-inflicted ratio" proposed in this document is that, rediscovered and
+  less well specified**, and the external framing carries a calibration we do
+  not have: if the cap fires in more than about 1% of runs, the loop design
+  is wrong rather than the cap.
+- **Do not ask the model whether to continue.** Reported consistently: asked,
+  it says "one more round" almost every time, because stopping does not sound
+  helpful. Termination must be an explicit tool call or an external counter.
+- **Role asymmetry and context isolation.** The critic flags and never
+  proposes fixes; the actor holds fix authority; the two run in separate
+  sessions so the critic cannot reason in a circle around its own suggestion.
+  Our reviewer both flags and recommends, and #1614's rounds 8–9 are exactly
+  the failure this prevents — a docblock written to satisfy round 8 became
+  round 9's finding.
+
+**The failure mode is named and documented elsewhere, with a near-identical
+instance.** A reported case: 11 consecutive CHANGES_REQUESTED reviews, 18
+findings across 11 rounds (14 low, 4 medium), each round raising 1–3 new
+findings as the previous ones were fixed, drifting from naming to validation
+to dead code to Unicode symbols to test naming — and never surfacing the
+design problem for which a human eventually closed the pull request. Ours ran
+16 rounds and 31 threads. We are not in novel territory.
+
+**What nobody else appears to have named — and why it still may not need a new
+mechanism.** No source found addresses a reviewer re-raising a defect from
+text that merely DESCRIBES it. The closest documented shape is *"a comment
+that invents a constraint absent from the codebase"*, and the documented
+mitigation is a **verification gate**: a second pass re-checks each finding
+against the real code at the cited line, biased toward refuting, before the
+finding is acted on. **That is CRC-B4** — this document's own Phase 2 — and
+the by-hand version of it killed round 16's finding in one grep
+(`TRIGGER_NAME`, 0 occurrences). So CRC-N6 below is recorded as a measured
+case rather than as a request for new machinery, and the conclusion runs the
+other way from where this document had it: **Phase 2 is worth more than its
+position in the order suggests, and the ordering defect blocking it is worth
+fixing sooner.** One caveat, from the same sources and binding on us: a
+verifier that is the same model with the same evidence shares the prior that
+produced the false positive, so the gate must hand it something the generator
+did not have — a resolved symbol table, an AST, or a grep for the named
+identifier.
+
+**Calibration numbers worth holding against our own.** Google kept static
+analyzers in code review only while the effective false-positive rate stayed
+under 10%; the reported trust curve is a step function, with developers
+investigating every finding below ~10% and calling the tool noisy between
+10–30%. Multi-pass consensus is the deployed answer to a sampled instrument:
+one reviewer runs eight passes over the diff in shuffled order and drops any
+finding only one pass raised; another runs three models and flags only on
+two-of-three agreement. **That is CRC-B3's quorum, already specified here**,
+and the field evidence is that it is deployed elsewhere rather than
+theoretical.
+
+**Sources.** CodeRabbit's own incremental-review documentation, read
+directly rather than from a summary; Greptile per-PR last-reviewed-commit
+behaviour; published write-ups on agent-loop termination, no-progress
+detection and semantic early-stopping; published false-positive analyses from
+cubic, CodeAnt, Qodo, Augment and diffray. Full URLs are in the pull request
+that added this section, kept there rather than here because a link list in a
+spec rots without anything checking it.
+
 ## Measured non-obvious facts about our own instruments
 
 Recorded because each one invalidates a naive reading of the criteria above.
+
+- **Sixteen rounds on one pull request produced three genuine findings and nine repairs of its own wake, and the most valuable finding arrived at round 10 (#1614).** The biggest round-economics draw this repository has. Method: every commit on the branch was classified by `git blame`ing the lines its diff DELETED at its own parent, so a fix is attributed to whoever wrote the code it repaired rather than to its commit message. Of 12 substantive commits, **3 repaired defects in the pull request's own new code** — `f840d009` an inverted fork guard, `f71f816e` check 3 reporting over an intersection, `abf2a05e` a trigger reader that missed two valid YAML spellings — and **9 repaired code written in response to an earlier round of the same review**: `3e7babb1`→`f840d009`, `471a5b50`→`3e7babb1`, `8f923b4a`→`abf2a05e`, `1526fc29`→`8f923b4a`, `810d7798`→`f71f816e`, plus four commits repairing the author's own prose. **31 review threads, of which 12 were ONE informational note re-posted** (39%), 19 were findings, and all 19 landed on 2 files. **Exactly one blocking finding across all sixteen rounds**, at round 11; it was correct and it is described below. Wall clock 10:27 to 16:20.
+
+  **The result that should change the design is the timing, not the ratio.** The
+  genuine finds landed at rounds ~2, ~3, **10 and 11**, and the last two are the
+  ones the pull request existed to prevent. The branch's whole purpose was making
+  the reviewer run automatically on every pull request **including forks**.
+  Round 10 found the trigger reader was `/^\s{2}([a-z_]+):/gm` — block style at
+  exactly two spaces — so that with only the `on:` block swapped,
+  `on: {pull_request_target: }` and four-space indentation both returned `[]`,
+  silently; `pull_request_target` runs the job with a WRITE token on a fork's
+  pull request. **Round 11 then returned the only `BLOCKED` verdict of the run**
+  (`ai-review` run `40390027701`, head `8f923b4a`, one `high` on `triggerNames`
+  in `lib/review-tool-agreement.ts`): the widened regex still ignored a YAML
+  **merge key**, so a trigger introduced as `<<: *anchor` was invisible to every
+  downstream check. That finding is what produced `1526fc29`, the switch to
+  `Bun.YAML`, which also caught a list form and a scalar form nobody had raised.
+  **CRC-N1's cap is three rounds. A cap of three ships both holes.**
+
+  **The cap also counts the wrong unit.** Of the 15 `ai-review` runs on this
+  branch, **two concluded `failure` and only one of those was a finding**: run
+  `40347808694` was the no-payload refusal — *"the review action exited
+  successfully WITHOUT writing a findings payload"* — which is UNMEASURED, not a
+  verdict. The cap counts INVOCATIONS, and a reader of *"the budget is spent"*
+  needs the count of rounds that produced a review. The honest instrument is
+  neither a lower cap nor a higher one but the **self-inflicted ratio** above,
+  computable from the same blame walk: a round whose findings are entirely about
+  the previous round's edits is a round the loop is talking to itself, and
+  nothing measures that today. **Nothing here is a reason to move CRC-N1 and the
+  cap is deliberately left where it is** — this entry records a measurement, and
+  moving a shipped gate on one pull request is the error this document's own
+  *"a sampled instrument"* bullet warns about. n=1.
+
+  **Two limits on this reading, stated because they bound it.** The ledger
+  carries `truncated: 5`, so **rounds 1–4 are gone** and nothing here
+  characterises them; 12 entries hold 11 distinct round numbers, because round 9
+  appears twice (#1592 — a re-run appends an entry at the same number). And
+  `f71f816e` **was never reviewed**: its no-payload refusal was cleared at 18:27
+  by a WAIVER on the unchanged sha, whose annotation reads *"the AI review on
+  this pull request was WAIVED by the 'ai-review-override' label"*. One of the
+  three genuine defects above sits in a commit that no review ever passed
+  judgement on, which is the waiver-is-not-a-review distinction costing something
+  real rather than being a definitional point.
+
+
+- **A finding can be regenerated from prose that merely DESCRIBES it, and deduplication cannot see that (#1614, CRC-N6).** Rounds 12, 13, 14 and 15 each re-raised an already-fixed defect, all four anchored on the same docblock, which QUOTED the deleted regex verbatim — a dead pattern spelled out in a comment is indistinguishable from live code to anything matching on text. `5449750b` removed the last verbatim copy. **Round 16 then re-raised it again from the paraphrase**, reconstructing a regex literal that appears nowhere in the file, attributing it to a line number, and working out what its output would be on the live workflow — `["workflow_dispatch","inputs","pr","description","required","type","pull_request"]` — against a measured actual of `["workflow_dispatch","pull_request"]`. The symbol it named, `TRIGGER_NAME`, has **0 occurrences at that head**. What survived at that line is a prose row in a history table: *"any indentation is any DEPTH, so every field of the `workflow_dispatch.inputs` schema read as a trigger"*. **Why CRC-N4 cannot absorb this:** the suppression key is `file \0 line-text \0 summary`, and a regenerated finding has a different summary and usually a different line, so it is not a repeat by any key the dedupe can form. It is a NEW finding about code that does not exist. **The cheap fix is wrong in a way worth naming:** "stop quoting dead code in comments" was applied in `5449750b` and round 16 defeated it, so the rule that would actually bind is about where a defect's history is allowed to live — the commit and the pull request, which the reviewer does not read as the subject, rather than the docblock, which it does.
+
+- **A one-round CLEAN on the same reviewer, the same repository and the same day is the control the sixteen-round run needs (#1618).** Opened 2026-10-26 at `115ef5e5`, nine checks green, **zero review threads, one round**, and the annotation reads `ai-review findings outcome: CLEAN — read from the findings payload` rather than the waiver sentence, so a review happened and found nothing. Recorded because without it the #1614 entry above reads as a statement about the instrument, and it is not one: the same instrument returned a clean single round on a 3-file diff that added a function, a reader and a test. **What differs between the two is the subject, not the reviewer** — #1614 edited a security guard whose correctness is a property of an open set of YAML spellings, and every round's fix was new unreviewed code in exactly that set. The pair is two draws, not a population, and neither licenses a claim about rounds-per-PR in general.
 
 - **A metric that exists is not a metric that reports, and CRC-M11 sat in that gap for two days.** `lib/rounds-to-pass.ts` shipped in #1441 and printed `measured 1, unmeasured 39` against the live tracker: every refusal was `ROUNDS_TRUNCATION_UNKNOWN`, because `readLedger` called every legacy bare-array ledger unknowable while the #1405 WRITER already derived the opposite for the same input — a list that grows by one per round and is only cut at the cap was never cut if it is shorter than the cap. Same fact, two modules, two answers, and the metric consumed the readers. #1448 taught the reader the derivation and the reading became `measured 44, unmeasured 1`. **The lesson is the shape, not the bug:** a criterion asking for a number must be checked by running it, because a file-exists matcher would have ticked this while the command refused 39 of 40 rows. It is why CRC-M11 is banked in `CLAIMED_UNBINDABLE` rather than given a pattern.
 
