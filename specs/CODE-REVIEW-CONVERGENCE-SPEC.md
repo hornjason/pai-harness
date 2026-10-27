@@ -917,7 +917,7 @@ than remembered. Three draws, and each reached a different place: #1616
 resolved to `CLEAN`, #1614 resolved to `UNSTABLE`, and #1619 is a **first
 half only** — it was read before any thread was resolved, so it shows
 `BLOCKED` attributable to one thread and shows nothing about what resolving
-it would do. One complete draw, one weaker complete draw, one half. Three
+it would do. One complete draw, one weaker complete draw, one half — and
 three is still not a population; the boxes above stay open for the reason
 stated there.
 
@@ -929,10 +929,12 @@ thirty-six minutes apart. The reviewer caught it on this very pull request,
 which is the point — a prose claim about the file contradicting itself was
 itself a prose claim nothing checked. Two consecutive pull requests, both
 green, both reviewed, wrote opposite answers to one observable into one file
-inside the same hour. It is the same shape the CRC-B8 bullet below records
-about `required_conversation_resolution` being written `false` here and
-`true` two hundred lines away. Twice now, and the costly time is when the
-stale half is the one arguing that a whole track's premise is unmeasured.
+inside the same hour. It is the same shape the CRC-B8 bullet under *Measured
+non-obvious facts about our own instruments* records about
+`required_conversation_resolution` being written `false` there and `true`
+under *Phase 0 — three settings, no engineering*. Twice now, and the costly
+time is when the stale half is the one arguing that a whole track's premise
+is unmeasured.
 
 **Phase 4 therefore moves ahead of Phase 3 for this objective**, but the
 reason is narrower than "Phase 3 unblocks nothing". Phase 3 is prompt and
