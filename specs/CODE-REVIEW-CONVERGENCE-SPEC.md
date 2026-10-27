@@ -434,18 +434,35 @@ shipped** — the suppression gate's `pulls/{n}/comments` plus GraphQL
 That reader exists in the tree today; what remains gated is 1c, the
 removal of the ledger comment:
 
-1. The reviewer tags a finding `class:<name>` and names the search that finds
-   the siblings.
+1. The reviewer tags every finding with **exactly one** of `class:<name>` or
+   `instance-only`, and a `class:` tag names the search that finds the siblings.
 2. The author's reply to a class-tagged thread must carry a population count —
    `N sites, M defective` — and the search that produced it.
 3. A check refuses merge on a class-tagged thread **resolved without one**.
+4. **An untagged finding refuses too.** Absence of a tag is UNMEASURED, not
+   `instance-only`.
 
-**The negative control is the load-bearing half**: a finding tagged
-`instance-only` must NOT require a count. Without that row the check cannot
-distinguish a swept class from an unswept one — it just requires a number on
-every thread, which every author learns to type. A battery that only ever
-feeds it class-tagged threads is varying one axis while the defect sits on the
-other.
+**Step 4 is the one the first draft of this section got wrong, and the
+reviewer caught it on #1627.** As first written the check fired only on
+threads already carrying `class:`, so never applying the tag bypassed the
+whole mechanism with zero friction — the *detector narrower than what it
+detects* shape `.claude/rules/checks-must-be-able-to-fail.md` warns about.
+A gate whose trigger is optional is not a gate. The repair is the repo's
+standing one: the unreadable state is a refusal, not a pass.
+
+**Three controls, and the third is the one that was missing:**
+
+| Input | Required outcome | What it proves |
+|---|---|---|
+| `class:<name>`, resolved with no count | **refuse** | the gate fires at all |
+| `instance-only`, resolved with no count | **allow** | it is not just demanding a number on every thread |
+| **untagged**, resolved with no count | **refuse** | the trigger cannot be declined |
+
+Without row two the check cannot distinguish a swept class from an unswept
+one — it just requires a number everywhere, which every author learns to
+type. Without row three the gate is opt-in by the party it constrains. A
+battery feeding it only class-tagged threads varies one axis while the
+defect sits on the other.
 
 What would falsify the whole idea: the counts get written, and the five-or-more
 tail on **measured** rounds does not move off 4.4%. The population to watch is
