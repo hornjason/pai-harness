@@ -339,6 +339,37 @@ const BLOCK_START = "[-*+][ \\t]|#{1,6}[ \\t]|[0-9]+[.)][ \\t]|[>|]|```|~~~";
 
 const GAP = `(?:[^.!?\\n]|\\n(?![ \\t]*(?:\\n|${BLOCK_START})))`;
 
+/**
+ * The glue inside the distance phrase itself — `twenty` `lines` `above`.
+ *
+ * It was a plain `\s+` until round 11 of the #1624 review, and `\s` includes
+ * `\n`, so it crossed a blank line freely:
+ *
+ *     we raised it to twenty
+ *
+ *     lines above this heading, which is unrelated
+ *
+ * — two paragraphs read as one claim. That is the round-4 false positive
+ * exactly, on the half of the pattern round 4 never looked at: all the
+ * block-boundary work went into `GAP`, between the direction word and the
+ * deictic, and the three words before it kept the separator the first draft
+ * used.
+ *
+ * **The reachable case is narrower than it first looks, and the reason is
+ * worth keeping.** A list marker, a heading, a blockquote or a fence cannot
+ * be crossed here whatever this is, because they are NON-WHITESPACE and a
+ * whitespace-only separator stops at them for free. `BLOCK_START` is not
+ * needed and is not used. Only the pure blank line was reachable, because a
+ * blank line is the one block boundary made entirely of whitespace —
+ * verified as one case rather than assumed to be five, and `DOC-DIST-3i`
+ * holds both halves so the free ones cannot quietly stop being free.
+ *
+ * So: ordinary horizontal space, or exactly one newline that is not the start
+ * of a blank line. A hard-wrapped claim still matches, which is round 3's
+ * whole point and is the control in the same row.
+ */
+const SEP = "(?:[ \\t]+|[ \\t]*\\n(?![ \\t]*\\n)[ \\t]*)";
+
 export const PROSE_SELF_DISTANCE_DEICTIC = `${GAP}{0,60}?\\bthis\\s+(?:${REFERENTS})\\b`;
 
 /**
@@ -348,7 +379,7 @@ export const PROSE_SELF_DISTANCE_DEICTIC = `${GAP}{0,60}?\\bthis\\s+(?:${REFEREN
  * deciders that agree*.
  */
 export const PROSE_SELF_DISTANCE_PATTERN =
-  `\\b${QUANTITY}\\s+(?:${UNIT})\\s+(?:${DIRECTION})\\b` + PROSE_SELF_DISTANCE_DEICTIC;
+  `\\b${QUANTITY}${SEP}(?:${UNIT})${SEP}(?:${DIRECTION})\\b` + PROSE_SELF_DISTANCE_DEICTIC;
 
 /**
  * Every claim in every file, each with the line its distance phrase STARTS on.

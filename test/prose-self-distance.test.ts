@@ -288,6 +288,28 @@ const UNCAUGHT_VOCABULARY: ReadonlyArray<{
     text: "two lines above this one",
     control: "two lines above this section",
   },
+  // UNIT, added at round 11 — the FOURTH and last closed vocabulary to get a
+  // declared limit, which is the reviewer's point rather than mine: the
+  // treatment was adopted at round 7 and then applied one list per round
+  // (7 froze QUANTITY and DIRECTION, 10 froze REFERENTS, 11 this). Applying a
+  // design uniformly when it is adopted is cheaper than rediscovering the
+  // asymmetry from a missing word four times, and three of those four rounds
+  // were spent on the rediscovery.
+  {
+    why: "`stanza` is not in UNIT — measured at zero, deliberately out",
+    text: "two stanzas above this section",
+    control: "two sections above this section",
+  },
+  {
+    why: "`chapter` is not in UNIT — measured at zero, deliberately out",
+    text: "two chapters above this section",
+    control: "two sections above this section",
+  },
+  {
+    why: "`clause` is not in UNIT — measured at zero, deliberately out",
+    text: "two clauses above this section",
+    control: "two sections above this section",
+  },
 ];
 
 /** Every tracked markdown path, fixtures included — the population before the cut. */
@@ -436,6 +458,59 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
         "example this module quotes, so the trade-off the docblock declares " +
         "has a measured cost in real prose and must be restated",
     ).toEqual([]);
+  });
+
+  test("DOC-DIST-3i: a blank line splits the DISTANCE PHRASE too, not just the gap", () => {
+    // Round 11. Every block-boundary row before this one sits between the
+    // direction word and the deictic referent — the `GAP` half. The three
+    // words of the distance phrase were joined by a plain `\s+`, and `\s`
+    // includes `\n`, so two paragraphs were read as one claim: round 4's
+    // false positive on the half round 4 never looked at.
+    const split: Array<[string, string]> = [
+      ["QUANTITY and UNIT", "we raised it to twenty\n\nlines above this heading, which is unrelated"],
+      ["UNIT and DIRECTION", "we counted twenty lines\n\nabove this heading, unrelated"],
+    ];
+    for (const [where, text] of split) {
+      expect(
+        proseSelfDistanceViolations([{ path: "f.md", text }]),
+        `a blank line between ${where} was crossed, so two paragraphs were ` +
+          `joined into a claim nobody wrote`,
+      ).toHaveLength(0);
+    }
+
+    // The controls, and they are the whole reason the fix is a separator and
+    // not a ban on newlines: a hard-wrapped claim must still be caught, which
+    // is what round 3 exists for. Without these two rows the separator could
+    // be `[ \t]+` — refusing nothing, passing the rows above, and silently
+    // undoing round 3.
+    for (const [where, text] of [
+      ["QUANTITY and UNIT", "we raised it to twenty\nlines above this heading"],
+      ["UNIT and DIRECTION", "we counted twenty lines\nabove this heading"],
+    ] as Array<[string, string]>) {
+      expect(
+        proseSelfDistanceViolations([{ path: "f.md", text }]),
+        `a claim merely WRAPPED between ${where} is no longer caught, so the ` +
+          `blank-line fix undid round 3 instead of narrowing it`,
+      ).toHaveLength(1);
+    }
+
+    // And the three boundaries that cost nothing, asserted so that "free"
+    // stays a reading rather than a belief. A marker, a heading and a fence
+    // are NON-WHITESPACE, so a whitespace-only separator cannot cross them
+    // whatever it is — which is why `BLOCK_START` is absent from `SEP` and
+    // must stay absent rather than being added for symmetry.
+    for (const [why, text] of [
+      ["a list marker", "- raised to twenty\n- lines above this heading"],
+      ["a heading", "twenty\n## lines above this heading"],
+      ["a fence", "twenty\n```\nlines above this heading"],
+    ] as Array<[string, string]>) {
+      expect(
+        proseSelfDistanceViolations([{ path: "f.md", text }]),
+        `${why} between the distance words was crossed, so the "non-whitespace ` +
+          `stops it for free" argument in SEP's docblock is wrong and SEP needs ` +
+          `BLOCK_START after all`,
+      ).toHaveLength(0);
+    }
   });
 
   test("DOC-DIST-3c: UNCAUGHT is quoting the tree, not an invented list", () => {
