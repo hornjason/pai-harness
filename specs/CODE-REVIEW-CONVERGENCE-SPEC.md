@@ -356,9 +356,93 @@ Do not tick these, and do not count them as remaining work either.
 | CRC-C1 | The security review runs as a local Claude Code plugin an agent invokes per session. | It is not repo CI. `.github/workflows/` contains no security pass, so no artefact in this tree records that one ran. |
 | CRC-C2 | **The bug-review half holds.** `test` and `ai-review` are required contexts on `main` with `enforce_admins` on, so a blocking finding reds the check and the merge is refused. Read from the API on 2026-10-23. | Branch protection is GitHub state, not tree state. The security-review half does not hold at all — there is no security check to require. **`required_conversation_resolution` is `true`** (read 2026-10-25; this cell said `false` until then), so an open thread DOES block. **The producer has since landed** (2026-10-26): the generated workflow's step `Post this round's findings onto the diff` runs `ai-review-threads`, and #1614 carries four `github-actions`-authored review threads. The security-review half still does not hold, for its own reason — there is no security check to require — so the verdict is unchanged, but it no longer rests on the absent-producer claim. |
 | CRC-M2 | `REVIEW_OUTCOME_PLANTS` holds four findings whose outcome was established independently. | Expert confirmation is a human act, and those four grade the outcome sweep rather than an incident case set. |
-| CRC-N3 | `REVIEW.md` asks for the class and not the line, and CRC-A6's check proves the reviewer read it. | Whether it complied is a property of a sampled model. No artefact records a finding the reviewer generalised. |
+| CRC-N3 | `REVIEW.md` asks for the class and not the line, and CRC-A6's check proves the reviewer read it. **An artefact now exists**: #1614's ledger round 12 raised a finding against `lib/review-tool-agreement.ts` whose summary is the class itself — that each prior fix "closed the one bypass shape a reviewer happened to construct that round rather than a general property" — and recommended a structural parse over the hand-rolled regex. Round 13 records the recommendation carried out and the class closed. | Whether it complied is still a property of a sampled model, and **one instance is not a rate**. The cell no longer rests on *no artefact exists*; it rests on there being no denominator. The instance also arrived at **round 12 of 15**, so it is evidence the behaviour is reachable, not evidence it is timely — see *The author-side half of CRC-N3* below. |
 | CRC-H1, CRC-H3, CRC-H4, CRC-H5 | Statements about human judgement. | Nothing distinguishes them being honoured from them being ignored. |
 | CRC-N2 | **Adopted in #1600, and it moved here out of *Deliberately not adopted*.** The generated `ai-review-carry` step writes `review_scope=diff` from round 3 when the carry reading is complete, the prompt states both words, and the carried list is declared outside the scope so a prior finding whose file the diff does not touch is still raised. **Adoption was conditional on #1601 and the condition was met in the same change, not waived:** narrowing is only safe while the carry does not silently drop a finding, and until 2026-10-24 it did — the anchor was a line number. `review_scope=diff` is now reachable only when the carry read is complete AND the ledger records no truncation AND the prior rounds are `1..r-1` with no hole; every other reading answers `full`. | **The scope is a WORD, and whether the reviewer confines its reads to it is a BEHAVIOUR.** #1533 measured the reviewer reading whole files rather than the diff. A narrowed round leaves no artefact distinguishing *the reviewer confined its reads* from *the reviewer was asked to and did not* — the step records the request; the reviewer's reads are recorded nowhere. See *Measured non-obvious facts* below. |
+
+### The author-side half of CRC-N3 is unowned
+
+CRC-N3 puts the duty on the **reviewer**: flag the class. CRC-A8 fires on
+**cross-PR** recurrence: a repeated finding becomes a rule or a lint. Between
+them sits the case that actually costs rounds here — **the author fixing one
+instance of a class inside a single pull request, while the siblings sit
+untouched in the same file** — and no criterion owns it.
+
+#1614 is the worked instance, and it is unusually legible because the ledger
+kept every round. Rounds 10, 11 and 12 each found a defect of **one class**:
+hand-rolled regex reads of the `on:` and `if:` YAML in
+`lib/review-tool-agreement.ts`. Nested keys over-matching, then a YAML merge
+key under-matching, then a vacuous test control over the same function. Each
+was repaired at the spelling the reviewer happened to construct. Round 12
+named the class and recommended a structural parse; round 13 records that it
+shipped and the class closed in one change.
+
+**The reviewer got there. It took eleven rounds first.** That is the gap: not
+that the class is never named, but that naming it is a sampled behaviour
+competing with the much easier move of answering the instance in front of you.
+The author-side obligation — *given one confirmed defect, enumerate the
+population* — is the half nothing in this document requires.
+
+#### What the industry calls this, and what it has built
+
+The name is **variant analysis**: given one confirmed defect, find every
+sibling. It is a mature practice and this repository has adopted none of it.
+
+- **CodeQL** is the reference implementation — GitHub Security Lab credits it
+  with 400+ CVEs found by taking one bug and querying for its shape. It is
+  free for public repositories and **has never been enabled here**: the
+  code-scanning alerts API answers `no analysis found` for this repository,
+  read on 2026-10-27.
+- **Semgrep** covers the same move at lower cost for syntactic classes.
+- **Trail of Bits' variant-analysis methodology** names *narrow scope —
+  searching only the original module* as the first failure mode, which is
+  exactly #1614's rounds 10 through 12.
+- **Tricorder** (Google, ICSE 2015) is the closest prior art to CRC-A8: review
+  findings become executable analyzers, most contributed by the developer who
+  hit the bug, with a **<5% effective false-positive contract** — exceed it and
+  the analyzer is disabled. That contract is the part worth copying; an
+  analyzer nobody can switch off becomes an analyzer everybody clicks past.
+
+#### Build or adopt — the answer is mostly adopt, and the honest caveat
+
+**Do not build a variant finder.** Three exist, one is free and unenabled.
+
+| Need | Decision |
+|---|---|
+| find siblings of a defect in TypeScript | **adopt** CodeQL; it is free here and switched off |
+| syntactic class sweeps | **adopt** Semgrep, or `rg` for a one-off |
+| lint `run:` blocks in workflows | **adopt** actionlint — **and assert shellcheck is on PATH**, because with it absent actionlint skips every block and exits 0, which is a fail-open gate |
+| require the author to state the population | **build** — nothing off the shelf does this, and it is small |
+
+**The caveat, stated plainly: none of the adopted tools would have caught the
+three defects found on #1621 and #1623.** Those are semantic claims about what
+a command's exit code *means* — `if ! jq -e …` collapsing exit 1 and exit 5
+into one observable — living in shell embedded in TypeScript template
+literals. Neither CodeQL nor Semgrep parses that. Adopting them is still right,
+because they cover classes we currently cannot see at all; it is not a fix for
+the class this document keeps hitting.
+
+#### The gate worth building, and the control that stops it being vacuous
+
+Small, and it reuses the thread reader Increment 1 already builds:
+
+1. The reviewer tags a finding `class:<name>` and names the search that finds
+   the siblings.
+2. The author's reply to a class-tagged thread must carry a population count —
+   `N sites, M defective` — and the search that produced it.
+3. A check refuses merge on a class-tagged thread **resolved without one**.
+
+**The negative control is the load-bearing half**: a finding tagged
+`instance-only` must NOT require a count. Without that row the check cannot
+distinguish a swept class from an unswept one — it just requires a number on
+every thread, which every author learns to type. A battery that only ever
+feeds it class-tagged threads is varying one axis while the defect sits on the
+other.
+
+What would falsify the whole idea: the counts get written, and the five-or-more
+tail on **measured** rounds does not move off 4.4%. The population to watch is
+measured rounds, not all rounds — conflating them points this at the half of
+the problem these mechanisms cannot reach.
 
 ### Cannot be meaningful in this deployment
 
