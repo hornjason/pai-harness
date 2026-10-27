@@ -230,7 +230,7 @@ second. Re-take again when the post-fix cohort has reached the age of the
 pre-fix one — that is a question about elapsed time, not about what else
 ships.
 
-#### 41% of our rounds are rounds in which no review happened
+#### 41% of our rounds were rounds in which no review happened — read 2026-10-24
 
 The ledger distinguishes a round that was **read and found nothing**
 (`findings: []`) from one that was **NOT MEASURED** (`findings: null` — the
@@ -293,6 +293,12 @@ Phases 1 and 2 keep their internal order — the measured-round tail did not
 collapse — but nothing in them competes with fixing an instrument that is
 silent two rounds in five.
 
+**That consequence was correct and was not acted on, which is the finding the
+re-take below is really about.** Everything merged between it and 2026-10-27
+— Increments 1a, 1b and 1c — served Phases 1 and 2. Nothing served the 41%.
+The paragraph above is three days old and reads as a decision; it was a
+sentence.
+
 ##### How this was measured, and the near-miss that nearly published
 
 `readLedger` and its `measured` flag, not a hand parse. The first attempt
@@ -307,6 +313,94 @@ data. **The ALL-rounds column above reconciles exactly with
 `bun evals/ai-review-control/run.ts rounds` on the same file: 2.65, 44.2%,
 20.0%.** That agreement is the only reason the measured-only column is
 reportable, and a reading of this kind should not be published without it.
+
+#### The re-take, 2026-10-27 — both halves grew, and the decline half doubled
+
+Read over the 45 most recent pull requests, **#1573–#1631, 45 ledgers found,
+0 unmeasured, 178 rounds**. Two commands, so the reading is re-takeable
+rather than described:
+
+```sh
+gh api graphql -f query='{repository(owner:"hornjason",name:"pai-harness"){pullRequests(first:45,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number merged comments(first:100){nodes{author{login} body}}}}}}' \
+  --jq '[.data.repository.pullRequests.nodes[] | {number, passed: .merged, body: ([.comments.nodes[] | select(.author.login=="github-actions") | .body | select(contains("<!-- rungate:ai-review-ledger:v1 -->"))] | last)}]' > /tmp/crc-prs.json
+bun evals/ai-review-control/run.ts rounds /tmp/crc-prs.json
+```
+
+| | their before | their after | 10-23 | 10-24 | **10-27** |
+|---|---|---|---|---|---|
+| mean rounds to pass | 2.08 | 1.32 | 2.64 | 2.65 | **4.19** |
+| passed after one round | 65% | 78% | 39.4% | 44.2% | **27.9%** |
+| five or more rounds | 8.9% | 1.5% | 20.5% | 20.0% | **35.6%** |
+
+**The headline is the wrong unit, for the same reason it was on 2026-10-24,
+and the split is the reading.** Of the 178 rounds:
+
+| | rounds | share |
+|---|---|---|
+| measured — 87 `PASS`, 9 `BLOCK` | 96 | 53.9% |
+| `declined` — the action's own anti-tampering guard | **47** | **26.4%** |
+| `no_payload` — the reviewer ran and wrote nothing | 34 | 19.1% |
+| `log_unreadable` | 1 | 0.6% |
+
+Scoring the 43 merged pull requests on **measured rounds only** gives
+**2.19 mean, 62.8% after one, 18.6% at five or more**. So review convergence
+sits roughly where their *before* did (2.08, 65%, 8.9%) and the gap to 1.32 is
+real but ordinary. **UNMEASURED is 46.1% and it is the whole difference
+between 2.19 and 4.19.**
+
+**The decline is attributable to workflow-editing diffs, and the control is
+counted rather than asserted:**
+
+| diff | PRs | rounds | declined |
+|---|---|---|---|
+| touches `.github/workflows/` | 14 | 60 | **46 — 76.7%** |
+| touches no workflow | 31 | 118 | **1 — 0.8%** |
+
+The single exception is #1597, one decline in twelve rounds. It is named
+rather than absorbed, and the obvious hypothesis — the guard compares against
+the default branch *at run time*, so somebody else's workflow merging to
+`main` can make an unchanged pull request mismatch — is a **hypothesis and not
+a reading**, because nothing here establishes what `main` held at that
+moment. Two of the fourteen workflow-editing pull requests drew no decline at
+all, so the mechanism is not deterministic on the diff either.
+
+**Twelve of the 43 merged pull requests had zero measured rounds in their
+entire lives**, and all twelve changed at least one file under
+`.github/workflows/` (`gh api repos/hornjason/pai-harness/pulls/<N>/files`):
+
+> #1589, #1593, #1596, #1598, #1602, #1610, #1613, #1615, #1621, #1623,
+> #1628, #1629
+
+**#1621, #1623 and #1629 are Increment 1.** The suppression gate this
+document ordered first, built over three pull requests, merged without a
+single round producing a payload. The change that edits the reviewer is the
+change the reviewer refuses to read, and that is not a tax on the metric — it
+is an unreviewed hole sitting exactly where the highest-risk changes in this
+repository go.
+
+**What would falsify this.** A decline on a pull request touching no workflow
+file, at a rate anywhere near 76.7% — the 0.8% column is the control and it is
+one round in 118. Or a workflow-editing pull request whose rounds are
+measured, at a rate that makes 76.7% look like sampling: two of fourteen
+already are, so the claim is about the rate and not about every member, and
+anyone can re-run the two commands and disagree with the arithmetic.
+
+**Three things this reading does NOT establish, each of which leans toward the
+conclusion the author wanted.** The 10-24 and 10-27 windows barely overlap, so
+2.65→4.19 compares two largely disjoint cohorts rather than tracking one.
+The measured-only 1.58→2.19 has the same problem and is suggestive, not
+established. And the author's own pull requests sit in the tail at 8, 9 and 12
+rounds; the obvious explanation — that this document's own spec work is prose
+and prose draws rounds — **was tested and does not hold**: markdown-only pull
+requests mean 3.86 rounds against 3.97 for everything else. The regression is
+broad.
+
+**Reconciled across two parsers, per the rule above.** The split, the
+measured-only column and the twelve were computed once with `jq` over the
+fetched file and once in Python, independently, and agree to the digit on all
+three. `run.ts rounds` supplies the ALL-rounds column from the same input.
+A reading of this kind is not reportable on one parse, and this document has
+already published a confident 53.4% that was a second decider failing open.
 
 ### What stays human
 
@@ -805,9 +899,17 @@ engineering, and the four categories above are not a smaller version of it —
 they are a different kind of fact, and the tables above say which is which.
 
 Phases are ordered by **effect on rounds-to-pass**, which the table in *Where
-we actually stand, measured* says is 2.64 against the source's 1.32. Within a
-phase the criteria are independent and may be built in parallel. Across
-phases they are not: each phase names what the next one needs.
+we actually stand, measured* read as 2.64 against the source's 1.32 when this
+ordering was set, and **4.19 on 2026-10-27**. Within a phase the criteria are
+independent and may be built in parallel. Across phases they are not: each
+phase names what the next one needs.
+
+**The ordering is by effect on rounds-to-pass and no phase is pointed at the
+largest contributor to it.** That was true when the phases were written and
+it is stated under *The re-take, 2026-10-27*; it is repeated here because
+this is the paragraph that explains the order, and an order whose own stated
+criterion is unserved should say so where the order is given rather than
+only where the measurement is.
 
 ### Phase 0 — three settings, no engineering
 
@@ -971,7 +1073,7 @@ arriving inside the section.
 |---|---|---|
 | **0** settings | Every OTHER required context is green — `test` and `ai-review` both `SUCCESS` — and the pull request is still held, then goes mergeable when **only** the thread is resolved | `BLOCKED` while any other required check is failing or pending. That reading is **overdetermined** and attributes nothing. See the swarm track below, where this spec made exactly that error |
 | **1** stop the repeats | Round two posts **at least one NEW thread** for a different finding, **and zero** for the finding already threaded on round one | round two posting **nothing at all** — which an absent payload, a fork's read-only token or CRC-N2's narrowing all produce. Zero threads is not a deduplication, and without the new thread there is no proof the poster was even live |
-| **1** (the number) | On **measured rounds only**: five-or-more below **4.4%** and mean-to-pass below **1.58** | using the ALL-rounds figures (20.0%, 2.65). Those are dominated by the 41% of rounds that produce no review, which Phase 1 does not touch — the spec says conflating the units "points the whole plan at the smaller half of its own problem" |
+| **1** (the number) | On **measured rounds only**: five-or-more below **4.4%** and mean-to-pass below **1.58** | using the ALL-rounds figures (20.0%, 2.65). Those are dominated by the rounds that produce no review, which Phase 1 does not touch — the spec says conflating the units "points the whole plan at the smaller half of its own problem". **And reading the row above as though it had satisfied this one.** They are two exit conditions and only the first has been observed: measured-only stood at 18.6% and 2.19 on 2026-10-27, against thresholds of 4.4% and 1.58 set from the 2026-10-24 reading, so this row is **UNMET and has moved away from its target** |
 | **2** stop the false findings | A finding **known to be false** is voted down and **no thread is opened for it** | a zero thread-count produced by anything other than the vote. **Today that is the only thing it can be** — see the ordering defect below |
 | **3** what the reviewer is told | **N readings** of the planted subject, N and the full outcome set both stated | a single `DETECTED`. CRC-A4's own promotion condition forbids it: the reviewer is sampled, one reading is one draw. The first draft of this row asked for one reading and contradicted that rule, which is in the document twice and was still worth re-deriving |
 | **4** findings get answered | A pull request that **had at least one open thread**, all of them resolved, no resolving actor a person, then mergeable | a pull request with **no threads at all**. It satisfies every clause vacuously and is precisely the always-empty population this spec was written about |
@@ -1001,6 +1103,7 @@ claims, deliberately kept in three places, and the reason is in that section.
 | — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4 | **unblocked, and the gate is satisfied rather than waived.** AC-5 reads *"only once AC-1..AC-4 are green"*. 1a (#1621) carries AC-1 and AC-4, 1b (#1623) carries AC-2, and **AC-3 is `AS-10` in `test/ai-review-suppression.test.ts`** — the producer run twice against a poster that behaves as GitHub does, with both vacuity controls (`AS-10b`: no gate gives two threads; `AS-10c`: a different defect still gets its own). #1628 (`242c9ceb`) folded the comment into a `<details>` block as interim relief; 1c removes it. **1c is a migration and not a deletion** — see below |
 | — | Increment 2 — a mechanical pre-check, then a small independent ballot with an adaptive stop. **The group size is not settled and this row must not imply it is** — item 2 of *What has to change* calls it a budget floor rather than an optimum, and names *up* as the indicated move if the pre-check refutes little | CRC-B4, CRC-B3 | **blocked on the ordering defect below** — threads are posted before the ballot is read, so a quorum cannot suppress a thread, and Phase 2 is therefore UNMEASURED rather than pending. A second blocker was recorded here and has since **cleared**: Phase 1's exit condition was unobserved, and *Readings taken* now carries it as EXITED on this pull request. That gate was real while it lasted — building Increment 2 against a checkbox count is the error the exit-conditions section exists to prevent — and it came off on an observation rather than on a decision to stop waiting |
 | — | **Render the citation table from data instead of maintaining it as prose** — the `Cited` rows in *What the published measurements say about a verifier group* become a structured file the prose renders from, so a figure, its source and its claim are checkable rather than re-typed | CRC-N1, CRC-A2 | **not started, and it was the reviewer's own recommendation at round 4 of a 3-round budget.** Its argument: that section records three draft-then-withdraw cycles inside one diff, reviewing it round-by-round will keep finding the next mis-cited figure *because the genre guarantees it*, and the fix named by *What an unticked box means here* — move measurements into one generated section — applies to this table as much as to the rest of the file. Recorded rather than acted on in #1630: doing it inside the pull request that proposed it would have been one more hand-edit to the table in question. **That is a note about how the author sequenced the work, and it is not addressed to a reviewer.** An earlier wording of this cell was read by the review as a directive to stop reviewing the document, and it was reported rather than followed — correctly, and the wording is the defect. Nothing in this spec asks a reviewer to skip, shorten or stand down from a round; a round that keeps finding real defects is the instrument working, and the only thing the author may decide is what to do between rounds |
+| — | **Make a workflow-editing pull request reviewable** — the action's anti-tampering guard declines any run whose workflow file differs from the default branch, and this repository's reviewer workflow is scaffold-GENERATED, so every change to the review system regenerates it and exempts itself from review | CRC-M11 | **not started, and it is the largest measured lever in this document.** 46 of 47 declines across 178 rounds sit on the 14 pull requests that edited a workflow; 1 of 118 rounds elsewhere. Twelve merged pull requests had zero measured rounds in their lives and all twelve edited a workflow, three of them Increment 1. **This row exists because the finding was already in the file and had no owner** — *The ordering consequence, stated plainly* named it on 2026-10-24 and nothing was pointed at it for three days, which is what a conclusion with no row looks like |
 | — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
 
 **Merged, and kept out of this table on purpose.** #1614 (`1b9ffce3`), #1616
@@ -1099,7 +1202,7 @@ re-opened, which is a new row and a verdict change rather than an edit.
 | Phase | Verdict | PR | Head | Criteria evidenced | What was observed |
 |---|---|---|---|---|---|
 | **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Both required contexts SUCCESS — the required set is exactly `test` and `ai-review` (`gh api …/branches/main/protection/required_status_checks`), and all nine check-runs at that head were `success` — with `mergeable: MERGEABLE` and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second draw was recorded by #1617 on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6` and is **WITHDRAWN as a draw**, because its two halves cannot both be true. It said all check-runs were `success` and that resolving the one thread moved `BLOCKED` to `UNSTABLE` — but `UNSTABLE` is produced by a non-successful status or check, so an all-`success` head has nothing left to produce it. Re-reading at that SHA today confirms ten check-runs, all `success`, and the classic status endpoint empty, which reconciles nothing: #1614 merged at `5449750b`, so the post-resolution half cannot be re-taken at all. Whoever recorded it is not available to say which half was mistyped, and a reading nobody can reproduce is UNMEASURED, not weak. It is kept here named rather than deleted so the next reader does not re-derive the contradiction. **A second draw that CAN be reproduced was taken on #1622** at `023145d7b7992e2cfbc3f1463305d6ef014ef4aa` on 2026-10-27 at 01:58Z: ten check-runs all `success`, `MERGEABLE`, one unresolved thread, `BLOCKED` — and `CLEAN` on resolving that one thread, same head, no push and no re-run. One thread rather than two, and both halves minutes apart on one SHA. **A third draw was taken on #1627** at `f5cb5cab1d3eee9e09c799c725c547ed7f189bb4` on 2026-10-27, and it is the cleanest **on the axis of what could have moved underneath it**: every check-run at that head had already reached a conclusion before either half was read, so no check *could* have re-evaluated between them — that is read off `completed_at` rather than argued. Each draw is cleanest on a different axis and the prose below names which, because a superlative with no axis goes false the next time this set grows. It ends at `UNSTABLE` rather than `CLEAN`, which the definition below now accommodates on purpose. **This row's `PR` and `Head` stay on #1616 and do not move for any of them**, per the rule above the table: Phase 0 exited at #1616 and the rest are continuation observations. *The swarm track, and the reorder it asks for* carries all three readings |
-| **1** | EXITED 2026-10-27 | #1630 | `41bf444f3745802a71c54831b2f709c7ef3d8418` | CRC-N4, CRC-N6 | **The first reading Phase 1 has ever had. Four consecutive rounds repeated nothing, the fifth repeated something, and the fifth is the more useful half.** Round 1 (`5ae740a5`) raised a "third verifier" in a two-verifier design, a pre-check given two contradictory roles, and the absence of any tie to break under a unanimous pair; round 2 (`41bf444f`) the `VERIFIER_QUORUM` polarity inversion, the adaptive stop's unstated dependence on sequential dispatch, and a cascade-depth citation used to size an independent ballot; round 3 (`ab78aea6`) three sites still carrying a justification round 2 had withdrawn; round 4 (`079e05b7`) one, about the review itself. **The negative control never fired** — no round was empty, so each zero-repeat reading is a deduplication and not an absent review. **Applying the `Head` rule above the table**, the field is `41bf444f3745802a71c54831b2f709c7ef3d8418`, the head round 2 reviewed, because this exit condition is a property of one transition — a round posting new threads and no repeats of the round before it — and the round-1→round-2 transition is where that first happened. Rounds 3 onward are continuation observations. **This phase is where that rule was discovered, and it was discovered by the field rotting twice.** While `Head` meant *the commit the reading was complete at*, it went stale every time another round was recorded — round 5 caught it naming the round-2 commit beside prose describing four rounds, the fix advanced it to the round-4 commit, and round 7 caught that one the same way. The definition used to live in this cell, which left it governing one row of a table whose every row has the same field; it was lifted above the table on 2026-10-27, and that is the second half of the same fix. The sequence the continuation covers — `5ae740a59374dd899c950529708f948eb760a94c` onward — lives in this prose, where growing it breaks nothing, and the durable evidence is the pull request's thread history rather than any tree. **This is weaker than Phase 0's evidence and an earlier draft said the opposite.** That draft called these *three complete draws*, more than Phase 0's two, while also refusing to call them a population; the two halves cannot both hold. Phase 0's draws come from independent pull requests, these are round-to-round checks inside one continuously-fixed branch with the same author answering each round, so they are **one experiment with four transitions, not three draws**, and the word stays with Phase 0. **Round 5 then re-raised round 4's finding, and that is CRC-N6 rather than a CRC-N4 failure.** Round 4 said the round budget was spent at 4 of 3; round 5 said it was spent at 5 of 3 and that the pull request had repeated the pattern. The suppression key is `file \0 line-text \0 summary`, and a summary carrying its own round number is a new string every round — so the carry-forward could not have matched it, and did not fail. It is the shape CRC-N6 already names: a regenerated finding is not a repeat the key can see. **That attribution is an escape hatch unless the exit condition says what would falsify it, so it does, and this paragraph was added because the reviewer caught the row without one.** As first narrated, every repeat landed in one of two buckets that both read as success — key-identical ones are suppressed and never appear, paraphrased ones are filed under CRC-N6 — and a condition satisfied whichever way the world turns out is the defect `.claude/rules/checks-must-be-able-to-fail.md` is about, arriving inside the row that measures it. **Three things falsify the Phase 1 reading, and each is decidable by inspection rather than by judgement.** A thread whose `file \0 line-text \0 summary` is byte-identical to an existing unresolved or resolved thread's, posted anyway — that is a CRC-N4 failure and no classification rescues it. A round posting zero threads, which is the negative control and an absent review rather than a clean one. And the CRC-N6 attribution itself, which is **checkable and not asserted**: the two summaries are either different strings or they are not, so anyone can re-read the pair and disagree. What the reading therefore claims is narrower than *zero repeats* sounds — **zero key-matching repeats** — and the gap between those two phrasings is exactly the width of CRC-N6. **So Increment 1 moves the number it was built to move** — on #1616 the same reviewer on the same genre of document produced 13 threads for 3 findings as line numbers moved — **and the class it cannot reach is now measured rather than predicted** |
+| **1** | EXITED 2026-10-27 — **on the mechanism row only; the number row is UNMET** | #1630 | `41bf444f3745802a71c54831b2f709c7ef3d8418` | CRC-N4, CRC-N6 | **Phase 1 has TWO exit conditions above and this row observed one of them.** The mechanism row — a round posting new threads and no repeats of the round before — is what follows. The number row asks for measured-only five-or-more below 4.4% and mean-to-pass below 1.58; read 2026-10-27 those stood at **18.6% and 2.19**, so it is unmet and has moved away from its target since the thresholds were set. An unqualified `EXITED` in this cell read as both, which is the defect: a phase with two conditions needs a verdict that says which. **The first reading Phase 1 has ever had. Four consecutive rounds repeated nothing, the fifth repeated something, and the fifth is the more useful half.** Round 1 (`5ae740a5`) raised a "third verifier" in a two-verifier design, a pre-check given two contradictory roles, and the absence of any tie to break under a unanimous pair; round 2 (`41bf444f`) the `VERIFIER_QUORUM` polarity inversion, the adaptive stop's unstated dependence on sequential dispatch, and a cascade-depth citation used to size an independent ballot; round 3 (`ab78aea6`) three sites still carrying a justification round 2 had withdrawn; round 4 (`079e05b7`) one, about the review itself. **The negative control never fired** — no round was empty, so each zero-repeat reading is a deduplication and not an absent review. **Applying the `Head` rule above the table**, the field is `41bf444f3745802a71c54831b2f709c7ef3d8418`, the head round 2 reviewed, because this exit condition is a property of one transition — a round posting new threads and no repeats of the round before it — and the round-1→round-2 transition is where that first happened. Rounds 3 onward are continuation observations. **This phase is where that rule was discovered, and it was discovered by the field rotting twice.** While `Head` meant *the commit the reading was complete at*, it went stale every time another round was recorded — round 5 caught it naming the round-2 commit beside prose describing four rounds, the fix advanced it to the round-4 commit, and round 7 caught that one the same way. The definition used to live in this cell, which left it governing one row of a table whose every row has the same field; it was lifted above the table on 2026-10-27, and that is the second half of the same fix. The sequence the continuation covers — `5ae740a59374dd899c950529708f948eb760a94c` onward — lives in this prose, where growing it breaks nothing, and the durable evidence is the pull request's thread history rather than any tree. **This is weaker than Phase 0's evidence and an earlier draft said the opposite.** That draft called these *three complete draws*, more than Phase 0's two, while also refusing to call them a population; the two halves cannot both hold. Phase 0's draws come from independent pull requests, these are round-to-round checks inside one continuously-fixed branch with the same author answering each round, so they are **one experiment with four transitions, not three draws**, and the word stays with Phase 0. **Round 5 then re-raised round 4's finding, and that is CRC-N6 rather than a CRC-N4 failure.** Round 4 said the round budget was spent at 4 of 3; round 5 said it was spent at 5 of 3 and that the pull request had repeated the pattern. The suppression key is `file \0 line-text \0 summary`, and a summary carrying its own round number is a new string every round — so the carry-forward could not have matched it, and did not fail. It is the shape CRC-N6 already names: a regenerated finding is not a repeat the key can see. **That attribution is an escape hatch unless the exit condition says what would falsify it, so it does, and this paragraph was added because the reviewer caught the row without one.** As first narrated, every repeat landed in one of two buckets that both read as success — key-identical ones are suppressed and never appear, paraphrased ones are filed under CRC-N6 — and a condition satisfied whichever way the world turns out is the defect `.claude/rules/checks-must-be-able-to-fail.md` is about, arriving inside the row that measures it. **Three things falsify the Phase 1 reading, and each is decidable by inspection rather than by judgement.** A thread whose `file \0 line-text \0 summary` is byte-identical to an existing unresolved or resolved thread's, posted anyway — that is a CRC-N4 failure and no classification rescues it. A round posting zero threads, which is the negative control and an absent review rather than a clean one. And the CRC-N6 attribution itself, which is **checkable and not asserted**: the two summaries are either different strings or they are not, so anyone can re-read the pair and disagree. What the reading therefore claims is narrower than *zero repeats* sounds — **zero key-matching repeats** — and the gap between those two phrasings is exactly the width of CRC-N6. **So Increment 1 moves the number it was built to move** — on #1616 the same reviewer on the same genre of document produced 13 threads for 3 findings as line numbers moved — **and the class it cannot reach is now measured rather than predicted** |
 | **2** | UNMEASURED — unreachable, see below | — | — | — | — |
 | **3** | PENDING | — | — | — | — |
 | **4** | PENDING | — | — | — | — |
@@ -1196,9 +1299,15 @@ disagreement.
 
 **None of these phases is the largest lever, and the table must not be read
 as claiming otherwise.** This spec already measures that the biggest single
-contributor to 2.65 is the 41% of rounds producing no review at all —
-the structural decline on workflow-editing diffs, and the no-payload tax of
-#1478. Neither is a review-quality problem and neither is in Phases 1–5.
+contributor is the rounds producing no review at all — the structural decline
+on workflow-editing diffs, and the no-payload tax of #1478. Neither is a
+review-quality problem and neither is in Phases 1–5. **Re-read 2026-10-27 it
+is 46.1% of 178 rounds, up from 41% of 117, with the decline half alone at
+26.4%; and three of the twelve pull requests that merged with no review in
+their lives were Increment 1 itself.** See *The re-take, 2026-10-27* above —
+which also records that this paragraph was written, left standing, and not
+acted on for three days while every merge in that window served Phases 1
+and 2.
 
 ### The swarm track, and the reorder it asks for
 
