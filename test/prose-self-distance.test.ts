@@ -249,6 +249,45 @@ const UNCAUGHT_VOCABULARY: ReadonlyArray<{
     text: "A note sits a line above this heading, restating the same count.",
     control: "A note sits one line above this heading, restating the same count.",
   },
+  // REFERENTS, added at round 10. The list is the FOURTH closed vocabulary and
+  // the last to be declared: rounds 2, 3 and 6 froze QUANTITY and DIRECTION's
+  // gaps here, round 9 closed two REFERENTS gaps by direct edit, and nothing
+  // recorded what REFERENTS still does not cover. The asymmetry sets the next
+  // reviewer up to repeat the one-word patch cycle on the one list that never
+  // had the treatment — the reviewer's point, and it is this module's own
+  // standard applied back to it: assert the limit, do not describe it.
+  //
+  // `criterion`, `entry`, `item` and `step` all measure ZERO against the tree,
+  // so each could be admitted today at no cost. They are rows instead of
+  // entries because "costs zero today" is the argument behind both widenings
+  // this pull request had to undo. Admitting one means deleting its row.
+  {
+    why: "`criterion` is not in REFERENTS — measured at zero, deliberately out",
+    text: "two lines above this criterion",
+    control: "two lines above this section",
+  },
+  {
+    why: "`entry` is not in REFERENTS — measured at zero, deliberately out",
+    text: "two lines above this entry",
+    control: "two lines above this section",
+  },
+  {
+    why: "`item` is not in REFERENTS — measured at zero, deliberately out",
+    text: "two lines above this item",
+    control: "two lines above this section",
+  },
+  {
+    why: "`step` is not in REFERENTS — measured at zero, deliberately out",
+    text: "two lines above this step",
+    control: "two lines above this section",
+  },
+  {
+    why: "a BARE pronoun is not a referent and is not a candidate for one — " +
+      "`this one` names whatever the previous clause did, so admitting it " +
+      "would make the deictic requirement meaningless rather than wider",
+    text: "two lines above this one",
+    control: "two lines above this section",
+  },
 ];
 
 /** Every tracked markdown path, fixtures included — the population before the cut. */

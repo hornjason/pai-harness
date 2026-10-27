@@ -191,6 +191,19 @@ export interface ProseSelfDistance {
  * request had to undo (rounds 3 and 4): every word is future false-positive
  * surface, and the two that are here are the two a reviewer produced a real
  * sentence for. A third should arrive the same way.
+ *
+ * **Round 10 made that paragraph into rows, which is this module's own
+ * standard applied back to it.** Describing a limit in a docblock is what
+ * `UNCAUGHT` exists not to do. REFERENTS was the fourth closed vocabulary and
+ * the only one with no declared limit, so the next reviewer to notice a
+ * missing word was set up to repeat the rounds 2–3 patch cycle on it. The
+ * four words above, and a bare `this one`, are now `UNCAUGHT_VOCABULARY`
+ * rows: each paired with a control that must stay caught, and admitting one
+ * means deleting its row rather than quietly outgrowing a sentence.
+ *
+ * `this one` is the row that is NOT a candidate. A bare pronoun names
+ * whatever the previous clause named, so admitting it would not widen the
+ * deictic requirement, it would dissolve it.
  */
 const REFERENTS =
   "line|bullet|paragraph|section|sentence|spec|document|file|row|table|heading|list|comment|note|rule|check";

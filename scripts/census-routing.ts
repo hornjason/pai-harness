@@ -203,9 +203,20 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     // citation and arrives in an ordinary edit to an existing file, so the
     // `doc` row would route it exactly never.
     id: "prose-distance",
-    event: "edited any markdown at all",
+    // Fixtures are excluded because the suite excludes them: `docs()` filters
+    // `test/fixtures/` and `DOC-DIST-7` asserts it does, since a fixture's
+    // whole job is to hold prose the rule must refuse. Routing a fixture edit
+    // here would hand an agent a suite that structurally cannot see the file
+    // they changed, and a green run that looked at nothing reads exactly like
+    // a green run that looked. Round 10 of the #1624 review; it is the same
+    // scope mismatch this row already caused once, in the other direction —
+    // the scan then covered four directories while the event said "any
+    // markdown", and that one was fixed by widening the scan because the
+    // narrowness was accidental. This exclusion is deliberate, so the row
+    // moves instead.
+    event: "edited any markdown outside test/fixtures/",
     tests: ["test/prose-self-distance.test.ts"],
-    fires: c => isMarkdown(c.path),
+    fires: c => isMarkdown(c.path) && !c.path.startsWith("test/fixtures/"),
   },
   {
     // Not in the prose list before #990, and the rule file's own closing
