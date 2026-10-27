@@ -285,7 +285,32 @@ export function main(argv: readonly string[]): number {
     }
   }
 
-  // EVERY REFUSAL IS DECIDED BEFORE THE FIRST WRITE.
+  // THE INVARIANT, STATED ONCE, AND EVERY REFUSAL IN `main` CHECKED AGAINST
+  // IT — round 11's recommendation, taken instead of patching the one gap:
+  //
+  //   No refusal that can be decided from data already in hand may be
+  //   ordered after a write whose repetition COMPOUNDS, or after a write
+  //   that must stay in step with another.
+  //
+  // The six refusals, audited in one pass:
+  //
+  //   1. a bad argument            — before everything
+  //   2. an unreadable `--from`    — before everything
+  //   3. a premise violation       — before both compounding writes
+  //   4. an unreadable store       — before both
+  //   5. an unreadable or marker-less `--write-spec` — before both
+  //   6. `writeSpec` refusing a derived document — before both, since
+  //      round 9; the only way to decide it is to call it, so it is called
+  //      first (asking `mayWrite` here would be a second decider of the
+  //      question `lib/write-spec.ts` exists to answer once)
+  //
+  // `--save` is the ONE write ordered before a refusal, and it is declared
+  // rather than overlooked: it dumps the fetched entries so a premise
+  // failure can be re-run with `--from` instead of re-fetching, which is
+  // the case it exists for. It is idempotent — the same page writes the
+  // same bytes — so repeating it compounds nothing and it is in step with
+  // nothing. Both properties are asserted in `test/crc-reading.test.ts`.
+  //
   //
   // `--record --write-spec` is the documented recipe, so the two run
   // together; splicing after recording meant a missing marker exited 1 with
@@ -297,6 +322,18 @@ export function main(argv: readonly string[]): number {
   // It is not atomic and does not claim to be: two writes can still part
   // company on a disk error. What it buys is that no refusal this program
   // can *decide* leaves the store ahead of the document.
+  //
+  // THE DOCUMENT IS WRITTEN FIRST, and that ordering is the invariant, not
+  // a preference. Round 8 routed the spec write through `writeSpec`, which
+  // asks `mayWrite` and can refuse — a refusal path this block's own
+  // comment had just finished claiming did not exist, added two steps
+  // below the claim. Round 9 caught it. Asking `mayWrite` here instead
+  // would be a second decider of the question `lib/write-spec.ts` exists
+  // to answer once, so the fix is order: the only way to know whether
+  // `writeSpec` refuses is to call it, so it is called before the store is
+  // touched. A disk error between the two now leaves the DOCUMENT ahead of
+  // the store, which is the harmless direction — a retry writes the row
+  // once rather than twice.
   let specWrite: { readonly at: string; readonly text: string; readonly label: string } | null = null;
   if (args.writeSpec !== null) {
     const at = join(process.cwd(), args.writeSpec);
@@ -321,13 +358,6 @@ export function main(argv: readonly string[]): number {
     specWrite = { at, text: spliced, label: args.writeSpec };
   }
 
-  if (args.record) {
-    writeFileSync(storePath, `${JSON.stringify([...store, row], null, 2)}\n`);
-    process.stdout.write(`\nrecorded row ${store.length + 1} in ${args.store}\n`);
-  } else {
-    process.stdout.write("\nnot recorded — rerun with --record to append this row\n");
-  }
-
   if (specWrite !== null) {
     // `writeSpec`, not `writeFileSync`. This puts bytes on a path under
     // `specs/`, so it goes through the chokepoint that asks whether the
@@ -341,6 +371,13 @@ export function main(argv: readonly string[]): number {
       return CRC_READING_REFUSED;
     }
     process.stdout.write(`rendered the block into ${args.writeSpec}\n`);
+  }
+
+  if (args.record) {
+    writeFileSync(storePath, `${JSON.stringify([...store, row], null, 2)}\n`);
+    process.stdout.write(`\nrecorded row ${store.length + 1} in ${args.store}\n`);
+  } else {
+    process.stdout.write("\nnot recorded — rerun with --record to append this row\n");
   }
   return 0;
 }

@@ -740,6 +740,106 @@ describe("the script refuses, and the refusal can be removed", () => {
     });
   }
 
+  test("a generator-owned spec is refused, and the store is still untouched", () => {
+    /**
+     * #1633 round 9, and it is a regression I introduced in round 8.
+     *
+     * Routing the spec write through `writeSpec` added a refusal — it asks
+     * `mayWrite`, which says no to a document declaring itself generated —
+     * two steps below a comment that had just claimed no such refusal came
+     * after the store write. The claim stopped being true in the commit
+     * that wrote it.
+     *
+     * The fix is ORDER, not a second check: asking `mayWrite` here would
+     * be a second decider of the question `lib/write-spec.ts` exists to
+     * answer once, so the document is written first and the store after.
+     */
+    const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+    try {
+      const entries = join(dir, "entries.json");
+      writeFileSync(
+        entries,
+        JSON.stringify([
+          { number: 10, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+          { number: 20, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+        ]),
+      );
+      const store = join(dir, "store.json");
+      writeFileSync(store, "[]\n");
+      const spec = join(dir, "spec.md");
+      const owned = `---\ngenerated-by: some-other-generator.ts\n---\n\n${CRC_BLOCK_BEGIN}\n${CRC_BLOCK_END}\n`;
+      writeFileSync(spec, owned);
+
+      const args = [
+        "--lo", "10", "--hi", "20", "--from", entries,
+        "--store", "store.json", "--record", "--write-spec", "spec.md",
+      ];
+      const real = run(SCRIPT, args, dir);
+      expect(real.status).toBe(1);
+      // Both halves. The document was not overwritten — that is the
+      // chokepoint doing its job — AND the store did not move, which is
+      // the ordering this case exists for.
+      expect(readFileSync(spec, "utf-8")).toBe(owned);
+      expect(JSON.parse(readFileSync(store, "utf-8"))).toEqual([]);
+      expect(real.stdout).not.toContain("recorded row");
+
+      const mutant = run(mutantPath(dir), args, dir);
+      expect(mutant.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("--save is the one write before a refusal, and it compounds nothing", () => {
+    /**
+     * The declared exception to the invariant stated in `main`. `--save`
+     * dumps the fetched entries so a premise failure can be re-run with
+     * `--from` instead of re-fetching — which is the case it exists for,
+     * so moving it after the premise check would remove its only use.
+     *
+     * It is allowed because of two properties, and they are asserted here
+     * rather than claimed in the comment: the refusal still protects the
+     * STORE, and running twice writes identical bytes, so repetition
+     * compounds nothing. A `--save` that ever became order-dependent
+     * would red this.
+     */
+    const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+    try {
+      const entries = join(dir, "entries.json");
+      // A cohort that FAILS the premise check: it stops short of --hi.
+      writeFileSync(
+        entries,
+        JSON.stringify([
+          { number: 10, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+        ]),
+      );
+      writeFileSync(join(dir, "store.json"), "[]\n");
+      const saved = join(dir, "saved.json");
+
+      const args = [
+        "--lo", "10", "--hi", "20", "--from", entries,
+        "--store", "store.json", "--record", "--save", "saved.json",
+      ];
+      const first = run(SCRIPT, args, dir);
+      expect(first.status).toBe(1);
+      expect(first.stderr).toContain(CRC_PREMISE_RANGE_NOT_COVERED);
+      // The compounding write is protected.
+      expect(JSON.parse(readFileSync(join(dir, "store.json"), "utf-8"))).toEqual([]);
+      // The declared one happened, on purpose.
+      const once = readFileSync(saved, "utf-8");
+      expect(JSON.parse(once)).toHaveLength(1);
+
+      const second = run(SCRIPT, args, dir);
+      expect(second.status).toBe(1);
+      // Idempotent: identical bytes, so repeating the refused command
+      // accumulates nothing.
+      expect(readFileSync(saved, "utf-8")).toBe(once);
+      expect(JSON.parse(readFileSync(join(dir, "store.json"), "utf-8"))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("the control: a spec WITH markers records and renders, both", () => {
     // Without this, a change that refused every --write-spec would make the
     // two cases above green while breaking the documented recipe.
