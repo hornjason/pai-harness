@@ -66,12 +66,9 @@ import {
 } from "../lib/ai-review-rounds";
 import {
   aiReviewSuppressionGate,
-  carryStateOf,
   checkoutLineText,
-  ledgerPriorKeysFrom,
   priorKeysFrom,
   readOrNull,
-  readSnapshot,
 } from "../lib/ai-review-suppression";
 import {
   THREADS_NOT_A_LIST,
@@ -277,17 +274,19 @@ describe("AS-0: each mutated binding is the only one of its kind", () => {
   test("AS-0b: the prior set is formed in exactly one place", () => {
     const source = readFileSync(join(LIB, "ai-review-suppression.ts"), "utf-8");
     expect(source.split(PRIOR_SET_BINDING).length - 1).toBe(1);
-    // And the dormant ledger reader is CALLED from nowhere. Two readers of
-    // "has this been raised before?" would be two deciders that agree, and a
-    // mutation of either would leave the other holding every row up. The
-    // count is of call sites, not of the name: a docblock naming it is prose
-    // and the declaration is one `export function`, so counting mentions
-    // measures how much was written about it.
-    expect(
-      source.split(/\bledgerPriorKeysFrom\(/).length - 1,
-      "the ledger reader is called, so it is a second decider and not a dormant one",
-    ).toBe(1);
-    expect(source).toContain("export function ledgerPriorKeysFrom(");
+    // AC-5: the dormant ledger reader is GONE, not merely uncalled. It was
+    // kept "until AC-5 stops writing the snapshot it parses", and that has
+    // now happened, so a reader left behind would parse a file no step
+    // writes. The earlier form of this assertion counted its call sites and
+    // required the declaration to exist, which is why the dead code survived
+    // review for as long as it did: a guard that pins something in place
+    // cannot also notice when it should go.
+    for (const gone of ["ledgerPriorKeysFrom", "readSnapshot", "carryStateOf"]) {
+      expect(
+        source,
+        `${gone} parses a file the carry step no longer writes (AC-5)`,
+      ).not.toContain(`export function ${gone}(`);
+    }
   });
 
   test("AS-0c: the exemption is the only place the reader decides what to offer", () => {
@@ -807,22 +806,6 @@ describe("AS-7: the same finding twice in one payload", () => {
 // ── AS-8: the readers under the gate ─────────────────────────────────────
 
 describe("AS-8: the files are read as the carry step writes them", () => {
-  test("AS-8a: carryStateOf reads the first line's value", () => {
-    expect(carryStateOf(carryFile(AI_REVIEW_CARRY_READ))).toBe(AI_REVIEW_CARRY_READ);
-    expect(carryStateOf(`${carryFile(AI_REVIEW_CARRY_ABSENT)}trailing\n`)).toBe(
-      AI_REVIEW_CARRY_ABSENT,
-    );
-    expect(carryStateOf("")).toBeNull();
-    expect(carryStateOf(null)).toBeNull();
-  });
-
-  test("AS-8b: readSnapshot splits the header from the body", () => {
-    const body = ledgerBody([round(1, [advisory()])]);
-    expect(readSnapshot(snapshotOf(7, body))).toEqual({ round: 7, body });
-    expect(readSnapshot(body).round).toBeNull();
-    expect(readSnapshot(`${AI_REVIEW_SNAPSHOT_ROUND_KEY}=2.5\nx`).round).toBeNull();
-  });
-
   test("AS-8c: readOrNull is the only place absent and unreadable collapse", () => {
     expect(readOrNull(undefined)).toBeNull();
     expect(readOrNull("")).toBeNull();
@@ -854,29 +837,6 @@ describe("AS-8: the files are read as the carry step writes them", () => {
     const expected = carryKey(advisory(), CITED_LINE);
     expect(expected, "the fixture itself produced no key").not.toBeNull();
     expect(measured.keys[0]).toBe(expected!);
-  });
-
-  test("AS-8g: the dormant ledger reader still keys what the carry step writes", () => {
-    // AC-5 deletes this; until it does, the carry step still WRITES the
-    // snapshot and a writer whose only reader was deleted is a writer nobody
-    // can tell is broken. The name says it is not the gate's.
-    const body = ledgerBody([round(1, [advisory()])]);
-    const measured = ledgerPriorKeysFrom(carryFile(AI_REVIEW_CARRY_READ), snapshotOf(2, body));
-    expect(measured.status).toBe("MEASURED");
-    if (measured.status !== "MEASURED") throw new Error("unreachable");
-    expect(measured.keys).toEqual([carryKey(advisory(), CITED_LINE)!]);
-    // And the ordering guard it carries is still a guard.
-    const afterPersist = ledgerBody([round(1, [advisory()]), round(2, [advisory()])]);
-    expect(
-      ledgerPriorKeysFrom(carryFile(AI_REVIEW_CARRY_READ), snapshotOf(2, afterPersist)).status,
-    ).toBe("UNMEASURED");
-    expect(ledgerPriorKeysFrom(carryFile(AI_REVIEW_CARRY_UNMEASURED), null).status).toBe(
-      "UNMEASURED",
-    );
-    expect(ledgerPriorKeysFrom(carryFile(AI_REVIEW_CARRY_ABSENT), null)).toEqual({
-      status: "MEASURED",
-      keys: [],
-    });
   });
 
   test("AS-8f: the gate's sentence is the one `suppressRepeats` writes", () => {

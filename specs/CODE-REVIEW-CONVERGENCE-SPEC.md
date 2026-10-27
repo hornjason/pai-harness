@@ -1023,12 +1023,22 @@ rather than leaving them dormant"*, which presupposes nothing still reads
 it. Something does. The carry step composes the carried list from **two**
 sources: the ledger rounds supply the candidate findings, and the resolved
 thread bodies supply only which of them are answered. The suppression gate
-moved to threads in 1a and `ledgerPriorKeysFrom` is dormant — but the
-*carried list itself* is still ledger-sourced, so deleting the writer leaves
-the reviewer with no record of what earlier rounds raised.
+moved to threads in 1a — but the *carried list itself* is still
+ledger-sourced, so deleting the writer leaves the reviewer with no record of
+what earlier rounds raised.
 
-So 1c is: move the carried list's source to the thread list, then delete the
-writer. Two things that migration has to answer, because the ledger holds
+**Slice 1 is done and it was the part nothing depended on.** The carry step
+also wrote the ledger's bytes to a snapshot file "for the adjudicator", and
+the generated workflow declared that variable on two steps; the adjudicator
+reads `AI_REVIEW_THREADS_PATH` and `AI_REVIEW_BALLOT_DIR` and no third
+variable, so nothing consumed it. `ledgerPriorKeysFrom` parsed that snapshot
+and was kept explicitly *"until AC-5 stops writing"* it, so the reader went
+with the writer, along with `readSnapshot` and `carryStateOf`. Nine tests
+asserted the snapshot was written and keyed; none asked whether anything
+read it, which is why the write survived AC-1 by three increments.
+
+So the REST of 1c is: move the carried list's source to the thread list,
+then delete the writer. Two things that migration has to answer, because the ledger holds
 them and a thread does not: a thread carries `severity` and `summary` in its
 body and its `path`/`line` as API fields, but **no round number** — the
 `[round N]` prefix the reviewer is shown has no thread-side equivalent — and

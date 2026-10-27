@@ -89,37 +89,6 @@ export type PriorKeys =
   | { status: "UNMEASURED"; reason: string };
 
 /**
- * The carry file's first line, which is the one site that decided the state.
- *
- * Read rather than re-derived: the walker already made this decision against
- * the live API, and a second reading here would be a second decider over the
- * same question — which is the shape #1568 cost three rounds of #1569.
- */
-export function carryStateOf(carry: string | null): string | null {
-  if (carry === null) return null;
-  const first = carry.split("\n", 1)[0] ?? "";
-  const prefix = `${AI_REVIEW_CARRY_STATE_KEY}=`;
-  return first.startsWith(prefix) ? first.slice(prefix.length).trim() : null;
-}
-
-/**
- * Split the snapshot into the round it precedes and the ledger body.
- *
- * `round` is `null` when the header is missing or not an integer, and that is
- * a REFUSAL rather than a default: a snapshot that cannot say which round it
- * precedes cannot be shown to predate this one.
- */
-export function readSnapshot(snapshot: string): { round: number | null; body: string } {
-  const at = snapshot.indexOf("\n");
-  const head = at === -1 ? snapshot : snapshot.slice(0, at);
-  const body = at === -1 ? "" : snapshot.slice(at + 1);
-  const prefix = `${AI_REVIEW_SNAPSHOT_ROUND_KEY}=`;
-  if (!head.startsWith(prefix)) return { round: null, body };
-  const raw = head.slice(prefix.length).trim();
-  return { round: /^\d+$/.test(raw) ? Number(raw) : null, body };
-}
-
-/**
  * THE PRIOR SET, read from the pull request's own review threads (AC-1).
  *
  * ## Why a thread and not the ledger
@@ -173,90 +142,6 @@ export function priorKeysFrom(threads: string | null): PriorKeys {
   // Open and resolved alike. The fold that distinguishes them belongs to
   // carry-forward, for the reason tabled above.
   return { status: "MEASURED", keys: reading.threads.map(t => t.key) };
-}
-
-/**
- * THE LEDGER READER, dormant since AC-1 and deleted by AC-5.
- *
- * Nothing in production calls this: `aiReviewSuppressionGate` decides from
- * threads. It is kept, and kept under a name that says what it reads, because
- * the carry step still WRITES the snapshot it parses — AC-5 is the increment
- * that stops writing it and removes the steps rather than leaving them
- * dormant, and until then `test/ai-review-carry-forward.test.ts` is the only
- * thing asserting that what bash writes is what a reader can key. A writer
- * whose only reader was deleted is a writer nobody can tell is broken.
- */
-export function ledgerPriorKeysFrom(carry: string | null, snapshot: string | null): PriorKeys {
-  const state = carryStateOf(carry);
-  if (state === null) {
-    return {
-      status: "UNMEASURED",
-      reason:
-        "the carry step's own reading could not be read, so whether this pull request has " +
-        "earlier rounds is unknown",
-    };
-  }
-  if (state === AI_REVIEW_CARRY_UNMEASURED) {
-    return {
-      status: "UNMEASURED",
-      reason: "the carry step reported that the pull request's history could not be read",
-    };
-  }
-  // A complete reading, and the answer is that there is nothing to compare
-  // against. MEASURED with no keys, which is not the same statement as the
-  // branch above and must not print the same sentence.
-  if (state === AI_REVIEW_CARRY_ABSENT) return { status: "MEASURED", keys: [] };
-  if (state !== AI_REVIEW_CARRY_READ) {
-    return {
-      status: "UNMEASURED",
-      reason: `the carry step reported a state this reader does not know (${JSON.stringify(state)})`,
-    };
-  }
-
-  if (snapshot === null) {
-    return {
-      status: "UNMEASURED",
-      reason:
-        "the carry step read the pull request's history and the copy it left for this step " +
-        "could not be read",
-    };
-  }
-  const { round, body } = readSnapshot(snapshot);
-  if (round === null) {
-    return {
-      status: "UNMEASURED",
-      reason:
-        "the history copy does not say which round it precedes, so it cannot be shown to " +
-        "predate this round's own findings",
-    };
-  }
-
-  const reading = priorFindings(readLedger(body));
-  if (reading.status !== AI_REVIEW_PRIOR_MEASURED) {
-    return { status: "UNMEASURED", reason: reading.reason };
-  }
-
-  // THE ORDERING GUARD. A snapshot taken after the persist step is the same
-  // comment fetched the same way and is byte-shaped like a correct one; the
-  // only tell is that it already holds this round. Without this, the wrong
-  // ordering suppresses the entire payload and reports CLEAN every round.
-  const stale = reading.prior.filter(p => typeof p.round === "number" && p.round >= round);
-  if (stale.length > 0) {
-    return {
-      status: "UNMEASURED",
-      reason:
-        `the history copy holds ${stale.length} finding(s) from round ${round} or later, so it ` +
-        `was taken AFTER this round was recorded rather than before it. Suppressing against it ` +
-        `would drop this round's own findings`,
-    };
-  }
-
-  // `unmeasuredRounds` and `unkeyableRounds` are deliberately NOT a refusal.
-  // Both mean the key set is INCOMPLETE, and an incomplete key set suppresses
-  // less than a complete one — the direction this module is allowed to be
-  // wrong in. Refusing on them would turn a partially readable history into
-  // no history at all, which is the same report with a worse sentence.
-  return { status: "MEASURED", keys: reading.keys };
 }
 
 /**
