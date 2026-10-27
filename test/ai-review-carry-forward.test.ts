@@ -1760,3 +1760,59 @@ describe("AC-C8 (AC-2): the drop, performed", () => {
     ).toHaveLength(0);
   });
 });
+
+/**
+ * AC-C9: the TWO NORMALISERS must fold case the same way.
+ *
+ * `carryKey` keys a thread body in TypeScript; the generated jq re-derives the
+ * same key from that body with its own `norm`. They are two implementations of
+ * one function, so the only thing that makes the pair correct is that they
+ * agree on every input — and nothing above this block feeds either of them a
+ * character the two could disagree about.
+ *
+ * jq's `norm` folds case with `ascii_downcase`. jq exposes no Unicode-aware
+ * downcase at all (`builtins` offers `ascii_downcase` and `ascii_upcase` and
+ * nothing else), so the agreement has to be bought on the TypeScript side:
+ * `normalise` folds `[A-Z]` only, which is exactly what `ascii_downcase` does.
+ *
+ * Measured while writing this: the whitespace half of the same expression does
+ * NOT diverge. Given `a b c　d`, jq's `[[:space:]]+` and JS's
+ * `\s+` both yield `a b c d`, so the population of divergences in `norm` is
+ * one, not two. The control below is what keeps this block honest if that ever
+ * stops being true.
+ */
+describe("AC-C9 (AC-2): the jq and TypeScript normalisers fold case identically", () => {
+  const TEXT = "const n = xs[i]";
+  const FILE = "lib/a.ts";
+  const files = { [FILE]: `${TEXT}\n` };
+
+  // The pair differs in ONE respect: whether the summary carries a non-ASCII
+  // uppercase letter. Everything else is held fixed, so a disagreement between
+  // the rows can only be the case fold.
+  const drops = (summary: string) => {
+    const ledger = [botComment(5, windowBody([round(5, [recorded(FILE, 1, summary, TEXT)])]))];
+    const key = carryKey({ file: FILE, line: 1, summary }, TEXT);
+    expect(key, `the fixture could not key a thread for ${JSON.stringify(summary)}`).not.toBeNull();
+    const pages = [[{ isResolved: true, body: threadBody({ severity: "high", summary }, key) }]];
+    return runCarry({ list: ledger, files, threadPages: pages }).carried;
+  };
+
+  test("AC-C9a: the ASCII control — a resolved thread drops its finding", () => {
+    // If this row ever goes red the next one proves nothing: both engines
+    // would be failing to match for a reason that is not the case fold.
+    expect(drops("UNCHECKED Index"), "the ASCII control did not drop").toHaveLength(0);
+  });
+
+  test("AC-C9b: a non-ASCII uppercase in the summary drops it too", () => {
+    // Red before the fix. `.toLowerCase()` folded "É" to "é" while jq's
+    // `ascii_downcase` left it alone, so the two engines keyed the same thread
+    // differently, the resolved thread never matched, and the finding was
+    // carried for ever — the reviewer re-raising a finding a human had already
+    // answered, which is the CRC-N4 failure this whole increment exists to end.
+    expect(
+      drops("UNCHECKED Índex"),
+      "a summary with a non-ASCII uppercase letter did not drop, so the TypeScript and jq " +
+        "normalisers disagree about case and a resolved thread cannot answer the finding",
+    ).toHaveLength(0);
+  });
+});

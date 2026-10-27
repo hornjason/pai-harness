@@ -514,9 +514,25 @@ export interface ReviewFinding {
  * Case and whitespace only. Not punctuation, and not stemming: two findings
  * that differ in a word are two findings, and a key that erases the
  * difference suppresses a real one.
+ *
+ * **The case fold is ASCII-only on purpose, and `.toLowerCase()` is wrong
+ * here.** This is one half of a pair: the generated jq re-derives the same key
+ * from a thread body with its own `norm`, which folds case with
+ * `ascii_downcase`. jq exposes no Unicode-aware downcase to match — its
+ * `builtins` carry `ascii_downcase` and `ascii_upcase` and nothing else — so
+ * the agreement can only be bought on this side. `.toLowerCase()` is
+ * Unicode-aware, so it folded `É` to `é` where jq left it alone, the two
+ * engines keyed one thread two ways, and a thread a human had resolved could
+ * never answer its finding. `test/ai-review-carry-forward.test.ts` (AC-C9)
+ * drives both engines and holds them to the same verdict.
+ *
+ * The whitespace half needs no such care: jq's `[[:space:]]+` and JS's `\s+`
+ * were measured to agree on NBSP, U+2028 and U+3000.
  */
 function normalise(v: unknown): string {
-  return typeof v === "string" ? v.trim().toLowerCase().replace(/\s+/g, " ") : "";
+  return typeof v === "string"
+    ? v.trim().replace(/[A-Z]/g, c => c.toLowerCase()).replace(/\s+/g, " ")
+    : "";
 }
 
 /**
