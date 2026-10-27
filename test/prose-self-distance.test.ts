@@ -107,6 +107,10 @@ const IS_A_CLAIM = [
   // because "verbatim" was the claim the row was added under.
   "SC-9001 is ticked, fourteen lines above this heading, confirming the criterion.",
   "nineteen rows below this table the same id appears again",
+  // round 9: REFERENTS was the one list never revisited, and these are the
+  // reviewer's own sentences in the vocabulary `.claude/rules/*.md` uses.
+  "ticked, 46 lines above this check",
+  "two lines above this rule",
 ];
 
 /**

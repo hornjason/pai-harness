@@ -171,9 +171,29 @@ export interface ProseSelfDistance {
  * The deictic referents that make a distance self-referential. `this spec`
  * and `this document` are here because a distance measured from the document
  * as a whole decays the same way one measured from a line does.
+ *
+ * **`rule` and `check` were added at round 9 of the #1624 review**, and the
+ * finding behind them is the one about process rather than about words:
+ * `QUANTITY`, `UNIT` and `DIRECTION` were each revisited across several
+ * rounds and **this list never was**, so it kept whatever the first draft
+ * guessed. *"ticked, 46 lines above this check"* and *"two lines above this
+ * rule"* are the shape the module exists to refuse, in the vocabulary
+ * `.claude/rules/*.md` actually uses, and both went free.
+ *
+ * Free, measured: admitting them moves the count across all 205 tracked
+ * non-fixture markdown files by **zero**, so this is the same category as
+ * `before`/`after` and the structural units — a gap closed at no cost, not a
+ * widening traded against false positives.
+ *
+ * **A wider set was measured and deliberately not taken.** `criterion`,
+ * `entry`, `item` and `step` also cost zero today. They are not here, because
+ * "costs zero today" is exactly the argument behind both widenings this pull
+ * request had to undo (rounds 3 and 4): every word is future false-positive
+ * surface, and the two that are here are the two a reviewer produced a real
+ * sentence for. A third should arrive the same way.
  */
 const REFERENTS =
-  "line|bullet|paragraph|section|sentence|spec|document|file|row|table|heading|list|comment|note";
+  "line|bullet|paragraph|section|sentence|spec|document|file|row|table|heading|list|comment|note|rule|check";
 
 /**
  * Spelled-out numbers as well as digits: *"two hundred lines away"* carries
