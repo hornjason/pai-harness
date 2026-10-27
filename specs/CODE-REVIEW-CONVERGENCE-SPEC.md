@@ -903,7 +903,7 @@ claims, deliberately kept in three places, and the reason is in that section.
 
 | PR | Phase / increment | Criteria it is pointed at | State |
 |---|---|---|---|
-| — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4, CRC-B5 | **unblocked, and the gate is satisfied rather than waived.** AC-5 reads *"only once AC-1..AC-4 are green"*. 1a (#1621) carries AC-1 and AC-4, 1b (#1623) carries AC-2, and **AC-3 is `AS-10` in `test/ai-review-suppression.test.ts`** — the producer run twice against a poster that behaves as GitHub does, with both vacuity controls (`AS-10b`: no gate gives two threads; `AS-10c`: a different defect still gets its own). #1628 (`242c9ceb`) folded the comment into a `<details>` block as interim relief; 1c removes it |
+| — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4, CRC-B5 | **unblocked, and the gate is satisfied rather than waived.** AC-5 reads *"only once AC-1..AC-4 are green"*. 1a (#1621) carries AC-1 and AC-4, 1b (#1623) carries AC-2, and **AC-3 is `AS-10` in `test/ai-review-suppression.test.ts`** — the producer run twice against a poster that behaves as GitHub does, with both vacuity controls (`AS-10b`: no gate gives two threads; `AS-10c`: a different defect still gets its own). #1628 (`242c9ceb`) folded the comment into a `<details>` block as interim relief; 1c removes it. **1c is a migration and not a deletion** — see below |
 | — | Increment 2 — a verifier invocation writes a ballot, three invocations with per-verifier directories | CRC-B4, CRC-B3 | blocked on the ordering defect below |
 | — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
 
@@ -921,6 +921,26 @@ instead of the ledger. The AC list at #1614 is the authority — AC-1 is the
 suppression gate — so **#1621 is 1a and #1618 is its prerequisite**. An
 earlier revision of this table called #1618 "1a", which is why the two
 numberings appear in the history.
+
+**1c is a migration, and reading AC-5 as a deletion will break the carry.**
+AC-5 says *"stop posting the ledger, and remove the steps that wrote it
+rather than leaving them dormant"*, which presupposes nothing still reads
+it. Something does. The carry step composes the carried list from **two**
+sources: the ledger rounds supply the candidate findings, and the resolved
+thread bodies supply only which of them are answered. The suppression gate
+moved to threads in 1a and `ledgerPriorKeysFrom` is dormant — but the
+*carried list itself* is still ledger-sourced, so deleting the writer leaves
+the reviewer with no record of what earlier rounds raised.
+
+So 1c is: move the carried list's source to the thread list, then delete the
+writer. Two things that migration has to answer, because the ledger holds
+them and a thread does not: a thread carries `severity` and `summary` in its
+body and its `path`/`line` as API fields, but **no round number** — the
+`[round N]` prefix the reviewer is shown has no thread-side equivalent — and
+a dropped round is visible in the ledger as `truncated` with no counterpart
+in a thread list that GitHub never truncates. Decide what replaces each
+before removing the writer, rather than discovering it from a reviewer that
+stops being told anything.
 
 **A row with no pull request is work this spec says is next and nobody has
 claimed.** That is the state worth seeing, and it is the one a tracker of
