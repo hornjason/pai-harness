@@ -284,16 +284,31 @@ export function main(argv: readonly string[]): number {
     }
   }
 
-  if (args.record) {
-    writeFileSync(storePath, `${JSON.stringify([...store, row], null, 2)}\n`);
-    process.stdout.write(`\nrecorded row ${store.length + 1} in ${args.store}\n`);
-  } else {
-    process.stdout.write("\nnot recorded — rerun with --record to append this row\n");
-  }
-
+  // EVERY REFUSAL IS DECIDED BEFORE THE FIRST WRITE.
+  //
+  // `--record --write-spec` is the documented recipe, so the two run
+  // together; splicing after recording meant a missing marker exited 1 with
+  // the store ALREADY carrying the row. Exit 1 reads as "nothing happened",
+  // and the honest retry — the same command again — appended a SECOND row
+  // for the same range. The parity suite would catch the divergence
+  // eventually; this script's own exit code did not.
+  //
+  // It is not atomic and does not claim to be: two writes can still part
+  // company on a disk error. What it buys is that no refusal this program
+  // can *decide* leaves the store ahead of the document.
+  let specWrite: { readonly at: string; readonly text: string } | null = null;
   if (args.writeSpec !== null) {
     const at = join(process.cwd(), args.writeSpec);
-    const spliced = spliceCrcBlock(readFileSync(at, "utf-8"), row);
+    let document: string;
+    try {
+      document = readFileSync(at, "utf-8");
+    } catch (e) {
+      process.stderr.write(
+        `crc-reading: could not read ${args.writeSpec}: ${(e as Error).message}\n`,
+      );
+      return CRC_READING_REFUSED;
+    }
+    const spliced = spliceCrcBlock(document, row);
     if (spliced === null) {
       // A document that cannot say where its generated block goes is refused
       // rather than having one appended somewhere plausible.
@@ -302,6 +317,18 @@ export function main(argv: readonly string[]): number {
       );
       return CRC_READING_REFUSED;
     }
+    specWrite = { at, text: spliced };
+  }
+
+  if (args.record) {
+    writeFileSync(storePath, `${JSON.stringify([...store, row], null, 2)}\n`);
+    process.stdout.write(`\nrecorded row ${store.length + 1} in ${args.store}\n`);
+  } else {
+    process.stdout.write("\nnot recorded — rerun with --record to append this row\n");
+  }
+
+  if (specWrite !== null) {
+    const { at, text: spliced } = specWrite;
     writeFileSync(at, spliced);
     process.stdout.write(`rendered the block into ${args.writeSpec}\n`);
   }

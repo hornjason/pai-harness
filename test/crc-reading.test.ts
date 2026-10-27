@@ -19,6 +19,8 @@ import {
   AI_REVIEW_LEDGER_READ,
 } from "../lib/ai-review-rounds.ts";
 import {
+  CRC_BLOCK_BEGIN,
+  CRC_BLOCK_END,
   CRC_PREMISE_DUPLICATE,
   CRC_PREMISE_OUT_OF_RANGE,
   CRC_PREMISE_RANGE_NOT_COVERED,
@@ -680,6 +682,89 @@ describe("the script refuses, and the refusal can be removed", () => {
       expect(second.stdout).toContain("not recorded");
       // Without --record the store must not have grown.
       expect(JSON.parse(readFileSync(join(dir, "store.json"), "utf-8"))).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * #1633 round 7. `--record --write-spec` is the documented recipe, and the
+   * store was written BEFORE the splice was attempted. A spec with no
+   * markers exited 1 with the row already recorded — exit 1 reads as
+   * "nothing happened", so the honest retry ran the same command again and
+   * appended a SECOND row for the same range. The parity suite would have
+   * caught the divergence eventually; this script's own exit code did not.
+   *
+   * Both cases run the real script end to end, then assert on the STORE,
+   * because the exit code is exactly what was not telling the truth.
+   */
+  for (const [name, spec] of [
+    ["carries no markers", "# a spec with no crc-reading markers\n"],
+    ["does not exist", null],
+  ] as const) {
+    test(`a --write-spec target that ${name} leaves the store untouched`, () => {
+      const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+      try {
+        const entries = join(dir, "entries.json");
+        writeFileSync(
+          entries,
+          JSON.stringify([
+            { number: 10, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+            { number: 20, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+          ]),
+        );
+        const store = join(dir, "store.json");
+        writeFileSync(store, "[]\n");
+        if (spec !== null) writeFileSync(join(dir, "spec.md"), spec);
+
+        const args = [
+          "--lo", "10", "--hi", "20", "--from", entries,
+          "--store", "store.json", "--record", "--write-spec", "spec.md",
+        ];
+        const real = run(SCRIPT, args, dir);
+        expect(real.status).toBe(1);
+        // The whole point: refused, and the store did NOT grow, so running
+        // the same command again cannot double-count the range.
+        expect(JSON.parse(readFileSync(store, "utf-8"))).toEqual([]);
+        expect(real.stdout).not.toContain("recorded row");
+
+        const again = run(SCRIPT, args, dir);
+        expect(again.status).toBe(1);
+        expect(JSON.parse(readFileSync(store, "utf-8"))).toEqual([]);
+
+        const mutant = run(mutantPath(dir), args, dir);
+        expect(mutant.status).toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test("the control: a spec WITH markers records and renders, both", () => {
+    // Without this, a change that refused every --write-spec would make the
+    // two cases above green while breaking the documented recipe.
+    const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+    try {
+      const entries = join(dir, "entries.json");
+      writeFileSync(
+        entries,
+        JSON.stringify([
+          { number: 10, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+          { number: 20, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+        ]),
+      );
+      writeFileSync(join(dir, "store.json"), "[]\n");
+      writeFileSync(join(dir, "spec.md"), `# spec\n\n${CRC_BLOCK_BEGIN}\n${CRC_BLOCK_END}\n`);
+
+      const real = run(
+        SCRIPT,
+        ["--lo", "10", "--hi", "20", "--from", entries, "--store", "store.json",
+          "--record", "--write-spec", "spec.md"],
+        dir,
+      );
+      expect(real.status).toBe(0);
+      expect(JSON.parse(readFileSync(join(dir, "store.json"), "utf-8"))).toHaveLength(1);
+      expect(readFileSync(join(dir, "spec.md"), "utf-8")).toContain("#10–#20");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
