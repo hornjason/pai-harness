@@ -171,6 +171,241 @@ function readingDefects(body: string): string[] {
   return out;
 }
 
+/**
+ * The "Not done — the remainder" bullet list, and the sentence that tallies it.
+ *
+ * This exists because the tally drifted three times in one pull request
+ * (#1619), each time in the same way: a number hand-counted into prose, read
+ * by nobody until a reviewer re-counted it by eye. A fourth manual recount is
+ * the same instrument that produced the first three. The reviewer's own
+ * meta-finding on round 4 said so and was right — so the count is now
+ * recomputed from the bullets themselves and the prose has to agree with it.
+ *
+ * Three different quantities live in that sentence and conflating any two is
+ * exactly how it drifted:
+ *   - **bullets** — lines beginning `- **CRC-…`
+ *   - **leading ids** — ids in the bold lead of a bullet. One bullet leads
+ *     with TWO (`**CRC-E3, CRC-E9**`), so this exceeds the bullet count.
+ *   - **mentioned ids** — every id anywhere in the section, including ones
+ *     only named inside another bullet's prose.
+ */
+interface BulletTally {
+  bullets: number;
+  leading: string[];
+  mentioned: string[];
+  namedNotLeading: string[];
+}
+
+function remainderSection(body: string): string | null {
+  const at = body.indexOf("**29 bullets");
+  const start = at === -1 ? body.search(/^\*\*\d+ bullets/m) : at;
+  if (start === -1) return null;
+  const rest = body.slice(start);
+  const end = rest.search(/^### /m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/**
+ * Every measurement in *Measured non-obvious facts* must be RE-TAKEABLE.
+ *
+ * This document separates two kinds of number, and the separation is stated
+ * in the remainder tally's note above. Document-derived ones are properties
+ * of this file and are recomputed by the cases above. World-derived ones —
+ * `15 ai-review runs`, `147 parseable ledgers`, a blame walk over a merged
+ * branch — cannot be recomputed by a test, because re-measuring gives a
+ * DIFFERENT answer when the world moves. A check that reddened on that would
+ * fire on the truth.
+ *
+ * So their obligation is not verification. It is that a reader can **take
+ * the reading again**: the bullet must name a date, a run, a commit, or the
+ * command. That IS a property of the document, so it is checkable here, and
+ * making it checkable is the point.
+ *
+ * ## Why this exists rather than another recount
+ *
+ * Rounds 4, 5, 6 and 7 of #1619 all raised the same thing — hand-tallied
+ * counts in prose with nothing binding them — and the first three fixes each
+ * narrowed to the one instance cited. Round 7 was right that this does not
+ * converge. It was also right about something sharper: the previous round
+ * DECLARED the re-takeability obligation and then did not discharge it on
+ * the bullets already in the file. Measured when this case was written, six
+ * of them stated numbers and named no date, run, commit or command.
+ *
+ * A declared obligation with no reader is the same defect as a flag with no
+ * reader. This is the reader.
+ *
+ * ## WHAT THIS CANNOT DO, stated because round 8 was right about it
+ *
+ * **It is BULLET-granular. It cannot tie a specific number to a specific
+ * marker.** A bullet that already carries a date clears every number in it,
+ * including one appended later that the date does not govern — round 8's
+ * mutant is *"and 73% of all merges are affected"* added to a bullet already
+ * reading `19:15Z on 2026-10-23`, and this check stays green on it.
+ *
+ * That is not fixable by tightening the regex, and the attempt is worse than
+ * the gap. Per-sentence granularity reds the real content: *"33 distinct
+ * defects were dropped at least once. 2 were raised again. 31 were never
+ * seen again."* is three sentences and three numbers, all governed by a
+ * Method clause above them. Demanding the date be restated in each is noise,
+ * and noise is how a check gets routed around. Marker-must-precede-number
+ * does not help either — an APPENDED number is preceded by the marker.
+ *
+ * So the claim is narrowed to what is true rather than left overclaiming:
+ * **every bullet stating a measurement declares a provenance.** Accretion
+ * inside an already-marked bullet is out of scope and is named here, in the
+ * failure message, and in the spec. A check that says what it measures is
+ * this project's own rule; one that implies more is the defect rounds 4-8
+ * kept finding.
+ */
+function measuredFactsSection(body: string): string | null {
+  const start = body.search(/^## Measured non-obvious facts/m);
+  if (start === -1) return null;
+  const rest = body.slice(start).replace(/^## .*\n/, "");
+  const end = rest.search(/^## /m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/** Bullets that state a measurement and give no way to take it again. */
+function unretakeableBullets(section: string): string[] {
+  const out: string[] = [];
+  for (const bullet of section.split(/\n(?=- )/)) {
+    if (!bullet.startsWith("- ")) continue;
+    // Strip the things that are IDENTIFIERS rather than measurements. An
+    // issue number, a criterion id and a success-criterion id all carry
+    // digits and none of them is a reading. Leaving them in would make every
+    // bullet look like a measurement and the check would demand provenance
+    // for prose that states none — noise, which is how a check gets ignored.
+    const prose = bullet
+      .replace(/#\d+/g, "")
+      .replace(/\b(?:CRC|SC|AC|TC|TR|JG|FG|AR|M|N|B|E|F|H)-[A-Z]*\d+[a-z]?/g, "")
+      .replace(/\bv\d+(?:\.\d+)*/g, "");
+    // A measurement is a number of two or more digits, or a percentage.
+    if (!/\b\d{2,}\b|\d+%/.test(prose)) continue;
+
+    const retakeable =
+      /20\d\d-\d\d-\d\d/.test(bullet) || // a date
+      /`\d{8,}`|run `\d+`|runs? `\d+`/.test(bullet) || // a workflow run
+      /`[0-9a-f]{7,40}`/.test(bullet) || // a commit
+      /`(?:gh|git|bun|bunx|jq|curl|npm) /.test(bullet); // the command itself
+
+    if (!retakeable) out.push(bullet.slice(2, 110).replace(/\s+/g, " "));
+  }
+  return out;
+}
+
+function tally(section: string): BulletTally {
+  const bulletLines = section.match(/^- \*\*CRC-.*$/gm) ?? [];
+  const leading = new Set<string>();
+  for (const line of bulletLines) {
+    const lead = line.match(/^- \*\*((?:CRC-[A-Z]+\d+)(?:, CRC-[A-Z]+\d+)*)\*\*/);
+    for (const id of lead?.[1].match(/CRC-[A-Z]+\d+/g) ?? []) leading.add(id);
+  }
+  const mentioned = new Set(section.match(/CRC-[A-Z]+\d+/g) ?? []);
+  const sort = (s: Set<string>) => [...s].sort();
+  return {
+    bullets: bulletLines.length,
+    leading: sort(leading),
+    mentioned: sort(mentioned),
+    namedNotLeading: sort(mentioned).filter(id => !leading.has(id)),
+  };
+}
+
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the remainder tally is recomputed, not retyped", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+  const section = body === null ? null : remainderSection(body);
+
+  test("the section parses and holds bullets, so the tallies below are not vacuous", () => {
+    // The positive control. Every assertion here is over a parse, and a parse
+    // that found nothing satisfies all of them.
+    expect(section, "the '<N> bullets' paragraph was not found in the spec").not.toBeNull();
+    const t = tally(section!);
+    expect(t.bullets, "no `- **CRC-…` bullets parsed out of the section").toBeGreaterThan(10);
+    expect(t.mentioned.length).toBeGreaterThanOrEqual(t.leading.length);
+  });
+
+  test("the stated bullet count equals the bullets", () => {
+    // Guarded here too, not only in the control above. Each `test()` runs
+    // independently, so a `section` that failed to parse would reach `tally`
+    // as null and throw a bare TypeError rather than saying what went wrong
+    // (raised on #1619). The suite still goes red either way; this is about
+    // whether the next reader can tell WHY.
+    expect(section, "the '<N> bullets' paragraph was not found in the spec").not.toBeNull();
+    const t = tally(section!);
+    const stated = section!.match(/^\*\*(\d+) bullets/m);
+    expect(stated, "the paragraph must open `**<N> bullets`").not.toBeNull();
+    expect(
+      Number(stated![1]),
+      `the prose says ${stated![1]} bullets; ${t.bullets} parse out of the section. ` +
+        "Recompute, do not retype — this sentence has drifted three times.",
+    ).toBe(t.bullets);
+  });
+
+  test("the stated id count equals the ids, and names the right non-leading ones", () => {
+    expect(section, "the '<N> bullets' paragraph was not found in the spec").not.toBeNull();
+    const t = tally(section!);
+    // Matched against COLLAPSED whitespace. The paragraph is hard-wrapped, so
+    // a literal space in the pattern breaks the moment an edit rewraps the
+    // line — a detector narrower than what it detects, and it was: the first
+    // version of this case went red on a rewrap rather than on a wrong count.
+    const flat = section!.replace(/\s+/g, " ");
+    const m = flat.match(
+      /without leading one \(([^)]*)\);[^.]*?why (\d+) ids appear here and (\d+) is the right count/,
+    );
+    expect(
+      m,
+      "the reconciliation sentence must keep its shape: `… without leading one (<ids>); … " +
+        "why <N> ids appear here and <M> is the right count …`",
+    ).not.toBeNull();
+    // Spread before sorting: `String.match` returns a `RegExpMatchArray`, and
+    // `toEqual` has no overload for one against a `string[]`. Caught by
+    // typecheck in CI rather than locally, because the suite is outside
+    // `tsconfig` — `bun test` green does not mean `bun run typecheck` green.
+    const named: string[] = [...(m![1].match(/CRC-[A-Z]+\d+/g) ?? [])].sort();
+    expect(
+      named,
+      "the ids the sentence names as mentioned-but-not-leading are not the ones that are. " +
+        "CRC-E9 CO-LEADS a bullet with CRC-E3 and is a leading id.",
+    ).toEqual(t.namedNotLeading);
+    expect(Number(m![2]), "the stated total id count").toBe(t.mentioned.length);
+    expect(Number(m![3]), "the stated bullet count, restated in the same sentence").toBe(t.bullets);
+  });
+});
+
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every measurement can be taken again", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+  const facts = body === null ? null : measuredFactsSection(body);
+
+  test("the section parses and holds bullets that state measurements", () => {
+    // The positive control, and it carries the sharper half: a parse that
+    // found no MEASURING bullets would satisfy the case below vacuously,
+    // which is the shape this document spends its length warning about.
+    expect(facts, "'## Measured non-obvious facts' was not found").not.toBeNull();
+    const bullets = facts!.split(/\n(?=- )/).filter(b => b.startsWith("- "));
+    expect(bullets.length, "no top-level bullets parsed").toBeGreaterThan(10);
+    const measuring = bullets.filter(b => /\b\d{2,}\b/.test(b.replace(/#\d+/g, "")));
+    expect(
+      measuring.length,
+      "no bullet reads as stating a measurement, so the retakeability case below would pass over nothing",
+    ).toBeGreaterThan(5);
+  });
+
+  test("a bullet stating a measurement declares a date, a run, a commit or the command", () => {
+    expect(facts, "'## Measured non-obvious facts' was not found").not.toBeNull();
+    expect(
+      unretakeableBullets(facts!),
+      "These bullets state a number and declare no way to take the reading again. " +
+        "A world-derived number cannot be recomputed by a test — re-measuring gives a " +
+        "different answer when the world moves — so the obligation is RE-TAKEABILITY: " +
+        "name the date it was read, the workflow run, the commit, or the command. " +
+        "SCOPE, and it is narrower than it sounds: this is BULLET-granular and cannot " +
+        "tie a particular number to a particular marker, so a number appended to a " +
+        "bullet that already carries one passes. That gap is real, is not closable by " +
+        "a tighter regex without reddening correct prose, and is recorded at " +
+        "`unretakeableBullets` and in the spec rather than implied away.",
+    ).toEqual([]);
+  });
+});
+
 describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
   const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
 

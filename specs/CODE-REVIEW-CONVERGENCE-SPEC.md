@@ -136,6 +136,7 @@ showed **~59%** of what the reviewer kept flagging was code present at its first
 - [ ] CRC-N3: **Flag the class of bug**, so the author fixes every instance rather than one line.
 - [ ] CRC-N4: **No repeats** of findings already posted.
 - [ ] CRC-N5: Review agents run **nightly over existing code**.
+- [ ] CRC-N6: **A fixed defect stays fixed.** A finding must not be re-raised from text that merely DESCRIBES it — a docblock quoting the code that was removed, or prose narrating what the bug used to be.
 
 Their result, which is our target: pass-after-one-round 65% → 78%; five-or-more rounds
 8.9% → 1.5%; mean reviews to pass 2.08 → 1.32.
@@ -480,8 +481,70 @@ deviate, so CRC-B8 counts with the remainder below and these two do not.
 
 ### Not done — the remainder, with what is there instead
 
-34 criteria, listed because the near-misses are the expensive ones: each has
-something in the tree that resembles it and is not it.
+**29 bullets, one per criterion that leads one**, listed because the
+near-misses are the expensive ones: each has something in the tree that
+resembles it and is not it. The unit is stated because this line read `34`
+from before CRC-N6 was added until 2026-10-26, when counting it found 29 —
+the number had been stale for long enough that nobody could say what it had
+counted, and incrementing it would have carried the error forward. One
+further id is NAMED inside these bullets without leading one (CRC-A6); it is
+accounted for in its own bucket, and one bullet leads with TWO ids
+(**CRC-E3, CRC-E9**), which is why 31 ids appear here and 29 is the right
+count of this list.
+
+**Every number in the paragraph above is recomputed from the bullets by
+`test/code-review-convergence-spec.test.ts`, and that is the fix rather than
+the recount.** This sentence drifted three times inside one pull request
+(#1619) and every repair was another hand tally — the instrument that
+produced the drift. Round 4's reviewer said so as an approach finding and was
+right. It had also named CRC-E9 as mentioned-but-not-leading, which it is
+not: it co-leads a bullet with CRC-E3, so 29 bullets carry 30 leading ids.
+Three quantities live in one sentence — bullets, leading ids, ids mentioned
+anywhere — and conflating any two of them is how it moved each time.
+
+**Round 5 then asked the right question about the rest of the document, and
+one of its two proposed answers is wrong.** It observed that this file
+hand-types dozens of other tallies — *272 (finding, later round) pairs*,
+*147 parseable ledgers*, *161 distinct rounds*, *31 review threads of which
+12 were one note* — none of them bound by anything, and offered two ways out:
+machine-verify them, or declare them exempt. **Machine-verifying them is not
+possible and would be wrong if it were.** The numbers fall into two classes
+and only one of them is a property of this document:
+
+| Class | Example | Can a test recompute it? | Rule |
+|---|---|---|---|
+| **Document-derived** | the bullet count, the id set, which criteria sit in which bucket | Yes — it is in the file | **Must be computed.** A hand-typed one is a defect |
+| **World-derived** | `15 ai-review runs`, `147 parseable ledgers`, `12 entries and truncated 5` | No | **Must carry its date and the command that took it** |
+
+A world-derived number re-measured gives a **different** answer, because the
+world moved — that is what makes it a measurement rather than a tally. Re-
+running `gh run list` against a branch next month and reddening the document
+when the count changed would be a check that fires on the truth. So the
+obligation on those is not verification but **re-takeability**: state when it
+was read and with what, so the next reader can take the reading again and see
+for themselves that it moved.
+
+All three drifts this pull request fixed were document-derived, and the one
+test now added covers that class where it is concentrated. The world-derived
+readings in this file are dated where they are stated and are not, and cannot
+be, bound by a test.
+
+**The re-takeability check is BULLET-granular, and that bound is stated
+because round 8 of this pull request's review found it and was right.** It
+asks whether a bullet stating a measurement declares a date, a run, a commit
+or a command. It cannot ask whether *this* marker governs *that* number — so
+a figure appended to a bullet that already carries a marker passes. The gap
+is not closable by a tighter regex: per-sentence granularity reds correct
+prose, because *"33 defects were dropped. 2 were raised again. 31 were never
+seen again"* is three sentences governed by one Method clause above them, and
+requiring the date in each is noise. Requiring the marker to PRECEDE the
+number does not help either, since an appended figure follows it.
+
+So what is enforced is the narrow claim — **every bullet stating a
+measurement declares a provenance** — and the remainder is declared rather
+than implied. Rounds 4 through 8 each found the same class one layer further
+up; a check that implied it had closed the class would have been the next
+instance of it.
 
 - **CRC-A1** `missingEvidenceViolations` requires a runnable command per AC and `gates/workflow.test.ts` enforces it — but only inside a harness ship run, and `ship.mode` is `direct`. Dormant on the lane this project ships on.
 - **CRC-A2** Nothing makes a fresh-context subagent review the diff before the PR opens. The generated pre-push hook runs conformity tests, not a review.
@@ -510,6 +573,7 @@ something in the tree that resembles it and is not it.
 - **CRC-M10** Nothing tracks revert or incident rates.
 - **CRC-N4** **Half of it shipped in #1381 and the half the criterion is named for did not.** The walker exists: the generated `ai-review-carry` step reads the ledger, searches each prior finding's file for the recorded anchor TEXT at this commit (#1601 — it compared the text at the recorded LINE NUMBER until 2026-10-24, and an edit anywhere above a finding dropped it as resolved), and hands the reviewer the unresolved set under one of three readings that may not collapse — `AI_REVIEW_CARRY_READ`, `AI_REVIEW_CARRY_ABSENT`, `AI_REVIEW_CARRY_UNMEASURED`. It restates `readLedger → priorFindings → carryForward` in bash and is bound to the library over one matrix by `test/ai-review-carry-forward.test.ts`, because `lib/scaffold/ai-review-step.ts` may not import: the step is deliberately import-free so that the 27 suites copying it into a temp directory can build mutants that load. What remained was **suppression**, and #1586 built it: `lib/ai-review-suppression.ts` turns the carry step's state file and a ledger snapshot into the prior key set, and `scripts/ai-review-findings.ts` hands the adjudicator a gate over it. Three things keep this criterion unticked. **It is dormant** — the generated job runs `bunx rungate@<pinned>`, so this reaches CI only when the pin moves, and a tick is read as *running*. **It is advisory-only by declared deviation** — a blocking repeat is re-reported and still blocks; see the deviations table. **The key symmetry is new** — before #1586 the adjudicator formed `n:<line>` keys and the ledger held `t:<text>` keys, so a dedupe built on it would have matched nothing while reporting cleanly; `lineTextFor` reads the checkout and `test/ai-review-suppression.test.ts` AS-5 is the control that holds it.
 - **CRC-N5** Nothing runs review agents nightly over existing code.
+- **CRC-N6** **Named because it was measured, with nothing built.** Five consecutive rounds on #1614 re-raised one already-fixed defect: four consecutive rounds from a docblock that QUOTED the removed regex, and the FINAL round — after the quotation was deleted — from the PARAPHRASE that replaced it, reconstructing a regex literal that appears nowhere in the tree. CRC-N4's dedupe cannot absorb it, because the suppression key is `file \0 line-text \0 summary` and a regenerated finding carries a new summary: it is not a repeat, it is a new finding about code that does not exist. The near-miss is *"do not quote dead code in comments"*, which was applied and then defeated. The reading is in *Measured non-obvious facts*. **It is deliberately NOT a request for new machinery** — the prior-art section above found that a verification gate re-checking each finding against the real code at the cited line is the documented mitigation for the wider class it belongs to, and that gate is CRC-B4. This criterion names the case so a verifier can be held to it; it does not ask for a second mechanism beside one already planned.
 - **CRC-H2** Risky code requires a human. There is no `CODEOWNERS` and no required approval, so nothing does.
 
 ### Shipped since this audit was taken
@@ -729,10 +793,16 @@ claims, deliberately kept in three places, and the reason is in that section.
 
 | PR | Phase / increment | Criteria it is pointed at | State |
 |---|---|---|---|
-| #1614 | prerequisite — the reviewer has to run on a pull request at all before any phase can be read off one | CRC-F2, CRC-N1 | open; carries `ai-review-override`, so it merges by hand |
-| #1617 | records Phase 0's exit, and this table | CRC-C2, CRC-C3, CRC-B8 | open |
-| — | Increment 1 — the suppression gate and carry-forward read the review-thread endpoint and GraphQL `isResolved`, and the ledger comment goes | CRC-N4, CRC-B5 | not started; **Phase 1 depends on it** |
+| — | Increment 1b — carry-forward decides "still unanswered" from an OPEN thread and treats a RESOLVED one as answered | CRC-N4, CRC-B5 | next. **1a merged in #1618**: a posted thread now carries the key it was raised under, base64 in an HTML comment, which is what makes a thread re-keyable at all |
+| — | Increment 1c — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4 | gated on 1b. Not before: the producer posts the repeat-SUPPRESSED set and the gate that suppresses reads the ledger, so removing it first opens a duplicate thread per finding per round |
 | — | Increment 2 — a verifier invocation writes a ballot, three invocations with per-verifier directories | CRC-B4, CRC-B3 | blocked on the ordering defect below |
+| — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
+
+**Merged, and kept out of this table on purpose.** #1614 (`1b9ffce3`), #1616
+(`1804ae9d`), #1617 (`aed22884`) and #1618 (`fe1f9292`) all landed on
+2026-10-26. A merged branch is not work in flight, and its record lives in
+*Readings taken* and in git rather than in a row that would otherwise
+accumulate for ever.
 
 **A row with no pull request is work this spec says is next and nobody has
 claimed.** That is the state worth seeing, and it is the one a tracker of
@@ -1063,15 +1133,220 @@ A deviation is legitimate when it is written here with its reason. An undeclared
 | **A correctly-carried ADVISORY that the reviewer re-reports is suppressed, and no exemption is made for it.** An exemption was specified while the carry was DROPPING findings (#1601), when a suppressed advisory appeared nowhere at all. With the anchor content-addressed the premise is gone, and the question was re-asked rather than inherited. | **What a reader loses is the advisory's TEXT in this round's annotations, and nothing else.** Three things are unaffected, each read from source rather than assumed. **It is in the record:** the job order is `ai-review-carry` → the reviewer → `ai-review-persist`, *which upserts this round into the ledger comment*, → `ai-review-run`, which invokes the adjudicator — so persistence happens BEFORE suppression and the re-reported advisory is in the ledger for that round whether or not the report shows it. **It was reported in full once**, on the round it was first raised, where nothing suppressed it. **Its absence is announced**: the carry step emits `ai-review carry-forward: ${carried_count} finding(s) from earlier rounds are unanswered at this commit` on every round. **The one real cost, stated so nobody re-derives it:** that annotation is a COUNT and not a list, so a reader who wants to know WHICH advisory is outstanding opens the ledger comment. That is an indirection, not a lost record. **So: nothing a human sees today is lost, and the exemption is not needed.** This row exists so the next person does not re-derive the question from the #1601-era specification of it. | The carry annotation stops reporting a count, or an advisory becomes something a merge decision reads. Either makes the indirection a gap rather than a click. |
 | **CRC-N4 suppression applies to ADVISORY findings only. A blocking finding is re-reported on every round, at any key.** The criterion as written at CRC-N4 above asks for *"no repeats of findings already posted"*, without qualification, and the audit line at **CRC-N4** in *What the criteria say we have not built* names the remaining work as *"until the adjudicator drops a finding matching an earlier round's key"*. It does not drop one that blocks. | **Two of our own artefacts disagree, and the newer one is right.** `buildReviewPrompt` in `lib/scaffold/ai-review-step.ts` tells the reviewer: *"CHECK EACH CARRIED FINDING AGAINST THE CODE AND RE-REPORT THE ONES THAT ARE STILL TRUE, at the severity each deserves. … A carried finding you silently leave out is a finding that has stopped being reported, and that is how a live defect reaches a green check."* So on every round after the first, a live unresolved finding is **supposed** to be in the payload and is key-identical to the ledger's. Subtracting it is not de-duplication; it is deleting the only signal the gate has. **Measured on the real functions before the code was written** — a round-1 blocking finding, re-reported on round 2 exactly as instructed, through `priorFindings` → `suppressRepeats` with the ledger's keys: `kept: 0`, `severity of what survives: []`, therefore `blocked: false` and the outcome `CLEAN`. That is a green required check over a defect an earlier round blocked on, which is SUCCESS.md claim 4 failing inside this repository's own merge gate. The exemption is **structural** rather than a rule the gate is trusted to follow: `findingMustAlwaysBeReported` in `lib/scaffold/ai-review-findings.ts` filters before `AiReviewSuppressionGate` is handed anything, so no answer the gate can give drops a blocking finding, and an UNRECOGNISED severity is protected too (`severityBlocks` answers `null`, which is not `false`). `test/ai-review-suppression.test.ts` AS-2 is the measurement executed, with a mutant that removes the exemption and turns the verdict from a refusal into a green check. | Blocking findings stop being carried into the payload — i.e. the carry step hands the reviewer a resolved/unresolved verdict the adjudicator can trust, so a re-emission is distinguishable from an unanswered repeat. Not before, and not by widening the predicate. |
 
+## Prior art — what the industry does about non-convergence
+
+Searched 2026-10-26, after the #1614 round-economics reading below and
+**before** building anything from it. Recorded because three of the four
+mechanisms this document was about to specify already exist by name, and in
+two cases the external design is better than the one proposed here.
+
+**Where we agree, and need not change.**
+
+- **Finding fingerprints.** The common shape is
+  `fingerprint(path, line, rule, snippetHash)` persisted in a sidecar store,
+  gated fail-open: an unreadable store posts as before rather than dropping
+  findings. That is `carryKey` and `aiReviewSuppressionGate`, including the
+  fail-open direction. **Ours anchors on line TEXT rather than line number**,
+  which is the #1601 lesson and which the common shape does not have —
+  keeping a line number in the identity is the defect we already paid for.
+- **Where the fingerprint lives.** Others keep a sidecar JSON or SQLite keyed
+  by fingerprint plus commit range. #1618 puts it in the review thread
+  itself. That is not a worse answer: GitHub already owns thread resolution
+  state, so there is no second store to corrupt and no reconciliation between
+  the store's idea of "answered" and the platform's.
+
+**Where the industry does something we do not.**
+
+- **Scope, not suppression, is the primary mechanism.** CodeRabbit's docs are
+  explicit: `@coderabbitai review` *"does only incremental review (what
+  changed since last review)"*, against `full review`, which *"disregards any
+  comments that CodeRabbit has already made"*. Greptile tracks a last-reviewed
+  commit per pull request. **That is CRC-N2**, which this document specifies,
+  ships as a scope WORD, and has never verified the reviewer obeys. We have
+  been investing in the secondary mechanism while the primary one is
+  UNMEASURED.
+- **Prior comments go into the reviewer's CONTEXT, not only into a filter
+  after it.** An incremental pass *"takes all comments that CodeRabbit has
+  made since its most recent full review into consideration"*. Our carry step
+  hands over the unresolved set, and our suppression gate then filters the
+  output — but a reviewer that re-raises a finding it was told about is a
+  reviewer whose context did not bind, and filtering afterwards hides that
+  rather than measuring it.
+- **A round cap keyed to SEVERITY, not to a count.** The pattern reported in
+  the field: past round 4, if findings are mostly NEW LOW-severity issues
+  absent from prior rounds, emit a non-convergence meta-finding recommending
+  human review, **suppress the new low-severity findings**, and downgrade the
+  verdict to COMMENT — **unless a medium-or-higher finding exists, which
+  blocks early termination.** Accept-count decay (10 → 2 → 1 accepted
+  findings) is used the same way. **CRC-N1's flat cap of three is strictly
+  worse than this and #1614 shows the cost**: the two guard bypasses were
+  found at rounds 10 and 11, the second as the run's only `BLOCKED` verdict,
+  and a flat cap of three ships both. A severity-aware cap does not.
+- **The cap is the airbag; the brake is no-progress detection.** Oscillation
+  is classified over a recent window as converging / stalled / oscillating /
+  diverging, from required-tier finding count, distinct affected files,
+  repeated-or-adjacent fingerprints and remediation diff size. **The
+  "self-inflicted ratio" proposed in this document is that, rediscovered and
+  less well specified**, and the external framing carries a calibration we do
+  not have: if the cap fires in more than about 1% of runs, the loop design
+  is wrong rather than the cap.
+- **Do not ask the model whether to continue.** Reported consistently: asked,
+  it says "one more round" almost every time, because stopping does not sound
+  helpful. Termination must be an explicit tool call or an external counter.
+- **Role asymmetry and context isolation.** The critic flags and never
+  proposes fixes; the actor holds fix authority; the two run in separate
+  sessions so the critic cannot reason in a circle around its own suggestion.
+  Our reviewer both flags and recommends, and #1614's rounds 8–9 are exactly
+  the failure this prevents — a docblock written to satisfy round 8 became
+  round 9's finding.
+
+**The failure mode is named and documented elsewhere, with a near-identical
+instance.** A reported case: 11 consecutive CHANGES_REQUESTED reviews, 18
+findings across 11 rounds (14 low, 4 medium), each round raising 1–3 new
+findings as the previous ones were fixed, drifting from naming to validation
+to dead code to Unicode symbols to test naming — and never surfacing the
+design problem for which a human eventually closed the pull request. Ours ran
+15 rounds and 31 threads. We are not in novel territory.
+
+**What nobody else appears to have named — and why it still may not need a new
+mechanism.** No source found addresses a reviewer re-raising a defect from
+text that merely DESCRIBES it. The closest documented shape is *"a comment
+that invents a constraint absent from the codebase"*, and the documented
+mitigation is a **verification gate**: a second pass re-checks each finding
+against the real code at the cited line, biased toward refuting, before the
+finding is acted on. **That is CRC-B4** — this document's own Phase 2 — and
+the by-hand version of it killed the final round's finding in one grep
+(`TRIGGER_NAME`, 0 occurrences). So CRC-N6 below is recorded as a measured
+case rather than as a request for new machinery, and the conclusion runs the
+other way from where this document had it: **Phase 2 is worth more than its
+position in the order suggests, and the ordering defect blocking it is worth
+fixing sooner.** One caveat, from the same sources and binding on us: a
+verifier that is the same model with the same evidence shares the prior that
+produced the false positive, so the gate must hand it something the generator
+did not have — a resolved symbol table, an AST, or a grep for the named
+identifier.
+
+**Calibration numbers worth holding against our own.** Google kept static
+analyzers in code review only while the effective false-positive rate stayed
+under 10%; the reported trust curve is a step function, with developers
+investigating every finding below ~10% and calling the tool noisy between
+10–30%. Multi-pass consensus is the deployed answer to a sampled instrument:
+one reviewer runs eight passes over the diff in shuffled order and drops any
+finding only one pass raised; another runs three models and flags only on
+two-of-three agreement. **That is CRC-B3's quorum, already specified here**,
+and the field evidence is that it is deployed elsewhere rather than
+theoretical.
+
+**Sources.** CodeRabbit's own incremental-review documentation, read
+directly rather than from a summary; Greptile per-PR last-reviewed-commit
+behaviour; published write-ups on agent-loop termination, no-progress
+detection and semantic early-stopping; published false-positive analyses from
+cubic, CodeAnt, Qodo, Augment and diffray. Full URLs are in the pull request
+that added this section, kept there rather than here because a link list in a
+spec rots without anything checking it.
+
 ## Measured non-obvious facts about our own instruments
 
 Recorded because each one invalidates a naive reading of the criteria above.
 
-- **A metric that exists is not a metric that reports, and CRC-M11 sat in that gap for two days.** `lib/rounds-to-pass.ts` shipped in #1441 and printed `measured 1, unmeasured 39` against the live tracker: every refusal was `ROUNDS_TRUNCATION_UNKNOWN`, because `readLedger` called every legacy bare-array ledger unknowable while the #1405 WRITER already derived the opposite for the same input — a list that grows by one per round and is only cut at the cap was never cut if it is shorter than the cap. Same fact, two modules, two answers, and the metric consumed the readers. #1448 taught the reader the derivation and the reading became `measured 44, unmeasured 1`. **The lesson is the shape, not the bug:** a criterion asking for a number must be checked by running it, because a file-exists matcher would have ticked this while the command refused 39 of 40 rows. It is why CRC-M11 is banked in `CLAIMED_UNBINDABLE` rather than given a pattern.
+- **Fifteen rounds on one pull request produced three genuine findings and nine repairs of its own wake, and the most valuable finding arrived at round 10 (#1614).** The biggest round-economics draw this repository has. Method: every commit on the branch was classified by `git blame`ing the lines its diff DELETED at its own parent, so a fix is attributed to whoever wrote the code it repaired rather than to its commit message. Of 12 substantive commits, **3 repaired defects in the pull request's own new code** — `f840d009` an inverted fork guard, `f71f816e` check 3 reporting over an intersection, `abf2a05e` a trigger reader that missed two valid YAML spellings — and **9 repaired code written in response to an earlier round of the same review**: `3e7babb1`→`f840d009`, `471a5b50`→`3e7babb1`, `8f923b4a`→`abf2a05e`, `1526fc29`→`8f923b4a`, `810d7798`→`f71f816e`, plus four commits repairing the author's own prose. **31 review threads, of which 12 were ONE informational note re-posted** (39%), 19 were findings, and all 19 landed on 2 files. **Exactly one blocking finding across all fifteen rounds**, at round 11; it was correct and it is described below. Wall clock 10:27 to 16:20.
+
+  **The result that should change the design is the timing, not the ratio.** The
+  genuine finds landed at rounds ~2, ~3, **10 and 11**, and the last two are the
+  ones the pull request existed to prevent. The branch's whole purpose was making
+  the reviewer run automatically on every pull request **including forks**.
+  Round 10 found the trigger reader was `/^\s{2}([a-z_]+):/gm` — block style at
+  exactly two spaces — so that with only the `on:` block swapped,
+  `on: {pull_request_target: }` and four-space indentation both returned `[]`,
+  silently; `pull_request_target` runs the job with a WRITE token on a fork's
+  pull request. **Round 11 then returned the only `BLOCKED` verdict of the run**
+  (`ai-review` run `40390027701`, head `8f923b4a`, one `high` on `triggerNames`
+  in `lib/review-tool-agreement.ts`): the widened regex still ignored a YAML
+  **merge key**, so a trigger introduced as `<<: *anchor` was invisible to every
+  downstream check. That finding is what produced `1526fc29`, the switch to
+  `Bun.YAML`, which also caught a list form and a scalar form nobody had raised.
+  **CRC-N1's cap is three rounds. A cap of three ships both holes.**
+
+  **The cap also counts the wrong unit, and so did this bullet — twice.** Of
+  the 15 `ai-review` runs on this
+  branch, **two concluded `failure` and only one of those was a finding**: run
+  `40347808694` was the no-payload refusal — *"the review action exited
+  successfully WITHOUT writing a findings payload"* — which is UNMEASURED, not a
+  verdict. The cap counts INVOCATIONS, and a reader of *"the budget is spent"*
+  needs the count of rounds that produced a review. The honest instrument is
+  neither a lower cap nor a higher one but the **self-inflicted ratio** above,
+  computable from the same blame walk: a round whose findings are entirely about
+  the previous round's edits is a round the loop is talking to itself, and
+  nothing measures that today. **Nothing here is a reason to move CRC-N1 and the
+  cap is deliberately left where it is** — this entry records a measurement, and
+  moving a shipped gate on one pull request is the error this document's own
+  *"a sampled instrument"* bullet warns about. n=1.
+
+  **Individual rounds are named by POSITION, not by ordinal, and that is a
+  correction.** An earlier draft numbered the stale re-raises `12`–`15` and the
+  paraphrase `16`, which cannot all be right in a fifteen-round run; the
+  numbering came from counting threads rather than from reading the ledger, and
+  the reviewer caught the contradiction on #1619 after a first correction
+  changed two sites and left five. What is directly readable is the count of
+  consecutive rounds anchored on one docblock (four) and which round was last
+  (the reviewer's own note calls itself *"this round (15)"*), so that is what is
+  written. An ordinal nobody can check is worse than a position everybody can.
+
+  **Two limits on this reading, stated because they bound it.** The ledger is a
+  WINDOW of `AI_REVIEW_LEDGER_MAX_ROUNDS` = 12 entries and it is full: 12
+  entries carrying 11 distinct round numbers, because round 9 appears twice
+  (#1592 — a re-run appends an entry at the same number). Its earliest entry is
+  round 5, **so rounds 1–4 are absent and nothing here characterises them.** Its
+  `truncated` count reads **5**, which is five evicted ENTRIES and not five
+  round numbers — the same unit distinction, one line
+  further on, and the first draft of this bullet ignored it — it wrote
+  "`truncated: 5`, so **rounds 1–4 are gone**", converting an entry count into
+  a round range and then getting even that arithmetic wrong, since five cannot
+  leave four. The reviewer caught the contradiction on #1619 and proposed the
+  range read "1–5"; that is the same category error with better-looking digits,
+  because the two numbers cannot be reconciled into a round range in either
+  direction — an evicted entry may have been a duplicate, exactly as the
+  surviving round 9 is. **What the ledger supports is
+  the first present round number, not a derived count of missing ones.** And
+  `f71f816e` **was never reviewed**: its no-payload refusal was cleared at 18:27
+  by a WAIVER on the unchanged sha, whose annotation reads *"the AI review on
+  this pull request was WAIVED by the 'ai-review-override' label"*. One of the
+  three genuine defects above sits in a commit that no review ever passed
+  judgement on, which is the waiver-is-not-a-review distinction costing something
+  real rather than being a definitional point.
+
+  **A ledger entry is written per ATTEMPT, not per run, and that is the third
+  unit error in this bullet — found by round 4's reviewer on #1619, as
+  arithmetic rather than as a reading.** Its objection was sound and its
+  conclusion was not: 12 surviving entries plus a `truncated` of 5 is 17
+  entries ever appended, against 15 `ai-review` runs, so it inferred that one
+  of the three numbers must be wrong. **All three are right.** The writer's
+  accumulator is `prior_truncated + evicted_this_write` and it runs once per
+  job execution; a re-run is a second ATTEMPT of the SAME run id, which `gh
+  run list` renders as one row. Two runs on this branch carry
+  `run_attempt: 2` — `40386531604` and `40347808694`, the second of them the
+  no-payload refusal the objection assumed had written nothing — so 15 runs
+  are 17 executions and 17 appends, and `12 + 5` is exactly that. The
+  duplicate round 9 already in the window is one of the two, which is the
+  same mechanism visible from the other side.
+
+  **Three unit errors in one bullet is the finding, not the arithmetic.**
+  Entries read as rounds, runs read as rounds, and now attempts read as runs:
+  every one is a count whose unit was inferred from a plausible name rather
+  than from the writer. **`gh run list` is the shared cause of the second and
+  third** — it is a list of runs, the thing that appends is an attempt, and
+  nothing in its output says so.
+
+
+- **A finding can be regenerated from prose that merely DESCRIBES it, and deduplication cannot see that (#1614, CRC-N6).** Four consecutive rounds each re-raised an already-fixed defect, all four anchored on the same docblock, which QUOTED the deleted regex verbatim — a dead pattern spelled out in a comment is indistinguishable from live code to anything matching on text. `5449750b` removed the last verbatim copy. **The FINAL round then re-raised it again from the paraphrase**, reconstructing a regex literal that appears nowhere in the file, attributing it to a line number, and working out what its output would be on the live workflow — `["workflow_dispatch","inputs","pr","description","required","type","pull_request"]` — against a measured actual of `["workflow_dispatch","pull_request"]`. The symbol it named, `TRIGGER_NAME`, has **0 occurrences at that head**. What survived at that line is a prose row in a history table: *"any indentation is any DEPTH, so every field of the `workflow_dispatch.inputs` schema read as a trigger"*. **Why CRC-N4 cannot absorb this:** the suppression key is `file \0 line-text \0 summary`, and a regenerated finding has a different summary and usually a different line, so it is not a repeat by any key the dedupe can form. It is a NEW finding about code that does not exist. **The cheap fix is wrong in a way worth naming:** "stop quoting dead code in comments" was applied in `5449750b` and the final round defeated it, so the rule that would actually bind is about where a defect's history is allowed to live — the commit and the pull request, which the reviewer does not read as the subject, rather than the docblock, which it does.
+
+- **A one-round CLEAN on the same reviewer, the same repository and the same day is the control the fifteen-round run needs (#1618).** Opened 2026-10-26 at `115ef5e5`, nine checks green, **zero review threads, one round**, and the annotation reads `ai-review findings outcome: CLEAN — read from the findings payload` rather than the waiver sentence, so a review happened and found nothing. Recorded because without it the #1614 entry above reads as a statement about the instrument, and it is not one: the same instrument returned a clean single round on a 3-file diff that added a function, a reader and a test. **What differs between the two is the subject, not the reviewer** — #1614 edited a security guard whose correctness is a property of an open set of YAML spellings, and every round's fix was new unreviewed code in exactly that set. The pair is two draws, not a population, and neither licenses a claim about rounds-per-PR in general.
+
+- **A metric that exists is not a metric that reports, and CRC-M11 sat in that gap for two days.** `lib/rounds-to-pass.ts` shipped in #1441 and printed `measured 1, unmeasured 39` against the live tracker: every refusal was `ROUNDS_TRUNCATION_UNKNOWN`, because `readLedger` called every legacy bare-array ledger unknowable while the #1405 WRITER already derived the opposite for the same input — a list that grows by one per round and is only cut at the cap was never cut if it is shorter than the cap. Same fact, two modules, two answers, and the metric consumed the readers. #1448 taught the reader the derivation and the reading became `measured 44, unmeasured 1`. **The lesson is the shape, not the bug:** a criterion asking for a number must be checked by running it, because a file-exists matcher would have ticked this while the command refused 39 of 40 rows. It is why CRC-M11 is banked in `CLAIMED_UNBINDABLE` rather than given a pattern. **Both readings were taken 2026-10-23** by running `bun lib/rounds-to-pass.ts` against the live tracker; re-run it to take them again.
 
 - **`ai-review` is a sampled instrument, not an enumerated one.** `lib/scaffold/ai-review-step.ts` reviewed CLEAN on #1262 and BLOCKED on #1274 about an hour later, both at `scope=full`, with the flagged construct byte-identical across the two heads (content hash equal; whole-file hash differing as the control). **A green review means this run did not find this thing.** Any criterion scored by comparing reviewer verdicts across runs is reading a sample.
 - **A second mechanism produces the same error direction, and it is a different axis from a same-tree repeat.** The #1262/#1274 pair above and the #1334 pair in `CRC-B3` both hold the tree fixed. This one does not: on #1337, run `39972693180` (head `fb295a47`, created 14:47:51Z) returned `findings: []` and run `39973400503` (head `3d3c5b62`, created 14:52:46Z) returned one `high` naming `lib/scaffold/steps.ts`. **`git diff` between the two heads is 18 insertions in one test file and nothing else**, and the subject the finding names is the identical blob `57cb319f` at both — the whole-file object hash, which is the stronger form of the content-hash control used above. Both runs were created before #1340 merged at 15:00:18Z, so the base is held too. So the instrument flipped on a change that cannot have caused the flip, and the direction was the costly one again: four observations now, all false positives. **The third draw is not a fourth instance and must not be counted as one** — run `39975917885` (head `0bf21bcc`, created 15:10:01Z) returned `[]`, but it was created after #1340 merged, so its merge ref carries a base the first two never reviewed. It is an uncontrolled sample, not a reversal.
-- **A ledger timestamp is not the tree that was reviewed.** The near-miss above is worth more than the instance. The ledger rows for those runs read 14:53:08Z and 15:01:15Z, and the second is after #1340 merged — which reads as the second round having reviewed it, and it did not. **The ledger step runs late in the job; the merge ref is fixed at run creation.** `at` is when the step wrote, `createdAt` is what was reviewed, and only the second answers the question. The ledger's own timestamps are the field a reader reaches for first and the wrong one for this.
+- **A ledger timestamp is not the tree that was reviewed.** The near-miss above is worth more than the instance. The ledger rows for those runs read 14:53:08Z and 15:01:15Z, and the second is after #1340 merged — which reads as the second round having reviewed it, and it did not. **The ledger step runs late in the job; the merge ref is fixed at run creation.** `at` is when the step wrote, `createdAt` is what was reviewed, and only the second answers the question. The ledger's own timestamps are the field a reader reaches for first and the wrong one for this. **Read 2026-10-23** from those runs' ledger rows and their `createdAt`.
 - **CRC-E4 was satisfied by its own inverse before #1437, and the inverse looked like compliance.** `ai-review` refuses any pull request whose `.github/workflows/ai-review.yml` differs from the default branch's — one file, not any CI workflow file — and the documented escape, the `ai-review-override` label, **waives the check** rather than routing to a person. Measured at 19:15Z on 2026-10-23, with 15 pull requests open: **five edit that file and so can never go green** (a change to the reviewer cannot pass the reviewer), and **five more were red only because `main` had moved it underneath them** — `gh pr update-branch` cleared those five, and #1358 merged twenty minutes later having been red for four hours for a reason it did not cause. A check that cannot pass, plus a label that waives it, records nothing about whether anybody read the diff. `ALWAYS_HIGH_PREFIXES` in `lib/risk-tier.ts` is a floor no configuration can lower, but branch protection still requires zero approvals, so what the tier produces today is a **reading** rather than an enforced gate — CRC-E6 and CRC-E8 remain blocked on that setting, and the reading is what a consumer with required reviews would hand to it.
 - **CRC-M6's four buckets are not all measurable here yet.** Three of the four — wrong / intentional / didn't matter — report `UNMEASURED` rather than 0, because closing comments follow no parseable convention. `noiseRate` is `null`, not `0`.
 - **There is nothing deployed for a quorum to vary, so its variance control reads zero by construction.** The live filing path is `hooks/VerifyPhaseLock.hook.ts` → `filingGate` → `adjudicateFiling`, which runs a category regex over the title and set arithmetic over symptom keys and nothing else — no clock, no randomness, no network, no model. `arbitrate`, the five-stage path that takes votes, has exactly one caller outside `lib/` and `test/`: `scripts/arbitrate-finding.ts`. So twenty runs of the single adjudicator report one distinct outcome set, and **a quorum would introduce variance here rather than reduce it**. Calling the quorum "the variance control" inverts which way the causation runs.
@@ -1082,7 +1357,7 @@ Recorded because each one invalidates a naive reading of the criteria above.
 - **The waiver cannot waive a finding, and did not.** `ai-review-override` is consulted only on routes where **no findings payload exists** — the structural refusal and the action-did-not-complete routes. A payload that adjudicates to BLOCKED exits non-zero without the label being read, and a payload present alongside the label is its own UNMEASURED refusal. So "a finding was waived past merge" is not a hole in this pipeline, and a gate built over it would have guarded nothing. Recorded because it is the first thing a reader looking for CRC-B8's merge hole reaches for.
 - **GitHub's own implementation of CRC-B8 is ON, and this bullet said the opposite until 2026-10-25.** Read from the API on 2026-10-25: `required_conversation_resolution: true`, alongside `enforce_admins: true`, `strict: false`, and no required reviews. The bullet previously read `false` and concluded that the native mechanism was *"available and unused"* and that CRC-B8 *"cannot be closed by code alone"*. **Correcting the boolean does not leave that inference standing, so it is withdrawn rather than reworded:** the mechanism is not unused, it is in force, and the thing CRC-B8 then lacked was not a setting but a *producer*. **That half closed on 2026-10-26** — the generated workflow's `ai-review-threads` step opens a thread per finding and #1614 carries four — so what CRC-B8 lacks now is neither setting nor producer but a **reading**, and the distinction matters because a block observed while another required check is also failing is overdetermined and attributes nothing. The half this document can hold code to is therefore the one above it, and it is the half that matters more than it did when this read `false`. **What is worth more than either fact: the document already contradicted itself.** Phase 0 records *"CRC-C3 is APPLIED as of 2026-10-23"* with the same field read `true`, under *Phase 0 — three settings, no engineering*, and the two sat in one file disagreeing because nothing compares two prose statements of one API field — `.claude/rules/checks-must-be-able-to-fail.md`'s *"when a guard enforces a property, ask what other syntax expresses the same property"*, with the guard missing entirely. The audit entries for CRC-C2, CRC-C3 and CRC-E8 each read a different consequence off the same protection document and are deliberately not repeated here; that they are not repeated is now load-bearing rather than tidy.
 - **A required check reported CLEAN over a live blocker for two rounds, because the carry anchored on a LINE NUMBER (#1601).** This is Claim 4 failing inside this repository's own merge gate, with a named instance. On PR #1597 round 5 blocked on a `high` in `lib/issue-filing-gate.ts`, at what was then line 1827 (run `40139615405`, head `89b6cc61` — the number is quoted as the anchor the ledger recorded, not as a position in today's tree, which is the whole subject of this entry); rounds 6 and 7 both reported `CLEAN` and `0 finding(s) from earlier rounds are unanswered`, and the defect was never fixed — the agent working the PR said so in its own report. Unrelated edits had shifted the file, so line 1827 held a comment instead of the recorded code, the comparison failed, and the finding was classified **resolved**. **The drop is permanent, not a one-round blip:** the ledger keeps the original anchor for ever, so once the text at that line stops matching it never starts again. The failure direction is what makes it bite — the carry rule's three branches were deliberately built to fail TOWARD carrying (a null anchor carries, an unreadable anchor carries), and a **successfully read wrong line** is indistinguishable from a genuinely fixed one. **The single fail-open branch is the one ordinary editing produces on every push.** The fix is content-addressing: count the lines equal to the recorded text, carry on one or more, resolve only on zero, and leave an empty recorded anchor on the line path because #1406 established that is a real reading of a genuinely blank line. **The general shape, which is the part worth carrying:** when a check compares a stored observation against the present, ask what the identity of the observation is. A line number is a COORDINATE, and a coordinate is only stable while nothing above it moves.
-- **The "second chance" a full-scope round gives a dropped finding is real, and it is taken once in thirty-three (#1600, #1601).** The argument for fixing #1601 before narrowing was that under `scope=full` the reviewer re-reads the branch and can re-find a defect the carry dropped, while under `scope=diff` a dropped finding in an untouched file is read by nothing. That sentence was shipped unquantified, which makes it unfalsifiable, so it was measured. **Method:** all 828 pull requests walked, 147 parseable ledgers, 193 findings carrying both a non-empty recorded anchor text and a numeric line; for each of the **272** (finding, later round) pairs the blob was fetched at that round's own head sha and the PRE-#1601 rule replayed against it. A drop is a pair where the recorded line no longer holds the recorded text **and** the text is still somewhere in the file — the content rule carries it, the line rule resolves it. Every round in the corpus is full-scope, because narrowing has never shipped; the population is therefore exactly the one the claim is about. **Result: 33 distinct defects were dropped at least once. 2 were raised again by a later round. 31 were never seen again.** Reading the two rather than reporting the count is what makes the answer one: **#1435** is clean — a `medium` raised at round 1, dropped by the anchor at round 2, absent through rounds 2–4, raised again at round 5 — and **#1597**'s is an `info` remark whose anchor is the function signature `export async function filingGate(`, raised at rounds 6, 7, 9 and 10, which is better read as a recurring remark on a declaration than as a re-find. **So the second chance is real and rare: about 3%.** The consequence runs the way that was not expected: narrowing on top of the BROKEN carry would have cost roughly one recovered finding in thirty-three drops, and narrowing on top of the FIXED carry costs nothing through this mechanism, because the drop does not happen. The ordering was still right; the reason it was right is one finding, not a category. **Two controls, because a zero here would have been indistinguishable from a pruned commit:** 272 pairs measured, **0** unmeasured, **0** blob fetches failed. The first pass reported 51 unmeasured and 31 drops, because the head-sha map was built from the findings rather than from the ledger entries, so a round that recorded no finding had no sha and was skipped; rebuilt from the entries, all 333 (pull request, round) pairs carry a sha and the drop count moves to 33. **What this does NOT measure**, said here rather than left as an omission: it is about re-finding a finding the carry once held. It says nothing about the reviewer's recall on code it has never flagged, and conflating the two would make the number mean more than it does.
+- **The "second chance" a full-scope round gives a dropped finding is real, and it is taken once in thirty-three (#1600, #1601).** The argument for fixing #1601 before narrowing was that under `scope=full` the reviewer re-reads the branch and can re-find a defect the carry dropped, while under `scope=diff` a dropped finding in an untouched file is read by nothing. That sentence was shipped unquantified, which makes it unfalsifiable, so it was measured. **Taken 2026-10-24. Method:** all 828 pull requests walked, 147 parseable ledgers, 193 findings carrying both a non-empty recorded anchor text and a numeric line; for each of the **272** (finding, later round) pairs the blob was fetched at that round's own head sha and the PRE-#1601 rule replayed against it. A drop is a pair where the recorded line no longer holds the recorded text **and** the text is still somewhere in the file — the content rule carries it, the line rule resolves it. Every round in the corpus is full-scope, because narrowing has never shipped; the population is therefore exactly the one the claim is about. **Result: 33 distinct defects were dropped at least once. 2 were raised again by a later round. 31 were never seen again.** Reading the two rather than reporting the count is what makes the answer one: **#1435** is clean — a `medium` raised at round 1, dropped by the anchor at round 2, absent through rounds 2–4, raised again at round 5 — and **#1597**'s is an `info` remark whose anchor is the function signature `export async function filingGate(`, raised at rounds 6, 7, 9 and 10, which is better read as a recurring remark on a declaration than as a re-find. **So the second chance is real and rare: about 3%.** The consequence runs the way that was not expected: narrowing on top of the BROKEN carry would have cost roughly one recovered finding in thirty-three drops, and narrowing on top of the FIXED carry costs nothing through this mechanism, because the drop does not happen. The ordering was still right; the reason it was right is one finding, not a category. **Two controls, because a zero here would have been indistinguishable from a pruned commit:** 272 pairs measured, **0** unmeasured, **0** blob fetches failed. The first pass reported 51 unmeasured and 31 drops, because the head-sha map was built from the findings rather than from the ledger entries, so a round that recorded no finding had no sha and was skipped; rebuilt from the entries, all 333 (pull request, round) pairs carry a sha and the drop count moves to 33. **What this does NOT measure**, said here rather than left as an omission: it is about re-finding a finding the carry once held. It says nothing about the reviewer's recall on code it has never flagged, and conflating the two would make the number mean more than it does.
 - **A completeness check that asks whether what is present PARSES cannot see what is absent (#1600, found in review).** The same shape as the entry above, one level up, and it was caught before it shipped rather than after. CRC-N2's narrowing gate asked `unmeasuredRounds == 0` — the count of recorded rounds whose findings list could not be read. A **truncated** ledger's earlier rounds are not unreadable, they are gone: every entry still present parses perfectly, the count reads `0`, and the scope narrows over history the gate cannot see. Nor does a hole need truncation — rounds 1, 2 and 5 recorded before a snapshot at 6 is a gap that both readings call clean. Re-measured 2026-10-25 by walking **all 828 pull requests** and replaying the decision per round against the ledger as the carry step would have read it at that round: **147** carry a parseable ledger, **333** distinct rounds, **115** at or past the floor. Among those 115 the truncation gate refuses **46** and the round-number gap refuses **15** (#1420 has no round 2, #1391 no round 1). Both gates refuse something real rather than being adoption on paper.
 
   **The first reading of this bullet was wrong and is corrected rather than quietly replaced.** It said *"of 197 rounds at or past the floor … 100 still narrow"*. **100 was the remainder after these two gates only** — it never had the PRE-EXISTING blind-spot gate applied, and that gate refuses **96 of the 115**. The real figure is **12 rounds, 3.6% of all 333**, and it is in `AI_REVIEW_DIFF_SCOPE_FROM_ROUND`'s docblock with the full subtraction. The error is the shape this whole document is about: I measured the increment my own change contributed and reported the remainder as the total, which reads as a number about the system and was a number about my diff.
@@ -1094,4 +1369,4 @@ Recorded because each one invalidates a naive reading of the criteria above.
 - **The round-3 floor is measured, not chosen, and the cohort is right-censored.** Over the 90 open-or-merged pull requests carrying a parseable `rungate:ai-review-ledger:v1` comment on 2026-10-24: **161 distinct rounds**, distributed round 1 **90 (55.9%)**, round 2 **37 (23.0%)**, round 3 **19 (11.8%)**, round 4 **9 (5.6%)**, round 5 **6 (3.7%)**. Narrowing from round 3 therefore touches **21.1%** of rounds and leaves rounds 1 and 2 — **78.9%** — reading the whole branch; a floor of 2 would be 44.1% and would narrow the *first* re-review, and a floor of 4 would be 9.3%, which is adoption on paper. **The internal control is that round 1's count equals the PR count equals 90** — every ledger has a first round, so a reading in which they diverged would be a parser fault rather than a distribution. **A ledger entry is not a round:** a re-run appends another entry at the same round number, so the 202 raw entries over the same corpus inflate the rounds by 1.25× (#1592). The cohort is right-censored — an open PR that will reach round 4 is counted today at 3 — which moves the ≥3 share **up**, so the floor is conservative in the direction that matters.
 
   **21.1% is the FLOOR's reach and must not be read as CRC-N2's reach.** It is gate 1 alone. Re-measured 2026-10-25 over all 828 pull requests — 147 with a parseable ledger, 333 distinct rounds — **115 rounds (34.5%) are at or past the floor and 12 (3.6%) narrow under every gate as built**; with #1592 fixed, 20 (6.0%). The shares in the table above move with the larger corpus and the floor does not. Both numbers belong wherever either is quoted: a reader given only the first reads a change that touches a fifth to a third of all rounds, and the change touches **one in twenty-eight**.
-- **CRC-N2 cannot lower `AI_REVIEW_MAX_TURNS`, and a post-narrowing re-derivation would be reading the wrong population (#1257).** The budget was set to 80 across the shift to `scope=full`, so narrowing invites re-deriving it downward. Re-derived from the ledger's `turns` key over the same 90 PRs: of 202 entries, **57 predate #1380** (which added the key) and **34 record `turns: null`**, leaving **111 readings** — min **20**, mean **40.75**, p50 **39**, p90 **53**, p95 **59**, p99 **70**, max **75**. **80 stays**, 6.7% above the observed maximum. The reason it cannot move is in the per-round split: round 1 **n=60, max 66**; round 2 **n=20, max 70**; round 3 **n=10, max 66**; round 4 **n=12, max 53**; round 5 **n=9, max 75**. **Rounds 1 and 2 are never narrowed and are 80 of the 111 readings**, so the budget is governed by exactly the population this change does not touch. Every reading is also from the `scope=full` era — #1380 postdates #1243 — so there is no narrowed round in the corpus at all, and a lower number derived after narrowing would describe the 21% while binding the 79%. `num_turns` is not clamped at the cap, so 75 is a real reading and not a ceiling artefact.
+- **CRC-N2 cannot lower `AI_REVIEW_MAX_TURNS`, and a post-narrowing re-derivation would be reading the wrong population (#1257).** The budget was set to 80 across the shift to `scope=full`, so narrowing invites re-deriving it downward. Re-derived 2026-10-24 from the ledger's `turns` key over the same 90 PRs: of 202 entries, **57 predate #1380** (which added the key) and **34 record `turns: null`**, leaving **111 readings** — min **20**, mean **40.75**, p50 **39**, p90 **53**, p95 **59**, p99 **70**, max **75**. **80 stays**, 6.7% above the observed maximum. The reason it cannot move is in the per-round split: round 1 **n=60, max 66**; round 2 **n=20, max 70**; round 3 **n=10, max 66**; round 4 **n=12, max 53**; round 5 **n=9, max 75**. **Rounds 1 and 2 are never narrowed and are 80 of the 111 readings**, so the budget is governed by exactly the population this change does not touch. Every reading is also from the `scope=full` era — #1380 postdates #1243 — so there is no narrowed round in the corpus at all, and a lower number derived after narrowing would describe the 21% while binding the 79%. `num_turns` is not clamped at the cap, so 75 is a real reading and not a ceiling artefact.
