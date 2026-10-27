@@ -1083,10 +1083,23 @@ a place to assert progress. The criteria column is the **PR→spec** direction
 of the cross-reference — given a merged branch, which part of this document it
 moved.
 
+**`Head` names the commit at which the exit condition was SATISFIED, and
+nothing later. That rule is stated here, once, for every row.** It was
+discovered on Phase 1 and written inside Phase 1's cell, which left it true of
+one row and silent about the rest — and the thing it protects against is not
+specific to a phase. Under the other reading, *the commit the reading was
+complete at*, the field goes stale the moment anybody appends a later
+observation to the cell beside it; that happened twice on Phase 1 inside one
+pull request, and the second time was the fix for the first. Later readings of
+the same phase are **continuation observations**: they accumulate confidence,
+they belong in the prose where growing them breaks nothing, and they must not
+move this field. A phase that genuinely exits twice is a phase that was
+re-opened, which is a new row and a verdict change rather than an edit.
+
 | Phase | Verdict | PR | Head | Criteria evidenced | What was observed |
 |---|---|---|---|---|---|
-| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Both required contexts SUCCESS — the required set is exactly `test` and `ai-review` (`gh api …/branches/main/protection/required_status_checks`), and all nine check-runs at that head were `success` — with `mergeable: MERGEABLE` and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second draw was recorded by #1617 on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6` and is **WITHDRAWN as a draw**, because its two halves cannot both be true. It said all check-runs were `success` and that resolving the one thread moved `BLOCKED` to `UNSTABLE` — but `UNSTABLE` is produced by a non-successful status or check, so an all-`success` head has nothing left to produce it. Re-reading at that SHA today confirms ten check-runs, all `success`, and the classic status endpoint empty, which reconciles nothing: #1614 merged at `5449750b`, so the post-resolution half cannot be re-taken at all. Whoever recorded it is not available to say which half was mistyped, and a reading nobody can reproduce is UNMEASURED, not weak. It is kept here named rather than deleted so the next reader does not re-derive the contradiction. **A second draw that CAN be reproduced was taken on #1622** at `023145d7b7992e2cfbc3f1463305d6ef014ef4aa` on 2026-10-27 at 01:58Z: ten check-runs all `success`, `MERGEABLE`, one unresolved thread, `BLOCKED` — and `CLEAN` on resolving that one thread, same head, no push and no re-run. One thread rather than two, and both halves minutes apart on one SHA, which makes it the cleanest of the set. *The swarm track, and the reorder it asks for* carries the full reading |
-| **1** | EXITED 2026-10-27 | #1630 | `41bf444f3745802a71c54831b2f709c7ef3d8418` | CRC-N4, CRC-N6 | **The first reading Phase 1 has ever had. Four consecutive rounds repeated nothing, the fifth repeated something, and the fifth is the more useful half.** Round 1 (`5ae740a5`) raised a "third verifier" in a two-verifier design, a pre-check given two contradictory roles, and the absence of any tie to break under a unanimous pair; round 2 (`41bf444f`) the `VERIFIER_QUORUM` polarity inversion, the adaptive stop's unstated dependence on sequential dispatch, and a cascade-depth citation used to size an independent ballot; round 3 (`ab78aea6`) three sites still carrying a justification round 2 had withdrawn; round 4 (`079e05b7`) one, about the review itself. **The negative control never fired** — no round was empty, so each zero-repeat reading is a deduplication and not an absent review. **`Head` names the commit at which the exit condition was SATISFIED, and nothing later.** That is `41bf444f3745802a71c54831b2f709c7ef3d8418`, the head round 2 reviewed, because the exit condition is a property of one transition — a round posting new threads and no repeats of the round before it — and the round-1→round-2 transition is where that first happened. Every round after it is a **continuation observation**: it accumulates confidence, it does not move the exit, and it must not move this field. **That definition exists because the field rotted twice under the other one.** While `Head` meant *the commit the reading was complete at*, it went stale every time another round was recorded — round 5 caught it naming the round-2 commit beside prose describing four rounds, the fix advanced it to the round-4 commit, and round 7 caught that one the same way. A field whose correctness depends on nobody appending to the cell beside it is a field that will be wrong again, so the fix was to the definition and not to the SHA. The sequence the continuation covers — `5ae740a59374dd899c950529708f948eb760a94c` onward — lives in this prose, where growing it breaks nothing, and the durable evidence is the pull request's thread history rather than any tree. **This is weaker than Phase 0's evidence and an earlier draft said the opposite.** That draft called these *three complete draws*, more than Phase 0's two, while also refusing to call them a population; the two halves cannot both hold. Phase 0's draws come from independent pull requests, these are round-to-round checks inside one continuously-fixed branch with the same author answering each round, so they are **one experiment with four transitions, not three draws**, and the word stays with Phase 0. **Round 5 then re-raised round 4's finding, and that is CRC-N6 rather than a CRC-N4 failure.** Round 4 said the round budget was spent at 4 of 3; round 5 said it was spent at 5 of 3 and that the pull request had repeated the pattern. The suppression key is `file \0 line-text \0 summary`, and a summary carrying its own round number is a new string every round — so the carry-forward could not have matched it, and did not fail. It is the shape CRC-N6 already names: a regenerated finding is not a repeat the key can see. **That attribution is an escape hatch unless the exit condition says what would falsify it, so it does, and this paragraph was added because the reviewer caught the row without one.** As first narrated, every repeat landed in one of two buckets that both read as success — key-identical ones are suppressed and never appear, paraphrased ones are filed under CRC-N6 — and a condition satisfied whichever way the world turns out is the defect `.claude/rules/checks-must-be-able-to-fail.md` is about, arriving inside the row that measures it. **Three things falsify the Phase 1 reading, and each is decidable by inspection rather than by judgement.** A thread whose `file \0 line-text \0 summary` is byte-identical to an existing unresolved or resolved thread's, posted anyway — that is a CRC-N4 failure and no classification rescues it. A round posting zero threads, which is the negative control and an absent review rather than a clean one. And the CRC-N6 attribution itself, which is **checkable and not asserted**: the two summaries are either different strings or they are not, so anyone can re-read the pair and disagree. What the reading therefore claims is narrower than *zero repeats* sounds — **zero key-matching repeats** — and the gap between those two phrasings is exactly the width of CRC-N6. **So Increment 1 moves the number it was built to move** — on #1616 the same reviewer on the same genre of document produced 13 threads for 3 findings as line numbers moved — **and the class it cannot reach is now measured rather than predicted** |
+| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Both required contexts SUCCESS — the required set is exactly `test` and `ai-review` (`gh api …/branches/main/protection/required_status_checks`), and all nine check-runs at that head were `success` — with `mergeable: MERGEABLE` and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second draw was recorded by #1617 on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6` and is **WITHDRAWN as a draw**, because its two halves cannot both be true. It said all check-runs were `success` and that resolving the one thread moved `BLOCKED` to `UNSTABLE` — but `UNSTABLE` is produced by a non-successful status or check, so an all-`success` head has nothing left to produce it. Re-reading at that SHA today confirms ten check-runs, all `success`, and the classic status endpoint empty, which reconciles nothing: #1614 merged at `5449750b`, so the post-resolution half cannot be re-taken at all. Whoever recorded it is not available to say which half was mistyped, and a reading nobody can reproduce is UNMEASURED, not weak. It is kept here named rather than deleted so the next reader does not re-derive the contradiction. **A second draw that CAN be reproduced was taken on #1622** at `023145d7b7992e2cfbc3f1463305d6ef014ef4aa` on 2026-10-27 at 01:58Z: ten check-runs all `success`, `MERGEABLE`, one unresolved thread, `BLOCKED` — and `CLEAN` on resolving that one thread, same head, no push and no re-run. One thread rather than two, and both halves minutes apart on one SHA. **A third draw was taken on #1627** at `f5cb5cab1d3eee9e09c799c725c547ed7f189bb4` on 2026-10-27, and it is the cleanest **on the axis of what could have moved underneath it**: every check-run at that head had already reached a conclusion before either half was read, so no check *could* have re-evaluated between them — that is read off `completed_at` rather than argued. Each draw is cleanest on a different axis and the prose below names which, because a superlative with no axis goes false the next time this set grows. It ends at `UNSTABLE` rather than `CLEAN`, which the definition below now accommodates on purpose. **This row's `PR` and `Head` stay on #1616 and do not move for any of them**, per the rule above the table: Phase 0 exited at #1616 and the rest are continuation observations. *The swarm track, and the reorder it asks for* carries all three readings |
+| **1** | EXITED 2026-10-27 | #1630 | `41bf444f3745802a71c54831b2f709c7ef3d8418` | CRC-N4, CRC-N6 | **The first reading Phase 1 has ever had. Four consecutive rounds repeated nothing, the fifth repeated something, and the fifth is the more useful half.** Round 1 (`5ae740a5`) raised a "third verifier" in a two-verifier design, a pre-check given two contradictory roles, and the absence of any tie to break under a unanimous pair; round 2 (`41bf444f`) the `VERIFIER_QUORUM` polarity inversion, the adaptive stop's unstated dependence on sequential dispatch, and a cascade-depth citation used to size an independent ballot; round 3 (`ab78aea6`) three sites still carrying a justification round 2 had withdrawn; round 4 (`079e05b7`) one, about the review itself. **The negative control never fired** — no round was empty, so each zero-repeat reading is a deduplication and not an absent review. **Applying the `Head` rule above the table**, the field is `41bf444f3745802a71c54831b2f709c7ef3d8418`, the head round 2 reviewed, because this exit condition is a property of one transition — a round posting new threads and no repeats of the round before it — and the round-1→round-2 transition is where that first happened. Rounds 3 onward are continuation observations. **This phase is where that rule was discovered, and it was discovered by the field rotting twice.** While `Head` meant *the commit the reading was complete at*, it went stale every time another round was recorded — round 5 caught it naming the round-2 commit beside prose describing four rounds, the fix advanced it to the round-4 commit, and round 7 caught that one the same way. The definition used to live in this cell, which left it governing one row of a table whose every row has the same field; it was lifted above the table on 2026-10-27, and that is the second half of the same fix. The sequence the continuation covers — `5ae740a59374dd899c950529708f948eb760a94c` onward — lives in this prose, where growing it breaks nothing, and the durable evidence is the pull request's thread history rather than any tree. **This is weaker than Phase 0's evidence and an earlier draft said the opposite.** That draft called these *three complete draws*, more than Phase 0's two, while also refusing to call them a population; the two halves cannot both hold. Phase 0's draws come from independent pull requests, these are round-to-round checks inside one continuously-fixed branch with the same author answering each round, so they are **one experiment with four transitions, not three draws**, and the word stays with Phase 0. **Round 5 then re-raised round 4's finding, and that is CRC-N6 rather than a CRC-N4 failure.** Round 4 said the round budget was spent at 4 of 3; round 5 said it was spent at 5 of 3 and that the pull request had repeated the pattern. The suppression key is `file \0 line-text \0 summary`, and a summary carrying its own round number is a new string every round — so the carry-forward could not have matched it, and did not fail. It is the shape CRC-N6 already names: a regenerated finding is not a repeat the key can see. **That attribution is an escape hatch unless the exit condition says what would falsify it, so it does, and this paragraph was added because the reviewer caught the row without one.** As first narrated, every repeat landed in one of two buckets that both read as success — key-identical ones are suppressed and never appear, paraphrased ones are filed under CRC-N6 — and a condition satisfied whichever way the world turns out is the defect `.claude/rules/checks-must-be-able-to-fail.md` is about, arriving inside the row that measures it. **Three things falsify the Phase 1 reading, and each is decidable by inspection rather than by judgement.** A thread whose `file \0 line-text \0 summary` is byte-identical to an existing unresolved or resolved thread's, posted anyway — that is a CRC-N4 failure and no classification rescues it. A round posting zero threads, which is the negative control and an absent review rather than a clean one. And the CRC-N6 attribution itself, which is **checkable and not asserted**: the two summaries are either different strings or they are not, so anyone can re-read the pair and disagree. What the reading therefore claims is narrower than *zero repeats* sounds — **zero key-matching repeats** — and the gap between those two phrasings is exactly the width of CRC-N6. **So Increment 1 moves the number it was built to move** — on #1616 the same reviewer on the same genre of document produced 13 threads for 3 findings as line numbers moved — **and the class it cannot reach is now measured rather than predicted** |
 | **2** | UNMEASURED — unreachable, see below | — | — | — | — |
 | **3** | PENDING | — | — | — | — |
 | **4** | PENDING | — | — | — | — |
@@ -1107,8 +1120,27 @@ and the reorder it asks for* corrects an earlier round for claiming exactly
 that number. Both are true of the same three pull requests and they count
 different things: #1616, #1619 and #1622 each exercised these three criteria,
 and the same three supply **two complete Phase 0 draws and one half**, because
-#1619 was read before any thread was resolved. A *draw* in this document is a
-`BLOCKED`→`CLEAN` observation and nothing else.
+#1619 was read before any thread was resolved. **A fourth pull request, #1627,
+has since supplied a third draw, and the count being three again is not the
+three that was withdrawn.** That one claimed three draws out of these same
+three pull requests, and the arithmetic that refuted it — #1619 has no
+after-half — refutes it still. This one is three out of four.
+
+**A *draw* in this document is a `BLOCKED` → not-`BLOCKED` transition at one
+head, and the widening is deliberate.** It read `BLOCKED`→`CLEAN` and nothing
+else until 2026-10-27, which would have discarded the #1627 reading on a
+distinction that does not touch the claim. What a draw asserts is that an unresolved review
+thread, and nothing else, was holding the merge. `CLEAN` and `UNSTABLE` differ
+only in whether a check **outside the required set** is red, and a check
+outside the required set holds nothing — so the terminal state's name was
+never part of the claim, and pinning the definition to one spelling of it was
+an accident of the first reading rather than a decision. **What the widening
+does not license is a before-half that is overdetermined**: a required context
+red or still running, a `DIRTY` tree, or a head that moved between the halves.
+Each of those breaks the attribution the way #1614's did, and #1627 below
+supplies one of them from the same SHA as its own counter-example. It does not
+promote #1619 either — #1619 has no after-half at all, so it stays a half,
+which is the test of whether this widening was written to fit the data.
 
 CRC-N4's reading is the 13-threads-for-3-findings
 count below. Ticking any of them on this evidence is the error CRC-A4's own
@@ -1241,7 +1273,7 @@ than remembered. #1619 was read before any thread was resolved, so it shows
 `BLOCKED` attributable to one thread and shows nothing about what resolving
 it would do — half a draw, and recorded as a half.
 
-**A third reading, and the cleanest of the set, was taken on #1622 itself.**
+**A third reading was taken on #1622 itself.**
 Read **2026-10-27 at 01:58Z** on head
 `023145d7b7992e2cfbc3f1463305d6ef014ef4aa`, four minutes before that pull
 request merged at `f0a9d973`:
@@ -1257,9 +1289,13 @@ request merged at `f0a9d973`:
 **Same head. No push, no re-run, no check re-evaluated.** Resolving one
 thread and nothing else moved `BLOCKED` to `CLEAN` with every other context
 already green, so the block is attributable to the thread and to nothing
-else. It is the cleanest draw because the preceding round created the
-thread and the preceding fix cleared it: both halves were read minutes
-apart, by one observer, on one SHA, with one thread in play rather than two.
+else. **It is the cleanest on the axis of what was in play** — the preceding
+round created the thread and the preceding fix cleared it, so both halves
+were read minutes apart, by one observer, on one SHA, with one thread rather
+than two. It said *the cleanest of the set* without naming an axis until
+2026-10-27, and #1627 below is cleaner on a different one; an unqualified
+superlative in a growing set is a claim that goes false when the set grows,
+which is the same shape as the `Head` field above the readings table.
 
 It was recorded on #1622 as a comment and deliberately NOT written into this
 file by that pull request — five rounds, four of them correcting prose about
@@ -1267,13 +1303,58 @@ readings, and a sixth reading added there would have been one more instance
 in place of the mechanism round 4 asked for. This paragraph is the
 follow-up it was held for.
 
-So the population is **two complete draws and one half**: #1616 and #1622
-both read `BLOCKED` with every required context green and both flipped to
-`CLEAN` on resolution alone, and #1619 was read before any resolution. This
+**A third draw, taken on #1627, where every check had already concluded
+before either half was read.** Head
+`f5cb5cab1d3eee9e09c799c725c547ed7f189bb4`, on 2026-10-27:
+
+| Reading | Before — 13:16:59Z | After — 13:18:28Z |
+|---|---|---|
+| required contexts (`test`, `ai-review`) | both `success` | unchanged |
+| `review` — the plugin's advisory job, not in the required set | `failure` | unchanged |
+| unresolved review threads | 1 — `PRRT_kwDOUe1c0M6wsty9`, opened 13:16:15Z | 0 |
+| `mergeable` | — | `MERGEABLE` |
+| `mergeStateStatus` | **`BLOCKED`** | **`UNSTABLE`** |
+
+One `resolveReviewThread` mutation ran between the two halves, at 13:18:02Z,
+returning `isResolved: true`. Nothing else was done to the pull request.
+
+**No check could have re-evaluated between the halves, and that is read off
+the API rather than argued.** The last check-run at that head to reach a
+conclusion was `ai-review` at 13:16:21Z;
+`gh api repos/hornjason/pai-harness/commits/f5cb5cab1d3eee9e09c799c725c547ed7f189bb4/check-runs`
+returns ten runs and none has a `completed_at` after it. Both halves were
+therefore read against a frozen check set. The two earlier draws assert "no
+push, no re-run" as something the observer did not do; this one has a reading
+that would have caught it if they had.
+
+**The before-half's thread count comes from a windowed query, and the
+after-half is what pins it.** The query was `reviewThreads(last:10)` filtered
+to `isResolved == false`, so on its own it says *one unresolved among the last
+ten of twenty-two*, not *one unresolved*. The after-half closes that from the
+other side: `BLOCKED` outranks `UNSTABLE`, so `UNSTABLE` is only reachable
+with no unresolved conversation left under
+`required_conversation_resolution: true`, and one resolve got there. **That is
+an inference from GitHub's precedence rather than a second observation**, and
+it is recorded as one so that a reader who disbelieves the precedence knows
+exactly which sentence to attack.
+
+**This pull request also supplies the reading that had to be thrown away, and
+that half is worth more than the half that was kept.** At 13:14:22Z — same
+pull request, same head — `mergeStateStatus` was already `BLOCKED`, and
+`ai-review` was `IN_PROGRESS`. A required context had not concluded, so the
+block was overdetermined in exactly the way #1614's was, and the reading is
+unusable. Waiting 2m37s for that check to finish is the entire difference
+between a draw and a non-draw, and here the two sit at one SHA where the
+comparison costs nothing to check.
+
+So the population is **three complete draws and one half**: #1616, #1622 and
+#1627 each read `BLOCKED` with every required context green and each left
+`BLOCKED` on resolution alone, and #1619 was read before any resolution. This
 paragraph claimed three draws in an earlier round, the count did not survive
-reading them, and it is now back to three readings by a different route —
-two that were taken rather than three that were asserted. Two is still two
-draws. The boxes above stay open.
+reading them, and it was corrected to two. **That correction stands and is not
+being quietly reversed by the arithmetic agreeing again** — the withdrawn
+three counted #1619 as whole, this three does not count it at all, and the
+fourth pull request is where the number came from. The boxes above stay open.
 
 **The defect worth keeping is that no elapsed time was required.** The first
 draft of this correction said the two halves disagreed "for two days", a
