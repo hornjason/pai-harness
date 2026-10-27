@@ -30,7 +30,13 @@
 import { describe, expect, test } from "bun:test";
 
 import { carryForwardFromThreads, type ReviewFinding } from "../lib/ai-review-rounds.ts";
-import { threadReading } from "../lib/ai-review-threads.ts";
+import {
+  THREADS_NOT_A_LIST,
+  THREADS_NOT_READ,
+  THREADS_UNPARSEABLE,
+  threadReading,
+  threadReadingFromJson,
+} from "../lib/ai-review-threads.ts";
 import { threadBody } from "../lib/scaffold/ai-review-findings.ts";
 
 const KEY = "lib/a.ts\u0000t:const x = 1;\u0000a is wrong";
@@ -132,5 +138,71 @@ describe("reading a pull request's review threads", () => {
     expect(open.carried).toEqual([finding]);
     expect(unread.carried).toEqual([finding]);
     expect(unread.unmeasured).toBe("no token");
+  });
+});
+
+/**
+ * Increment 1a. The reading above takes PARSED nodes; the runner has a FILE,
+ * written by a bash step that fetched the threads before the reviewer ran.
+ * Everything between those two is this function, and every way the file can
+ * disappoint has to produce a sentence rather than an empty list — AC-4:
+ * *"an unreadable thread list is UNMEASURED by name, distinguishable from
+ * 'no earlier findings'."*
+ *
+ * What was broken to prove each can fail is in the battery at the foot of
+ * `test/ai-review-suppression.test.ts`; these rows fix the sentences.
+ */
+describe("reading the thread list off the runner's disk", () => {
+  test("TR-8: a written list parses, and the keys survive the round trip through JSON", () => {
+    // The whole join: bash writes what GraphQL returned, this reads it back.
+    // If the marker does not survive a `JSON.stringify`/`parse` the reading is
+    // MEASURED with zero keys, which suppresses nothing and is indistinguishable
+    // from a pull request nobody has reviewed.
+    const text = JSON.stringify([
+      { isResolved: false, body: keyed(KEY) },
+      { isResolved: true, body: keyed(`${KEY} (other)`) },
+    ]);
+    const r = threadReadingFromJson(text);
+    expect(r.status).toBe("MEASURED");
+    expect(r.status === "MEASURED" ? r.threads : null).toEqual([
+      { key: KEY, isResolved: false },
+      { key: `${KEY} (other)`, isResolved: true },
+    ]);
+  });
+
+  test("TR-9: an absent file is UNMEASURED, and says the list was not read", () => {
+    for (const absent of [null, undefined, ""]) {
+      const r = threadReadingFromJson(absent);
+      expect(r.status, `${JSON.stringify(absent)} was read as a list`).toBe("UNMEASURED");
+      expect(r.status === "UNMEASURED" ? r.reason : "").toBe(THREADS_NOT_READ);
+    }
+  });
+
+  test("TR-10: a file that is not JSON is UNMEASURED, and says so in DIFFERENT words", () => {
+    // A truncated write — the step was killed between the fetch and the flush.
+    // Reported as "not read" it would be indistinguishable from no fetch at
+    // all, and reported as MEASURED it would suppress nothing while claiming
+    // to have looked.
+    const r = threadReadingFromJson('[{"isResolved": false, "body": "half');
+    expect(r.status).toBe("UNMEASURED");
+    expect(r.status === "UNMEASURED" ? r.reason : "").toBe(THREADS_UNPARSEABLE);
+    expect(THREADS_UNPARSEABLE, "two facts sharing one sentence is one fact").not.toBe(
+      THREADS_NOT_READ,
+    );
+  });
+
+  test("TR-11: JSON that is not a list is UNMEASURED, in its own words", () => {
+    // What a GraphQL error response is: valid JSON, an object, `{"errors":[…]}`
+    // and no data. Read as an empty list it is a pull request with no threads,
+    // which is the exact silent failure this split exists to prevent.
+    const r = threadReadingFromJson('{"errors":[{"message":"Bad credentials"}]}');
+    expect(r.status).toBe("UNMEASURED");
+    expect(r.status === "UNMEASURED" ? r.reason : "").toBe(THREADS_NOT_A_LIST);
+    expect(new Set([THREADS_NOT_READ, THREADS_UNPARSEABLE, THREADS_NOT_A_LIST]).size).toBe(3);
+  });
+
+  test("TR-12: an EMPTY list read off disk is MEASURED — a first round is not a failure", () => {
+    expect(threadReadingFromJson("[]").status).toBe("MEASURED");
+    expect(threadReadingFromJson("[]")).toEqual({ status: "MEASURED", threads: [] });
   });
 });

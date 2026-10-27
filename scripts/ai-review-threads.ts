@@ -42,7 +42,12 @@ import {
   readAiReviewFindingsFile,
 } from "../lib/scaffold/ai-review-findings";
 import { carryKey } from "../lib/ai-review-rounds";
-import { checkoutLineText } from "../lib/ai-review-suppression";
+import {
+  aiReviewSuppressionGate,
+  checkoutLineText,
+  readOrNull,
+} from "../lib/ai-review-suppression";
+import { AI_REVIEW_THREADS_PATH_VAR } from "../lib/scaffold/ai-review-step";
 
 const COMMAND = "ai-review-threads";
 
@@ -115,7 +120,31 @@ if (!parsed.ok) {
   process.exit(0);
 }
 
-const reading = readAiReviewFindingsFile(parsed.findings, readAiReviewChangedFiles(parsed.changed));
+// AC-3, and it is the half AC-1 alone does not reach. `reviewThreadRequests`
+// posts `reading.reported`, and until now this reader was handed NO
+// suppression gate — so the adjudicator could drop a repeat from its
+// annotation while this step posted a thread for it anyway. Measured on
+// #1616: 11 threads for 3 distinct findings, one new copy per push.
+//
+// The gate is the same function the adjudicator builds, over the same file,
+// which is what makes "already raised" one decision rather than two that
+// agree until they do not. This step runs BEFORE the adjudicator in the
+// emitted job, so it cannot be handed the adjudicator's answer — it has to
+// form its own from the same input.
+const threadsPath = process.env[AI_REVIEW_THREADS_PATH_VAR];
+const suppress =
+  threadsPath === undefined || threadsPath === ""
+    ? null
+    : aiReviewSuppressionGate({
+        threads: readOrNull(threadsPath),
+        lineTextFor: checkoutLineText(process.cwd()),
+      });
+
+const reading = readAiReviewFindingsFile(
+  parsed.findings,
+  readAiReviewChangedFiles(parsed.changed),
+  suppress,
+);
 
 const client = createGitHubClient();
 const post: AiReviewThreadPoster = async request => {

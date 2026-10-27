@@ -75,13 +75,14 @@
  * it reads the CHECKOUT, which a reader running from a scratch directory
  * does not have.
  *
- * It takes TWO paths, and that is the part worth not collapsing. The carry
- * file holds the carry step's own three-state reading and is written on
- * every path; the snapshot holds the ledger's bytes and exists only on the
- * READ path. An absent snapshot is therefore not "no prior findings" — the
- * carry file says which. Unset either and the gate is `null`: a consumer on
- * an older scaffold gets the pre-#1586 reading, not a silent "nothing was a
- * repeat".
+ * Since AC-1 it takes ONE path, and the collapse from two is not a loss.
+ * The ledger needed a pair — bytes, plus a state file saying why the bytes
+ * were absent — because an absent snapshot could mean three different
+ * things. The thread list is itself the reading: it is written only when the
+ * fetch completed, so absent means exactly "not read", and the adjudicator
+ * names that rather than suppressing nothing in silence. Unset the variable
+ * and the gate is `null`: a consumer on an older scaffold gets the
+ * pre-#1586 reading, not a quiet "nothing was a repeat".
  *
  * **A blocking finding never reaches this gate.**
  * `findingMustAlwaysBeReported` filters first, inside the reader, so no
@@ -97,11 +98,7 @@ import {
   readOrNull,
 } from "../lib/ai-review-suppression";
 import { main } from "../lib/scaffold/ai-review-findings";
-import {
-  AI_REVIEW_BALLOT_DIR_ENV,
-  AI_REVIEW_CARRY_PATH_VAR,
-  AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR,
-} from "../lib/scaffold/ai-review-step";
+import { AI_REVIEW_BALLOT_DIR_ENV, AI_REVIEW_THREADS_PATH_VAR } from "../lib/scaffold/ai-review-step";
 
 const ballotDir = process.env[AI_REVIEW_BALLOT_DIR_ENV];
 const jury =
@@ -109,14 +106,12 @@ const jury =
     ? null
     : (blocking: readonly unknown[]) => aiReviewJuryGate(blocking, ballotDir);
 
-const carryPath = process.env[AI_REVIEW_CARRY_PATH_VAR];
-const snapshotPath = process.env[AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR];
+const threadsPath = process.env[AI_REVIEW_THREADS_PATH_VAR];
 const suppress =
-  carryPath === undefined || carryPath === ""
+  threadsPath === undefined || threadsPath === ""
     ? null
     : aiReviewSuppressionGate({
-        carry: readOrNull(carryPath),
-        snapshot: readOrNull(snapshotPath),
+        threads: readOrNull(threadsPath),
         lineTextFor: checkoutLineText(process.cwd()),
       });
 

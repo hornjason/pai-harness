@@ -50,6 +50,7 @@ import {
   AI_REVIEW_CARRY_UNMEASURED,
   AI_REVIEW_EVENT_VAR,
   AI_REVIEW_FINDINGS_DIR_OUTPUT,
+  AI_REVIEW_GRAPHQL_VAR,
   AI_REVIEW_FINDINGS_KEY,
   AI_REVIEW_LEDGER_API_VAR,
   AI_REVIEW_LEDGER_BOT_LOGIN,
@@ -66,6 +67,8 @@ import {
   AI_REVIEW_RUN_STEP_ID,
   AI_REVIEW_SNAPSHOT_ROUND_KEY,
   AI_REVIEW_SNAPSHOT_ROUND_VAR,
+  AI_REVIEW_THREADS_BASENAME,
+  AI_REVIEW_THREADS_PATH_VAR,
   buildCarryScript,
   buildReviewPrompt,
 } from "../lib/scaffold/ai-review-step.ts";
@@ -73,7 +76,12 @@ import {
 // snapshot's format are held together by a test rather than by two authors
 // agreeing — the writer is bash and the reader is TypeScript, which is the
 // arrangement #1568 was.
-import { priorKeysFrom, readSnapshot } from "../lib/ai-review-suppression.ts";
+import {
+  ledgerPriorKeysFrom,
+  priorKeysFrom,
+  readSnapshot,
+} from "../lib/ai-review-suppression.ts";
+import { threadBody } from "../lib/scaffold/ai-review-findings.ts";
 import {
   AI_REVIEW_LEDGER_COMMENT_MARKER,
   AI_REVIEW_LEDGER_FINDING_TEXT,
@@ -133,6 +141,40 @@ interface Rig {
   noPath?: boolean;
   /** Suppress writing the ledger-snapshot path into the environment (#1586). */
   noSnapshotPath?: boolean;
+  /**
+   * AC-1. The review threads the GraphQL POST answers with, as pages. A
+   * `null` makes the POST FAIL, which is the state the adjudicator must read
+   * as UNMEASURED rather than as "this pull request has no threads".
+   * Undefined serves one empty page, so every pre-existing row still drives
+   * the fetch rather than leaving it unexercised.
+   */
+  threadPages?: Array<Array<{ isResolved: unknown; body: unknown }>> | null;
+  /** A raw GraphQL response, for the shapes the helper cannot express. */
+  threadsRaw?: string;
+  /** Suppress writing the threads path into the environment. */
+  noThreadsPath?: boolean;
+}
+
+/** One page of the GraphQL answer, in the shape the query asks for. */
+function graphqlPage(
+  nodes: Array<{ isResolved: unknown; body: unknown }>,
+  endCursor: string | null,
+): string {
+  return JSON.stringify({
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: endCursor !== null, endCursor },
+            nodes: nodes.map(n => ({
+              isResolved: n.isResolved,
+              comments: { nodes: [{ body: n.body }] },
+            })),
+          },
+        },
+      },
+    },
+  });
 }
 
 interface Carried {
@@ -158,9 +200,48 @@ function runCarry(rig: Rig = {}) {
       rig.pages.forEach((p, i) => writeFileSync(join(dir, `page-${i + 1}.json`), JSON.stringify(p)));
     }
 
+    // The GraphQL answers, one file per page, selected by the CURSOR the
+    // step sends — so a step that forgot to page, or paged with the wrong
+    // cursor, serves page 1 twice and the count comes back wrong.
+    const threadPages = rig.threadPages === undefined ? [[]] : rig.threadPages;
+    if (threadPages !== null) {
+      threadPages.forEach((nodes, i) => {
+        const last = i === threadPages.length - 1;
+        writeFileSync(
+          join(dir, `gql-${i === 0 ? "first" : `c${i}`}.json`),
+          rig.threadsRaw !== undefined && last
+            ? rig.threadsRaw
+            : graphqlPage(nodes, last ? null : `c${i + 1}`),
+        );
+      });
+    }
+
     const curl = [
       "#!/usr/bin/env bash",
       `printf '%s\\n' "$@" >> ${JSON.stringify(argvPath)}`,
+      // The GraphQL POST, told apart by its URL the way the real endpoint is.
+      'is_gql=no',
+      'for a in "$@"; do case "$a" in *graphql*) is_gql=yes;; esac; done',
+      'if [ "$is_gql" = yes ]; then',
+      ...(threadPages === null
+        ? ["  exit 22"]
+        : [
+            "  cur=first",
+            `  body=""`,
+            `  prev=""`,
+            `  for a in "$@"; do if [ "$prev" = "-d" ]; then body="$a"; fi; prev="$a"; done`,
+            // Whitespace stripped first. `jq -n` pretty-prints unless told
+            // not to, so a pattern written against the compact spelling
+            // would serve page one forever the day somebody drops `-c` —
+            // a red that says "pagination is broken" about a request that
+            // is still perfectly valid.
+            `  body=\$(printf '%s' "$body" | tr -d ' \\n\\t')`,
+            `  case "$body" in *'"cursor":"c'*) cur="\${body##*'"cursor":"'}"; cur="\${cur%%\\"*}";; esac`,
+            `  f=${JSON.stringify(dir)}/gql-\${cur}.json`,
+            '  if [ -f "$f" ]; then cat "$f"; else printf "{}"; fi',
+            "  exit 0",
+          ]),
+      "fi",
       ...(rig.pages === undefined
         ? []
         : [
@@ -195,6 +276,7 @@ function runCarry(rig: Rig = {}) {
 
     const carryPath = join(dir, AI_REVIEW_CARRY_BASENAME);
     const snapshotPath = join(dir, AI_REVIEW_LEDGER_SNAPSHOT_BASENAME);
+    const threadsPath = join(dir, AI_REVIEW_THREADS_BASENAME);
     const script = join(dir, "carry.sh");
     writeFileSync(script, rig.script ?? buildCarryScript());
 
@@ -210,6 +292,10 @@ function runCarry(rig: Rig = {}) {
     };
     if (rig.noPath !== true) env[AI_REVIEW_CARRY_PATH_VAR] = carryPath;
     if (rig.noSnapshotPath !== true) env[AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR] = snapshotPath;
+    if (rig.noThreadsPath !== true) env[AI_REVIEW_THREADS_PATH_VAR] = threadsPath;
+    if (env[AI_REVIEW_GRAPHQL_VAR] === undefined) {
+      env[AI_REVIEW_GRAPHQL_VAR] = "https://api.github.test/graphql";
+    }
     // The round the snapshot PRECEDES, which the deployed step takes from
     // `steps.ai-review-rounds.outputs.round`. Defaulted here rather than
     // left unset, because unset is its own case (`AC-C7`) and a rig that
@@ -245,7 +331,11 @@ function runCarry(rig: Rig = {}) {
     // `null` for "the step wrote no snapshot" — distinct from `""`, which is
     // a snapshot of an empty body and is a different fact (#1586).
     const snapshot = existsSync(snapshotPath) ? readFileSync(snapshotPath, "utf8") : null;
-    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", file, state, carried, argv, snapshot };
+    // `null` for "the step wrote no thread list", which is the only thing
+    // that makes a failed fetch distinguishable from a pull request with no
+    // threads — an empty FILE would be the second statement (AC-4).
+    const threads = existsSync(threadsPath) ? readFileSync(threadsPath, "utf8") : null;
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", file, state, carried, argv, snapshot, threads };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1231,7 +1321,7 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
   test("AC-C7: the snapshot says WHICH round it precedes, in a form the reader accepts", () => {
     // Provenance, and it is not decoration. A snapshot taken at the PERSIST
     // step is the same comment fetched the same way and is byte-shaped like
-    // a correct one; `priorKeysFrom` tells them apart only by comparing the
+    // a correct one; `ledgerPriorKeysFrom` tells them apart only by comparing the
     // rounds inside the body against this number. Written by bash, parsed
     // by the TypeScript that decides — so the agreement is a test, not a
     // convention.
@@ -1267,7 +1357,7 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
     // gate's own reader consumes it, and the prior set is non-empty. Every
     // other row in this describe measures one side.
     const r = runCarry({ list: [botComment(5, body())], files: { "lib/a.ts": "alpha\n" } });
-    const prior = priorKeysFrom(r.file, r.snapshot);
+    const prior = ledgerPriorKeysFrom(r.file, r.snapshot);
     expect(prior.status, JSON.stringify(prior)).toBe("MEASURED");
     if (prior.status !== "MEASURED") throw new Error("unreachable");
     expect(prior.keys).toHaveLength(1);
@@ -1284,7 +1374,7 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
       round(4, [recorded("lib/a.ts", 1, "unchecked index", "alpha")]),
     ]);
     const r = runCarry({ list: [botComment(5, afterPersist)], files: { "lib/a.ts": "alpha\n" } });
-    const prior = priorKeysFrom(r.file, r.snapshot);
+    const prior = ledgerPriorKeysFrom(r.file, r.snapshot);
     expect(prior.status).toBe("UNMEASURED");
     if (prior.status !== "UNMEASURED") throw new Error("unreachable");
     expect(prior.reason).toContain("AFTER this round was recorded");
@@ -1307,10 +1397,10 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
     const m = runCarry({ list: [botComment(5, body())], files, script: mutant });
     expect(m.state, "the mutation moved more than the header").toBe(AI_REVIEW_CARRY_READ);
     expect(m.snapshot, "the mutant wrote no snapshot at all").not.toBeNull();
-    expect(priorKeysFrom(m.file, m.snapshot).status).toBe("UNMEASURED");
+    expect(ledgerPriorKeysFrom(m.file, m.snapshot).status).toBe("UNMEASURED");
     // And the real step, over the same bytes, keys it.
     const real_run = runCarry({ list: [botComment(5, body())], files });
-    expect(priorKeysFrom(real_run.file, real_run.snapshot).status).toBe("MEASURED");
+    expect(ledgerPriorKeysFrom(real_run.file, real_run.snapshot).status).toBe("MEASURED");
   });
 
   test("AC-C7: an unset round leaves a header the reader refuses, and suppresses nothing", () => {
@@ -1324,7 +1414,7 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
       env: { [AI_REVIEW_SNAPSHOT_ROUND_VAR]: "" },
     });
     expect(readSnapshot(r.snapshot!).round).toBeNull();
-    expect(priorKeysFrom(r.file, r.snapshot).status).toBe("UNMEASURED");
+    expect(ledgerPriorKeysFrom(r.file, r.snapshot).status).toBe("UNMEASURED");
   });
 
   test("AC-C7: ABSENT and UNMEASURED write NO snapshot, and the carry file still says which", () => {
@@ -1417,5 +1507,272 @@ describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is s
       AI_REVIEW_CARRY_PATH_VAR,
     );
     expect(block).toContain(AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR);
+  });
+});
+
+/**
+ * AC-1's writer: the carry step fetches the pull request's review threads
+ * and leaves them where the adjudicator and the thread poster both read
+ * them.
+ *
+ * Every row below runs the REAL generated bash against a faked `curl`, and
+ * every row ends by handing what bash wrote to the TypeScript that decides.
+ * A writer asserted only on its own bytes is the #1586 shape: the file
+ * round-tripped perfectly and keyed nothing, for seven months.
+ */
+describe("AC-T1 (AC-1): the carry step writes the review threads", () => {
+  const KEY = "lib/a.ts\u0000t:alpha\u0000unchecked index";
+  const keyed = (key: string) => threadBody({ severity: "high", summary: "unchecked index" }, key);
+
+  test("AC-T1a: a fetched thread reaches the gate's reader as a prior key", () => {
+    const r = runCarry({ threadPages: [[{ isResolved: false, body: keyed(KEY) }]] });
+    expect(r.threads, "the step wrote no thread list at all").not.toBeNull();
+    const prior = priorKeysFrom(r.threads);
+    expect(prior.status, `${r.threads}\n${r.stdout}${r.stderr}`).toBe("MEASURED");
+    if (prior.status !== "MEASURED") throw new Error("unreachable");
+    expect(prior.keys, "the bytes bash wrote parsed and produced no keys").toEqual([KEY]);
+  });
+
+  test("AC-T1b: the resolution flag survives the shell, both ways", () => {
+    // Not decoration: `carryForwardFromThreads` drops a finding on this
+    // field alone, and a transport that flattened it to a string would make
+    // every thread read as open — which carries everything and looks fine.
+    const r = runCarry({
+      threadPages: [
+        [
+          { isResolved: true, body: keyed(`${KEY} one`) },
+          { isResolved: false, body: keyed(`${KEY} two`) },
+        ],
+      ],
+    });
+    expect(JSON.parse(r.threads!)).toEqual([
+      { isResolved: true, body: keyed(`${KEY} one`) },
+      { isResolved: false, body: keyed(`${KEY} two`) },
+    ]);
+  });
+
+  test("AC-T1c: every page is walked, and the cursor is the one GraphQL gave", () => {
+    const r = runCarry({
+      threadPages: [
+        [{ isResolved: false, body: keyed("one") }],
+        [{ isResolved: false, body: keyed("two") }],
+        [{ isResolved: true, body: keyed("three") }],
+      ],
+    });
+    const prior = priorKeysFrom(r.threads);
+    expect(prior.status, `${r.threads}\n${r.stdout}${r.stderr}`).toBe("MEASURED");
+    // Three, in order. A step that ignored the cursor serves page one three
+    // times and this reads `["one","one","one"]`, which a length check alone
+    // would not catch.
+    expect(prior.status === "MEASURED" ? prior.keys : null).toEqual(["one", "two", "three"]);
+  });
+
+  test("AC-T1d: a failed POST writes NO file, and says so on the run", () => {
+    // AC-4 at the writer. An empty list here would assert the pull request
+    // has no threads, and the next round would post a duplicate of every
+    // finding while reporting nothing unusual.
+    const r = runCarry({ threadPages: null });
+    expect(r.threads, "a failed fetch left bytes the adjudicator will key from").toBeNull();
+    expect(r.stdout + r.stderr).toContain("could not be read");
+    expect(priorKeysFrom(r.threads).status).toBe("UNMEASURED");
+  });
+
+  test("AC-T1e: a GraphQL error response writes NO file either", () => {
+    // HTTP 200 with an `errors` array — a bad credential, a missing scope, a
+    // deleted pull request. `curl -f` succeeds on all three, so this is the
+    // failure a fetch cannot see from its exit code.
+    const r = runCarry({
+      threadsRaw: JSON.stringify({ errors: [{ message: "Bad credentials" }] }),
+    });
+    expect(r.threads).toBeNull();
+    expect(r.stdout + r.stderr).toContain("Bad credentials");
+  });
+
+  test("AC-T1f: an unplumbed path writes nothing and does not disturb the carry", () => {
+    // Every consumer that has not re-scaffolded. The step must behave as it
+    // did before AC-1 rather than refusing.
+    const r = runCarry({
+      list: [botComment(5, windowBody([round(1, [recorded("lib/a.ts", 1, "unchecked index", "alpha")])]))],
+      files: { "lib/a.ts": "alpha\n" },
+      noThreadsPath: true,
+    });
+    expect(r.threads).toBeNull();
+    expect(r.state, "an unplumbed thread path changed the carry's own reading").toBe(
+      AI_REVIEW_CARRY_READ,
+    );
+    expect(r.carried, "the carry itself stopped working when the threads were not plumbed").toHaveLength(1);
+  });
+
+  test("AC-T1g: a merge_group entry writes an EMPTY list, which is a reading", () => {
+    // No pull request, so nothing has been raised on one. MEASURED and
+    // empty, not UNMEASURED — and it must not reach the network at all.
+    const r = runCarry({ env: { [AI_REVIEW_EVENT_VAR]: "merge_group" } });
+    expect(r.threads).toBe("[]");
+    expect(priorKeysFrom(r.threads)).toEqual({ status: "MEASURED", keys: [] });
+    expect(
+      r.argv.some(a => a.includes("graphql")),
+      "a merge_group entry queried GitHub for threads on a pull request it does not have",
+    ).toBe(false);
+  });
+
+  test("AC-T1h: the MUTANT — the write removed — leaves the readers with nothing", () => {
+    // Performed. Without this row every assertion above is satisfied by a
+    // step that writes the file for some other reason.
+    const real = buildCarryScript();
+    const mutant = real.replace(
+      `printf '%s' "\${threads_acc}" > "\${${AI_REVIEW_THREADS_PATH_VAR}}"`,
+      ":",
+    );
+    expect(mutant, "the thread write was not found, so nothing was mutated").not.toBe(real);
+    const pages = [[{ isResolved: false, body: keyed(KEY) }]];
+    const m = runCarry({ threadPages: pages, script: mutant });
+    expect(m.threads, "removing the write changed nothing, so the write decides no input").toBeNull();
+    expect(runCarry({ threadPages: pages }).threads).not.toBeNull();
+  });
+
+  test("AC-T1i: the path is declared in the three steps that use it", () => {
+    // One writer and TWO readers — the adjudicator and the thread poster —
+    // and a step's `env:` does not carry forward. The poster is the one that
+    // can open a duplicate, so a declaration missing there is AC-3 failing
+    // while AC-1 looks satisfied.
+    const yml = readFileSync(WORKFLOW, "utf8");
+    const declarations = yml
+      .split("\n")
+      .filter(l => new RegExp(`^\\s+${AI_REVIEW_THREADS_PATH_VAR}: \\S`).test(l));
+    expect(declarations, declarations.join("\n")).toHaveLength(3);
+    expect(new Set(declarations.map(l => l.trim())).size, "the steps name different paths").toBe(1);
+    expect(yml).toContain(`/${AI_REVIEW_THREADS_BASENAME}`);
+  });
+});
+
+/**
+ * AC-T2 (AC-1): the malformed-repo guard tests for a MISSING SLASH.
+ *
+ * `threads_fetch` has to refuse a repository string it cannot address. The
+ * first spelling asked `owner = name` — splitting on `/` and comparing the
+ * halves — which is the right answer only because a slashless string leaves
+ * both expansions equal to the whole string. It is also true of
+ * `kubernetes/kubernetes`, `docker/docker`, `netty/netty` and every other
+ * repository whose owner and name agree, and for those the step took the
+ * UNMEASURED branch and never fetched. Thread-based suppression was dead for
+ * that repository shape, permanently and quietly: reporting everything is the
+ * designed fail-safe, so nothing goes red — the feature just never works.
+ *
+ * It did not bite this repository (`hornjason/pai-harness`), which is why
+ * nothing here had caught it: the step shipped with no test over the guard at
+ * all. The rows below are a triple rather than a pair, because a guard can be
+ * wrong in two directions and the cheap fix for one direction is to delete
+ * it:
+ *
+ *   (a) an ordinary `owner/name` is fetched           — the control
+ *   (b) `owner` equal to `name` is fetched            — the false positive
+ *   (c) a string with no slash is still REFUSED       — the true positive
+ *
+ * Row (c) is what stops "remove the guard" passing. Only the repository
+ * string differs between the rows; the fake transport serves the same pages
+ * whatever it is asked for, so a disagreement can only be the guard.
+ */
+describe("AC-T2 (AC-1): the malformed-repo guard reads the slash, not the halves", () => {
+  const KEY = "lib/a.ts\u0000t:alpha\u0000unchecked index";
+  const keyed = (key: string) => threadBody({ severity: "high", summary: "unchecked index" }, key);
+  const pages = () => [[{ isResolved: false, body: keyed(KEY) }]];
+  const withRepo = (repo: string) =>
+    runCarry({ threadPages: pages(), env: { [AI_REVIEW_LEDGER_REPO_VAR]: repo } });
+
+  test("AC-T2a: the control — an ordinary owner/name is fetched", () => {
+    const r = withRepo("octocat/hello-world");
+    expect(r.threads, `${r.stdout}${r.stderr}`).not.toBeNull();
+    expect(priorKeysFrom(r.threads)).toEqual({ status: "MEASURED", keys: [KEY] });
+  });
+
+  test("AC-T2b: a repository whose owner EQUALS its name is fetched too", () => {
+    const r = withRepo("kubernetes/kubernetes");
+    expect(
+      r.stdout + r.stderr,
+      "a well-formed owner/name was called malformed, so suppression is dead for every " +
+        "repository whose owner and name agree",
+    ).not.toContain("is not owner/name");
+    expect(r.threads, `${r.stdout}${r.stderr}`).not.toBeNull();
+    expect(priorKeysFrom(r.threads)).toEqual({ status: "MEASURED", keys: [KEY] });
+  });
+
+  test("AC-T2c: a string with NO slash is still refused", () => {
+    // Without this row, deleting the guard passes (a) and (b).
+    const r = withRepo("pai-harness");
+    expect(r.stdout + r.stderr, "a slashless repository string was accepted").toContain(
+      "is not owner/name",
+    );
+    expect(r.threads, "a string that cannot address a query still produced a thread list").toBeNull();
+  });
+});
+
+/**
+ * AC-T3 (AC-4): an unreadable `pageInfo` is UNMEASURED, not "the last page".
+ *
+ * Every other reshape failure in `threads_fetch` goes through
+ * `threads_unmeasured`. The end-of-pagination test did not, because it asked
+ * `jq -e` for the value and treated any non-zero exit as "no more pages".
+ * Measured on this jq:
+ *
+ * | response                  | `jq -e …pageInfo.hasNextPage` |
+ * |---|---|
+ * | `hasNextPage: true`       | 0 |
+ * | `hasNextPage: false`      | 1 |
+ * | `pageInfo` ABSENT         | 1 — the path yields null, and -e reports 1 for null |
+ * | `pageInfo` a STRING       | 5 |
+ *
+ * The exit codes differ, and it makes no difference: the test was
+ * `if ! <cmd>`, which takes ANY non-zero. All three lower rows were one
+ * observable. A response that passed the `nodes | type == "array"` check and
+ * then had no usable `pageInfo` wrote whatever had accumulated and returned
+ * SUCCESS — a silently truncated thread list presented as a complete read.
+ * Downstream that is the worst direction available: a short prior-key list
+ * means a finding already raised is not recognised, so it is posted again,
+ * which is the duplicate-per-round failure (#1616) this increment exists to
+ * end.
+ *
+ * Row (c) is here because I first reasoned that a malformed `pageInfo` was
+ * already safe, since jq distinguishes it with exit 5. It was not: the
+ * branch never looked at which non-zero it got. Row (c) was red alongside
+ * (b), and that is why the fix establishes the TYPE instead of refining the
+ * exit-code reading.
+ */
+describe("AC-T3 (AC-4): the end of pagination is read as a value, not an exit code", () => {
+  const page = (nodes: Array<{ isResolved: unknown; body: unknown }>, pageInfo: unknown) => ({
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            ...(pageInfo === undefined ? {} : { pageInfo }),
+            nodes: nodes.map(n => ({ isResolved: n.isResolved, comments: { nodes: [{ body: n.body }] } })),
+          },
+        },
+      },
+    },
+  });
+  const one = [{ isResolved: false, body: "k" }];
+
+  test("AC-T3a: the control — hasNextPage false ends the walk and WRITES", () => {
+    const r = runCarry({ threadsRaw: JSON.stringify(page(one, { hasNextPage: false, endCursor: null })) });
+    expect(r.threads, `${r.stdout}${r.stderr}`).not.toBeNull();
+    expect(JSON.parse(r.threads!)).toEqual([{ isResolved: false, body: "k" }]);
+  });
+
+  test("AC-T3b: an ABSENT pageInfo is UNMEASURED, not a complete read", () => {
+    const r = runCarry({ threadsRaw: JSON.stringify(page(one, undefined)) });
+    expect(
+      r.threads,
+      "a response with no pageInfo wrote a thread list, so a truncated read is indistinguishable " +
+        "from a complete one and every prior finding gets posted again",
+    ).toBeNull();
+    expect(r.stdout + r.stderr).toContain("pageInfo.hasNextPage");
+  });
+
+  test("AC-T3c: a MALFORMED pageInfo is UNMEASURED too", () => {
+    // Red before the fix, alongside (b) — not, as I first assumed, already
+    // refused because jq exits 5 here rather than 1. `if ! <cmd>` never
+    // read the code.
+    const r = runCarry({ threadsRaw: JSON.stringify(page(one, "not-an-object")) });
+    expect(r.threads, "a malformed pageInfo produced a thread list").toBeNull();
   });
 });

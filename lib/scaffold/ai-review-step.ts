@@ -1790,6 +1790,50 @@ export const AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR = "AI_REVIEW_LEDGER_SNAPSHOT_PAT
 export const AI_REVIEW_LEDGER_SNAPSHOT_BASENAME = "ai-review-ledger-snapshot.txt";
 
 /**
+ * Where the carry step leaves the pull request's REVIEW THREADS, which is
+ * what the adjudicator now decides a repeat from (AC-1).
+ *
+ * ## What is in the file
+ *
+ * A JSON array, one entry per thread, each `{ isResolved, body }` where
+ * `body` is the thread's FIRST comment — the one the poster wrote and the
+ * only one carrying the `AI_REVIEW_THREAD_KEY_MARKER`. That is exactly the
+ * shape `RawReviewThread` names, so bash does no interpretation: it writes
+ * what GitHub returned and `threadReadingFromJson` decides.
+ *
+ * ## Why GraphQL and not `GET /pulls/{n}/comments`
+ *
+ * The REST list returns COMMENTS, not threads, and carries no resolution
+ * state at all — `isResolved` exists only on the GraphQL `reviewThreads`
+ * connection. Joining the two would mean matching a REST comment to a
+ * GraphQL thread on `databaseId` and would put a second reader of the same
+ * question in the step. One query returns both halves, so there is one.
+ *
+ * ## Written ONLY when the list was read — absence is the refusal
+ *
+ * The opposite of the snapshot's rule, and this heading used to state the
+ * snapshot's by mistake. The file
+ * here is the reading, so its absence has to mean "the step did not get far
+ * enough to write one" and nothing else — `THREADS_NOT_READ`. A fetch that
+ * fails writes no file and the adjudicator says so by name (AC-4) rather
+ * than suppressing nothing in silence.
+ */
+export const AI_REVIEW_THREADS_PATH_VAR = "AI_REVIEW_THREADS_PATH";
+
+/** The basename inside the findings directory. One spelling. */
+export const AI_REVIEW_THREADS_BASENAME = "ai-review-threads.json";
+
+/**
+ * The GraphQL endpoint, handed to the carry step by the workflow.
+ *
+ * `github.graphql_url` and not a string built from `github.api_url`: on
+ * GitHub Enterprise the two differ by more than a suffix (`/api/v3` against
+ * `/api/graphql`), and a composed URL is a second spelling of a fact the
+ * event already carries.
+ */
+export const AI_REVIEW_GRAPHQL_VAR = "AI_REVIEW_GRAPHQL_URL";
+
+/**
  * The round the snapshot was taken BEFORE, handed to the carry step so the
  * snapshot can carry its own provenance (#1586).
  *
@@ -4868,6 +4912,136 @@ carry_unmeasured() {
   carry_note "the findings earlier rounds raised could not be read, so this round starts from nothing and may stop reporting a live finding: \$1"
   exit 0
 }
+
+# ── the pull request's review threads (AC-1) ────────────────────────────
+#
+# Fetched HERE, in the step that runs before the reviewer, for the reason the
+# snapshot is: a list taken later could contain this round's own threads, and
+# suppressing a payload against itself reports CLEAN forever. The adjudicator
+# reads this file; \`ai-review-threads\` posts into the same population
+# afterwards.
+#
+# Every refusal below writes NO FILE. An absent file is the adjudicator's
+# \`THREADS_NOT_READ\`, which suppresses nothing and says so by name — the
+# direction this is allowed to be wrong in is one advisory printed twice.
+# Writing \`[]\` on a failure would assert that the pull request has no
+# threads, which suppresses nothing while claiming to have looked.
+threads_unmeasured() {
+  carry_note "the pull request's existing review threads could not be read, so a finding already raised may be raised again: \$1"
+}
+
+threads_fetch() {
+  if ! command -v jq >/dev/null 2>&1; then
+    threads_unmeasured "jq is not on this runner and the GraphQL response is JSON."
+    return 0
+  fi
+  if [ -z "\${${AI_REVIEW_LEDGER_TOKEN_VAR}:-}" ] || [ -z "\${${AI_REVIEW_LEDGER_REPO_VAR}:-}" ]; then
+    threads_unmeasured "the API token or the repository name is missing from this step's environment."
+    return 0
+  fi
+  graphql="\${${AI_REVIEW_GRAPHQL_VAR}:-https://api.github.com/graphql}"
+  owner="\${${AI_REVIEW_LEDGER_REPO_VAR}%%/*}"
+  name="\${${AI_REVIEW_LEDGER_REPO_VAR}#*/}"
+  # Ask for the SLASH, not for the halves. \`owner = name\` was true of a
+  # slashless string only by accident of the expansions, and it is equally
+  # true of kubernetes/kubernetes — which silently disabled suppression for
+  # every repository whose owner and name agree. AC-T2.
+  case "\${${AI_REVIEW_LEDGER_REPO_VAR}}" in
+    */*/*) repo_addressable=no ;;
+    */*) repo_addressable=yes ;;
+    *) repo_addressable=no ;;
+  esac
+  if [ "\${repo_addressable}" != "yes" ] || [ -z "\${owner}" ] || [ -z "\${name}" ]; then
+    threads_unmeasured "the repository name '\${${AI_REVIEW_LEDGER_REPO_VAR}}' is not owner/name, so the query could not be addressed."
+    return 0
+  fi
+
+  # The \`body\` taken is the thread's FIRST comment and only the first. The
+  # key marker is written by the poster; a later reply quoting it would make
+  # one thread answer a finding it is not about.
+  query='query(\$owner:String!,\$name:String!,\$number:Int!,\$cursor:String){repository(owner:\$owner,name:\$name){pullRequest(number:\$number){reviewThreads(first:100,after:\$cursor){pageInfo{hasNextPage endCursor}nodes{isResolved comments(first:1){nodes{body}}}}}}}'
+
+  threads_acc='[]'
+  threads_cursor=''
+  threads_page=1
+  while [ "\${threads_page}" -le ${AI_REVIEW_CARRY_MAX_PAGES} ]; do
+    if ! request=\$(jq -c -n --arg q "\${query}" --arg owner "\${owner}" --arg name "\${name}" \\
+      --argjson number "\${${AI_REVIEW_LEDGER_PR_VAR}}" --arg cursor "\${threads_cursor}" \\
+      '{query:\$q,variables:{owner:\$owner,name:\$name,number:\$number,cursor:(if \$cursor=="" then null else \$cursor end)}}'); then
+      threads_unmeasured "the GraphQL request body could not be built."
+      return 0
+    fi
+
+    # \`-f\` is not enough and the difference matters: GraphQL answers a bad
+    # credential, a missing scope and a deleted pull request with HTTP 200 and
+    # an \`errors\` array, so a curl that succeeded says nothing about whether
+    # the threads were read.
+    if ! response=\$(curl -sS -f -X POST \\
+      -H "Authorization: Bearer \${${AI_REVIEW_LEDGER_TOKEN_VAR}}" \\
+      -H "Content-Type: application/json" \\
+      -d "\${request}" "\${graphql}"); then
+      threads_unmeasured "the GraphQL query failed on page \${threads_page}."
+      return 0
+    fi
+    if printf '%s' "\${response}" | jq -e 'has("errors")' >/dev/null 2>&1; then
+      threads_unmeasured "GraphQL returned errors on page \${threads_page}: \$(printf '%s' "\${response}" | jq -r '[.errors[]?.message] | join("; ")')"
+      return 0
+    fi
+    if ! printf '%s' "\${response}" | jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' >/dev/null 2>&1; then
+      threads_unmeasured "the GraphQL response held no review-thread list on page \${threads_page}."
+      return 0
+    fi
+
+    # A null node is kept as a null-valued entry rather than dropped here.
+    # The decision about what an unreadable thread means belongs to
+    # \`threadReading\`, which has a negative control; jq silently dropping it
+    # would be a second decider with none.
+    if ! threads_acc=\$(printf '%s' "\${response}" | jq -c --argjson acc "\${threads_acc}" \\
+      '\$acc + [.data.repository.pullRequest.reviewThreads.nodes[] | {isResolved:.isResolved, body:(.comments.nodes[0].body)}]'); then
+      threads_unmeasured "the review threads on page \${threads_page} could not be reshaped."
+      return 0
+    fi
+
+    # Establish the field IS a boolean before reading it as one. The test
+    # below is \`if ! <cmd>\`, which takes ANY non-zero exit, so every way of
+    # failing to produce \`true\` was one observable: \`hasNextPage: false\`
+    # (exit 1), an ABSENT \`pageInfo\` (also 1 — the path yields null), and a
+    # MALFORMED one (5) all wrote whatever had accumulated and returned
+    # success. A truncated thread list was therefore reported as a complete
+    # read, which is the collapse this module refuses everywhere else.
+    # Distinguishing the exit codes would not help; the type is the question.
+    # AC-T3.
+    if ! printf '%s' "\${response}" | jq -e '(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage | type) == "boolean"' >/dev/null 2>&1; then
+      threads_unmeasured "the GraphQL response on page \${threads_page} carried no boolean pageInfo.hasNextPage, so the end of the list could not be established."
+      return 0
+    fi
+    if ! printf '%s' "\${response}" | jq -e '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' >/dev/null 2>&1; then
+      printf '%s' "\${threads_acc}" > "\${${AI_REVIEW_THREADS_PATH_VAR}}"
+      return 0
+    fi
+    if ! threads_cursor=\$(printf '%s' "\${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""'); then
+      threads_unmeasured "the cursor for page \$((threads_page + 1)) could not be read."
+      return 0
+    fi
+    if [ -z "\${threads_cursor}" ]; then
+      threads_unmeasured "GraphQL reported another page and gave no cursor to reach it."
+      return 0
+    fi
+    threads_page=\$((threads_page + 1))
+  done
+  threads_unmeasured "this pull request has more than ${AI_REVIEW_CARRY_MAX_PAGES} pages of review threads, so the list was not read to its end."
+}
+
+if [ -n "\${${AI_REVIEW_THREADS_PATH_VAR}:-}" ]; then
+  if [ "\${${AI_REVIEW_EVENT_VAR}:-}" = merge_group ] || [ -z "\${${AI_REVIEW_LEDGER_PR_VAR}:-}" ]; then
+    # No pull request, so no threads — and that is a COMPLETE reading, not a
+    # failed one. An empty list here says "nothing has been raised before",
+    # which is true of an entry that has no pull request to have raised it on.
+    printf '[]' > "\${${AI_REVIEW_THREADS_PATH_VAR}}"
+  else
+    threads_fetch
+  fi
+fi
 
 # Nowhere to write. Nothing else in this step can be reported, so it says so
 # on the run and leaves.
@@ -10881,6 +11055,14 @@ export function buildReviewRunStep(
     // path from the same prepare-step output, so the two agree by
     // construction rather than through an output this step might not reach.
     `    ${AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_LEDGER_SNAPSHOT_BASENAME}`,
+    // AC-1. The same directory and the same composition rule again. This step
+    // is the WRITER of the thread list and the adjudicator below is its only
+    // reader; both compose the path from this one output, so they agree by
+    // construction rather than through a spelling either could edit alone.
+    `    ${AI_REVIEW_THREADS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_THREADS_BASENAME}`,
+    // Taken from the event rather than built from the REST URL: on GitHub
+    // Enterprise `/api/v3` and `/api/graphql` are not a suffix apart.
+    `    ${AI_REVIEW_GRAPHQL_VAR}: \${{ github.graphql_url }}`,
     // The round this snapshot precedes, so it carries its own provenance.
     // Unset is not fatal: the reader refuses an unreadable provenance the
     // same way it refuses a stale one, by suppressing nothing.
@@ -11063,6 +11245,11 @@ export function buildReviewRunStep(
     // check. The carry file carries the state; this one carries the bytes.
     `    ${AI_REVIEW_CARRY_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_CARRY_BASENAME}`,
     `    ${AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_LEDGER_SNAPSHOT_BASENAME}`,
+    // AC-1. What the suppression gate actually decides from since the move
+    // off the ledger. Restated here for #826's reason, composed from the
+    // same prepare output the carry step wrote it to — and an absent file is
+    // a NAMED refusal in the adjudicator, not an empty prior set.
+    `    ${AI_REVIEW_THREADS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_THREADS_BASENAME}`,
     `    ${AI_REVIEW_EXECUTION_FILE_VAR}: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outputs.execution_file }}`,
     // CRC-B1. The PATH, so the read-check can look for that exact string in
     // the transcript. #826 is why this is restated rather than inherited: a
@@ -11221,6 +11408,12 @@ export function buildReviewRunStep(
     `    ${AI_REVIEW_THREADS_SHA_VAR}: \${{ github.event.pull_request.head.sha }}`,
     `    ${AI_REVIEW_THREADS_REPO_VAR}: \${{ github.repository }}`,
     `    ${AI_REVIEW_THREADS_TOKEN_VAR}: \${{ secrets.GITHUB_TOKEN }}`,
+    // AC-3. This step POSTS the threads, so it is the one that can create a
+    // duplicate, and until now it was the only reader handed no suppression
+    // gate — the adjudicator dropped a repeat from its annotation while this
+    // step opened a second thread for it. Same file, same prepare-step
+    // output, so the two form one answer rather than two that agree.
+    `    ${AI_REVIEW_THREADS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_THREADS_BASENAME}`,
     `  run: |`,
     ...buildThreadsScript(version).trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
