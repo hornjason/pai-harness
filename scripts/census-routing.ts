@@ -196,6 +196,29 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
       (c.isNew || [...c.added, ...c.removed].some(l => LINE_CITATION_LINE.test(l))),
   },
   {
+    // Deliberately NOT folded into the `doc` row above, whose predicate
+    // fires only on a NEW markdown file or a changed line carrying a
+    // `path:NNN` citation. DOC-DIST's subject is a sentence that spells its
+    // distance in words — "167 lines below this line" — which carries no
+    // citation and arrives in an ordinary edit to an existing file, so the
+    // `doc` row would route it exactly never.
+    id: "prose-distance",
+    // Fixtures are excluded because the suite excludes them: `docs()` filters
+    // `test/fixtures/` and `DOC-DIST-7` asserts it does, since a fixture's
+    // whole job is to hold prose the rule must refuse. Routing a fixture edit
+    // here would hand an agent a suite that structurally cannot see the file
+    // they changed, and a green run that looked at nothing reads exactly like
+    // a green run that looked. Round 10 of the #1624 review; it is the same
+    // scope mismatch this row already caused once, in the other direction —
+    // the scan then covered four directories while the event said "any
+    // markdown", and that one was fixed by widening the scan because the
+    // narrowness was accidental. This exclusion is deliberate, so the row
+    // moves instead.
+    event: "edited any markdown outside test/fixtures/",
+    tests: ["test/prose-self-distance.test.ts"],
+    fires: c => isMarkdown(c.path) && !c.path.startsWith("test/fixtures/"),
+  },
+  {
     // Not in the prose list before #990, and the rule file's own closing
     // section records this check catching that file on its first run. The
     // list has been missing the test that caught the list's author.
@@ -272,6 +295,15 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     event: "added a test file",
     tests: [
       "test/sc-id-namespace.test.ts",
+      // Added after it reddened CI on a branch whose local census was green
+      // (#1624). `sc-id-namespace` refuses an UNQUALIFIED `SC-N` mention and
+      // `sc-fixture-namespace` refuses a fixture id inside the LIVE range —
+      // different refusals, and a new test file quoting an id can trip
+      // either, so routing only the first sends an agent away believing the
+      // question was asked. It cost two red shards and two pushes: the id
+      // was in a fixture string, then in the comment explaining why the
+      // fixture string had changed.
+      "test/sc-fixture-namespace.test.ts",
       "test/scratch-paths-unique.test.ts",
       "test/scratch-cleanup.test.ts",
       "test/consumer-no-rebuild-delegation.test.ts",
