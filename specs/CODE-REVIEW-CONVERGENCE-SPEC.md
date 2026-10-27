@@ -422,7 +422,13 @@ which is the only form of this that a reader can check without rerunning
 anything.
 
 **The headline is the wrong unit, for the same reason it was on 2026-10-24,
-and the split is the reading.** Of the 178 rounds:
+and the split is the reading.** Of the 178 rounds — **all 45 pull requests in
+the range, merged or not**, which is a different population from the 43 the
+measured-only column below uses, and the reason this table says 96 measured
+where that one counts 94. The two still-open pull requests contribute the
+difference: #1607 has 2 measured rounds and #1599 has none. Neither figure is
+stale; they answer different questions, and until this sentence existed a
+reader had no way to tell that from the document.
 
 | | rounds | share |
 |---|---|---|
