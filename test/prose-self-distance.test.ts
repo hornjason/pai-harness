@@ -168,6 +168,31 @@ const UNCAUGHT = [
   "was breaking, two paragraphs above the code that breaks it.",
 ];
 
+/**
+ * A SECOND declared limit, found at round 5 and deliberately not fixed here.
+ *
+ * The gap stops at any `.`, so a period that is not a sentence end — a
+ * decimal, a version, a file name like `ai-review.yml` — ends the window
+ * early and a claim reaching past one goes unrefused. The reviewer's decimal
+ * example turns out to be this, not the block-marker bug it looked like, and
+ * the two have different causes.
+ *
+ * Not fixed in this pull request, and the reason is the pull request's own
+ * history: a widening at round 3 reintroduced the false-positive class the
+ * module was narrowed to avoid, and round 4 was spent undoing it. Teaching
+ * the gap to tell a sentence end from a decimal widens the window again,
+ * at round 5, in a change nobody has measured. It belongs in its own commit
+ * with its own corpus reading.
+ *
+ * Asserted rather than described, for the same reason as `UNCAUGHT`: when
+ * somebody does fix it these rows go red and the claim above has to be
+ * rewritten instead of quietly surviving.
+ */
+const UNCAUGHT_PERIOD = [
+  "the ratio is three lines above\n3.14 times this paragraph's estimate",
+  "the note sits three lines above\nai-review.yml is what this section edits",
+];
+
 /** Every tracked markdown path, fixtures included — the population before the cut. */
 function trackedMarkdown(): string[] {
   const r = spawnSync(["git", "ls-files", "-z", "*.md"], { cwd: ROOT, stdout: "pipe" });
@@ -224,6 +249,25 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
           `fifth row is still true: ${text}`,
       ).toHaveLength(0);
     }
+  });
+
+  test("DOC-DIST-3f: the declared period limit — a non-terminal `.` ends the window", () => {
+    for (const text of UNCAUGHT_PERIOD) {
+      expect(
+        proseSelfDistanceViolations([{ path: "f.md", text }]),
+        `now caught — good, but rewrite the limit UNCAUGHT_PERIOD declares ` +
+          `and re-measure the corpus before you call it free: ${JSON.stringify(text)}`,
+      ).toHaveLength(0);
+    }
+    // The control. Identical text with the period removed MUST be caught, or
+    // this row is satisfied by a rule that refuses nothing and the limit it
+    // claims to describe is not the reason.
+    expect(
+      proseSelfDistanceViolations([
+        { path: "f.md", text: "the ratio is three lines above\n314 times this paragraph's estimate" },
+      ]),
+      "the period is not what stopped it, so this limit is misattributed",
+    ).toHaveLength(1);
   });
 
   test("DOC-DIST-3c: UNCAUGHT is quoting the tree, not an invented list", () => {
@@ -296,6 +340,24 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
       ]),
       "an ordinary soft wrap stopped being crossed, so the round-3 fix is gone",
     ).toHaveLength(1);
+
+    // Round 5. Lines that LOOK like a block start and are not: the first
+    // spelling of BLOCK_START was a bare character class, so an issue number
+    // read as a heading, a decimal as an ordered-list marker, and emphasis
+    // as a bullet. Each stopped the window on a line it should have crossed
+    // — a false NEGATIVE, which is quieter than round 4's false positive and
+    // no less wrong. CommonMark wants the space; so does this.
+    const lookalikes: Array<[string, string]> = [
+      ["issue number, not a heading", "the note sits three lines above\n#1624 says this section is wrong"],
+      ["emphasis, not a bullet", "the marker is three lines above\n*italic* text in this section"],
+      ["digits and a paren, no space", "the note sits three lines above\n3)14 of this section says otherwise"],
+    ];
+    for (const [kind, text] of lookalikes) {
+      expect(
+        proseSelfDistanceViolations([{ path: "f.md", text }]),
+        `the window stopped at a line that starts no block (${kind})`,
+      ).toHaveLength(1);
+    }
   });
 
   test("DOC-DIST-4: the tree holds none", () => {

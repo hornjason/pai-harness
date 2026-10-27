@@ -221,8 +221,23 @@ const UNIT = "lines?|rows?|sections?|paragraphs?|bullets?|columns?|pages?";
  * marker, a table row, a heading, a blockquote and a fence, because each of
  * those opens something the previous line was not part of. `DOC-DIST-3e`
  * plants one of each.
+ *
+ * ### The markers require their space, because CommonMark does
+ *
+ * The first spelling of this was a bare character class, and round 5 of the
+ * review found it stopping on lines that start no block at all: `#1624` is
+ * an issue number this repository writes constantly and not an ATX heading,
+ * `3.14` is a decimal and not an ordered-list marker, and `*italic*` is
+ * emphasis. Each of those made the window refuse to cross a line it should
+ * have crossed.
+ *
+ * The direction is the opposite of round 4's — these are false NEGATIVES, a
+ * claim going unrefused rather than a true sentence being refused — which
+ * makes them quieter and no less wrong. CommonMark requires a space after
+ * `-`, `*`, `+`, `#` and an ordered marker, so the pattern requires one too;
+ * `>` and `|` do not take one and so do not ask for one.
  */
-const BLOCK_START = "[-*+>|#]|[0-9]+[.)]|```|~~~";
+const BLOCK_START = "[-*+][ \\t]|#{1,6}[ \\t]|[0-9]+[.)][ \\t]|[>|]|```|~~~";
 
 const GAP = `(?:[^.!?\\n]|\\n(?![ \\t]*(?:\\n|${BLOCK_START})))`;
 
