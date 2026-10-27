@@ -1364,6 +1364,48 @@ export function readLedger(body: unknown): LedgerReading {
 }
 
 /**
+ * The ledger's round entries **as written**, for readers that need a field
+ * `LedgerRound` does not carry.
+ *
+ * `readLedger` is the reading; this is the same bytes with nothing dropped.
+ * The `unmeasured` key is the case that forced it — `lib/ai-review-unmeasured.ts`
+ * adds it in a second pass and `toLedgerRound` has no slot for it, so counting
+ * how many rounds were `declined` rather than `no_payload` means going back to
+ * the entry.
+ *
+ * **The fence rule is `indexOf("```json")` from the marker, then
+ * `indexOf("\n```")` from there**, and the obvious alternative —
+ * `split("```json")[1].split("```")[0]` — is wrong on live data, not in
+ * theory: a ledger whose stored finding quotes a fenced code block is cut at
+ * the quote. On 2026-10-27 that cut a 27,252-character ledger at 18,021 and
+ * the text at the cut was a reviewer quoting the recipe that did the cutting.
+ * Anything wanting raw entries should call this rather than re-derive the
+ * slice (`.claude/rules/checks-must-be-able-to-fail.md`, *two deciders*).
+ *
+ * `scripts/record-ai-review-unmeasured.ts` still cuts its own, because it
+ * needs the whole DOCUMENT — it splices the annotated rounds back in and the
+ * bare-array and `{rounds}` shapes are written back differently. That one is
+ * a known second decider and it is narrower than this: it indexes from the
+ * start of the body rather than from the marker.
+ *
+ * `null` means `readLedger` would not have returned READ either — absent,
+ * unfenced, unparseable, or an object with no `rounds` array. A caller wanting
+ * to know WHICH should ask `readLedger`; this answers only "hand me the
+ * entries".
+ */
+export function ledgerRawRounds(body: unknown): unknown[] | null {
+  if (readLedger(body).status !== AI_REVIEW_LEDGER_READ) return null;
+  const text = body as string;
+  const fence = text.indexOf("```json", text.indexOf(AI_REVIEW_LEDGER_COMMENT_MARKER));
+  const start = text.indexOf("\n", fence);
+  const close = text.indexOf("\n```", start);
+  const parsed: unknown = JSON.parse(text.slice(start + 1, close));
+  if (Array.isArray(parsed)) return parsed;
+  const rounds = (parsed as Record<string, unknown>)[AI_REVIEW_LEDGER_ROUNDS_KEY];
+  return Array.isArray(rounds) ? rounds : null;
+}
+
+/**
  * How deep a legacy bare-array ledger is, derived from its length (#1447).
  *
  * The list grows by exactly one entry per round and is only ever cut when it

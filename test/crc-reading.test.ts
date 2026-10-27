@@ -1,0 +1,477 @@
+/**
+ * Covers CRC-M11 (specs/CODE-REVIEW-CONVERGENCE-SPEC.md).
+ *
+ * The battery for `lib/crc-reading.ts` and `scripts/crc-reading.ts`. Every
+ * case here is a shape the shell recipe this replaces got wrong on live data
+ * — not a hypothetical, and each one names the observation it comes from.
+ */
+
+import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import {
+  AI_REVIEW_LEDGER_COMMENT_MARKER,
+  ledgerRawRounds,
+} from "../lib/ai-review-rounds.ts";
+import {
+  CRC_PREMISE_RANGE_NOT_COVERED,
+  CRC_PREMISE_UNRESOLVABLE_ABSENCE,
+  deltaLines,
+  measuredRoundsFor,
+  allRoundsFor,
+  premiseViolations,
+  renderCrcReading,
+  scoreColumn,
+  splitRoundKinds,
+  takeCrcReading,
+  type CrcEntry,
+} from "../lib/crc-reading.ts";
+
+const ROOT = join(import.meta.dir, "..");
+const SCRIPT = join(ROOT, "scripts/crc-reading.ts");
+
+/** A measured round — `findings` an array, and no `unmeasured` key. */
+const measured = (round: number, findings: unknown[] = []) => ({
+  at: "2026-10-27T00:00:00Z",
+  sha: "f".repeat(40),
+  round,
+  findings,
+});
+
+/** An unmeasured round, as `lib/ai-review-unmeasured.ts` writes one. */
+const unmeasured = (round: number, state: string) => ({
+  at: "2026-10-27T00:00:00Z",
+  sha: "f".repeat(40),
+  round,
+  findings: null,
+  unmeasured: state,
+});
+
+/**
+ * A ledger comment body.
+ *
+ * `JSON.stringify` with no indent on purpose: that is how the writer emits
+ * it, and it is the property the fence rule depends on — a newline inside the
+ * payload would put `\n` + three backticks in front of the real close.
+ */
+function ledgerBody(rounds: unknown[], truncated = 0): string {
+  return [
+    AI_REVIEW_LEDGER_COMMENT_MARKER,
+    "",
+    "```json",
+    JSON.stringify({ rounds, truncated }),
+    "```",
+    "",
+  ].join("\n");
+}
+
+const entry = (over: Partial<CrcEntry> & { number: number }): CrcEntry => ({
+  passed: true,
+  truncated: false,
+  body: null,
+  ...over,
+});
+
+describe("premise guards — the fetch's own two refusals", () => {
+  test("a FULL comment page with no ledger is unresolvable, and with one is fine", () => {
+    // The narrow form, and the version this replaced refused the second case
+    // too. The ledger is one upserted comment, so its position is fixed when
+    // round 1 writes it and no later volume pushes it off the page.
+    const bad = premiseViolations(
+      [
+        entry({ number: 10, truncated: true, body: null }),
+        entry({ number: 20, truncated: true, body: ledgerBody([measured(1)]) }),
+      ],
+      10,
+      20,
+    );
+    expect(bad.map(v => v.kind)).toEqual([CRC_PREMISE_UNRESOLVABLE_ABSENCE]);
+    expect(bad[0].detail).toContain("#10");
+    expect(bad[0].detail).not.toContain("#20");
+  });
+
+  test("a short page with no ledger is a real absence and passes the guard", () => {
+    expect(
+      premiseViolations([entry({ number: 10, body: null }), entry({ number: 20 })], 10, 20),
+    ).toEqual([]);
+  });
+
+  test("a page that stops short of the range is refused, naming both spans", () => {
+    const v = premiseViolations([entry({ number: 15 }), entry({ number: 20 })], 10, 20);
+    expect(v.map(x => x.kind)).toEqual([CRC_PREMISE_RANGE_NOT_COVERED]);
+    expect(v[0].detail).toContain("#15–#20");
+    expect(v[0].detail).toContain("#10–#20");
+  });
+
+  test("an EMPTY page is refused rather than scored over nothing", () => {
+    // The shape that cleared the jq recipe's first guard: `[]` is a valid
+    // JSON array, so only the range check catches it.
+    expect(premiseViolations([], 10, 20).map(v => v.kind)).toEqual([
+      CRC_PREMISE_RANGE_NOT_COVERED,
+    ]);
+  });
+});
+
+describe("the fence rule, against the payload that broke the recipe", () => {
+  /**
+   * The live 2026-10-27 failure, as a regression case.
+   *
+   * A reviewer quoted the measurement recipe — which contains a ```json fence
+   * — into a finding, and the finding was stored in the ledger. The recipe's
+   * own `split("```json")[1] | split("```")[0]` then cut the ledger at the
+   * quote: 18,021 characters of a 27,252-character payload.
+   */
+  const quoting = ledgerBody([
+    measured(1, [
+      { file: "specs/S.md", summary: "the recipe cuts itself", text: '```json \\") | select(...) ```' },
+    ]),
+    measured(2),
+    measured(3),
+  ]);
+
+  test("the naive split loses rounds on it and `indexOf` does not", () => {
+    const naive = quoting.split("```json")[1].split("```")[0];
+    expect(() => JSON.parse(naive)).toThrow();
+
+    const rounds = ledgerRawRounds(quoting);
+    expect(rounds).not.toBeNull();
+    expect(rounds?.length).toBe(3);
+  });
+
+  test("the scorer reads all three rounds, which is what the recipe could not", () => {
+    expect(measuredRoundsFor(entry({ number: 1, body: quoting }))).toEqual({
+      rounds: 3,
+      evicted: 0,
+    });
+  });
+});
+
+describe("per-pull-request refusal, which jq structurally cannot do", () => {
+  test("one malformed ledger is UNMEASURED and the rest still score", () => {
+    // jq aborts the whole filter here and the entire range is lost. The
+    // control is the two good pull requests either side of the bad one.
+    const broken = `${AI_REVIEW_LEDGER_COMMENT_MARKER}\n\n\`\`\`json\n{"rounds":[`;
+    const row = takeCrcReading(
+      [
+        entry({ number: 1, body: ledgerBody([measured(1)]) }),
+        entry({ number: 2, body: broken }),
+        entry({ number: 3, body: ledgerBody([measured(1), measured(2)]) }),
+      ],
+      1,
+      3,
+      "2026-10-27",
+    );
+    expect(row.allRounds.measured).toBe(2);
+    expect(row.allRounds.refusals.map(r => [r.number, r.refusal])).toEqual([
+      [2, "LEDGER_UNREADABLE"],
+    ]);
+    expect(row.measuredOnly.refusals.map(r => r.number)).toEqual([2]);
+  });
+
+  test("a ledger object with no `rounds` key refuses that one pull request", () => {
+    // The recipe's other abort: "Cannot iterate over null".
+    const noRounds = [
+      AI_REVIEW_LEDGER_COMMENT_MARKER,
+      "",
+      "```json",
+      JSON.stringify({ truncated: 0 }),
+      "```",
+    ].join("\n");
+    const row = takeCrcReading(
+      [entry({ number: 1, body: noRounds }), entry({ number: 2, body: ledgerBody([measured(1)]) })],
+      1,
+      2,
+      "2026-10-27",
+    );
+    expect(row.allRounds.refusals.map(r => r.number)).toEqual([1]);
+    expect(row.allRounds.measured).toBe(1);
+  });
+});
+
+describe("`findings != null`, never `unmeasured == null`", () => {
+  /**
+   * The input the two predicates must disagree on.
+   *
+   * A round is written twice — the step emits it with NO `unmeasured` key,
+   * and `lib/ai-review-unmeasured.ts` adds one in a second pass. So a round
+   * the recorder never reached carries `findings: null` and no key, and
+   * `unmeasured == null` scores it as measured.
+   */
+  const unrecorded = { at: "x", sha: "f", round: 1, findings: null };
+
+  test("a round the recorder never reached is NOT measured", () => {
+    const body = ledgerBody([unrecorded, measured(2)]);
+    expect(measuredRoundsFor(entry({ number: 1, body }))).toEqual({ rounds: 1, evicted: 0 });
+
+    // Name what the other predicate would have said, rather than assert the
+    // two agree — the agreement on live data is what made the wrong one look
+    // safe for a round of review.
+    const raw = ledgerRawRounds(body) as Record<string, unknown>[];
+    expect(raw.filter(r => r.unmeasured === undefined).length).toBe(2);
+  });
+
+  test("`findings: []` with no `unmeasured` key IS measured — a clean round", () => {
+    expect(measuredRoundsFor(entry({ number: 1, body: ledgerBody([measured(1)]) }))).toEqual({
+      rounds: 1,
+      evicted: 0,
+    });
+  });
+});
+
+describe("zero measured rounds is UNMEASURED, not a one-round pass", () => {
+  const entries = [
+    // Every round refused by the review system. The twelve of these in the
+    // 2026-10-27 range are what made the first published column read 62.8%.
+    entry({ number: 1, body: ledgerBody([unmeasured(1, "declined"), unmeasured(2, "declined")]) }),
+    entry({ number: 2, body: ledgerBody([measured(1)]) }),
+    entry({ number: 3, body: ledgerBody([measured(1), measured(2), measured(3)]) }),
+  ];
+
+  test("it is refused by name and listed, not scored as zero", () => {
+    const row = takeCrcReading(entries, 1, 3, "2026-10-27");
+    expect(row.zeroMeasured).toEqual([1]);
+    expect(row.measuredOnly.refusals.map(r => r.refusal)).toEqual(["ZERO_MEASURED_ROUNDS"]);
+    expect(row.measuredOnly.passed).toBe(2);
+    expect(row.measuredOnly.oneRound).toBe(1);
+  });
+
+  test("the all-rounds column still counts its rounds — the loop did go round", () => {
+    const row = takeCrcReading(entries, 1, 3, "2026-10-27");
+    expect(row.allRounds.measured).toBe(3);
+    expect(row.allRounds.passedRounds).toBe(2 + 1 + 3);
+  });
+
+  test("scoring it as zero instead moves the one-round rate, and by how much", () => {
+    // The thirteen points, performed. One rule refuses the pull request, the
+    // other scores it as a zero-round pass; the spread is what that single
+    // decision is worth, and quoting two parsers' agreement without this is
+    // quoting one decider twice.
+    const refusing = takeCrcReading(entries, 1, 3, "2026-10-27").measuredOnly;
+    const scoringZero = scoreColumn(
+      [
+        { passed: true, rounds: 0 },
+        { passed: true, rounds: 1 },
+        { passed: true, rounds: 3 },
+      ],
+      [],
+    );
+    expect(refusing.oneRound! / refusing.passed).toBeCloseTo(0.5, 5);
+    expect(scoringZero.oneRound! / scoringZero.passed).toBeCloseTo(1 / 3, 5);
+  });
+});
+
+describe("denominators", () => {
+  const scored = [
+    { passed: true, rounds: 1 },
+    { passed: true, rounds: 6 },
+    { passed: false, rounds: 7 },
+  ];
+
+  test("mean and one-round are over PASSED, the tail over ALL measured", () => {
+    const c = scoreColumn(scored, []);
+    expect(c.passed).toBe(2);
+    expect(c.measured).toBe(3);
+    expect(c.mean).toBeCloseTo(3.5, 5);
+    expect(c.oneRound).toBe(1);
+    // 2 of 3, not 1 of 2 — the still-open pull request at 7 rounds is exactly
+    // the kind this statistic exists to find.
+    expect(c.fiveOrMore).toBe(2);
+  });
+
+  test("an all-refused column is null, never zero", () => {
+    const c = scoreColumn([], []);
+    expect(c.mean).toBeNull();
+    expect(c.oneRound).toBeNull();
+    expect(c.fiveOrMore).toBeNull();
+    // `[] | add` is null and `null / 0` aborts jq at exit 5. The one reading
+    // that most needs to be legible was the one the recipe could not print.
+    expect(renderCrcReading(takeCrcReading([], 1, 1, "2026-10-27")).join("\n")).toContain(
+      "UNMEASURED",
+    );
+  });
+});
+
+describe("the split, and the eviction bound", () => {
+  test("rounds are counted by kind over every pull request, merged or not", () => {
+    const split = splitRoundKinds([
+      entry({ number: 1, body: ledgerBody([measured(1), unmeasured(2, "declined")]) }),
+      entry({ number: 2, passed: false, body: ledgerBody([unmeasured(1, "no_payload")]) }),
+      entry({ number: 3, body: null }),
+    ]);
+    expect(split.total).toBe(3);
+    expect(split.kinds).toEqual({ measured: 1, declined: 1, no_payload: 1 });
+  });
+
+  test("an evicted round makes the measured-only figure a lower bound, and says so", () => {
+    const row = takeCrcReading(
+      [entry({ number: 1, body: ledgerBody([measured(1), measured(2)], 5) })],
+      1,
+      1,
+      "2026-10-27",
+    );
+    expect(row.measuredOnlyEvicted).toBe(5);
+    expect(renderCrcReading(row).join("\n")).toContain("LOWER BOUND");
+    // The all-rounds column adds them, because a round's EXISTENCE survives
+    // eviction even though its kind does not.
+    expect(row.allRounds.passedRounds).toBe(7);
+  });
+});
+
+describe("the delta names both ranges before it names a number", () => {
+  const rowAt = (lo: number, hi: number) =>
+    takeCrcReading(
+      [entry({ number: lo, body: ledgerBody([measured(1)]) }), entry({ number: hi, body: ledgerBody([measured(1), measured(2)]) })],
+      lo,
+      hi,
+      "2026-10-27",
+    );
+
+  test("a first row has no delta and says so", () => {
+    expect(deltaLines(null, rowAt(1, 2))[0]).toContain("first row");
+  });
+
+  test("two different ranges are called a comparison, not a change", () => {
+    const line = deltaLines(rowAt(1, 2), rowAt(10, 11))[0];
+    expect(line).toContain("#1–#2");
+    expect(line).toContain("#10–#11");
+    expect(line).toContain("DISJOINT");
+    expect(line).toContain("not a change");
+  });
+
+  test("a rate delta carries both numerators, not just the percentage", () => {
+    const lines = deltaLines(rowAt(1, 2), rowAt(1, 2)).join("\n");
+    expect(lines).toMatch(/passed after one round: .*\(1\/2\) → .*\(1\/2\)/);
+  });
+});
+
+describe("the script refuses, and the refusal can be removed", () => {
+  const SOURCE = readFileSync(SCRIPT, "utf-8");
+
+  test("CRC_READING_REFUSED appears exactly once, so the mutation is total", () => {
+    // A later branch inlining `return 1` would bypass the mutant below and
+    // the case would go green having witnessed nothing.
+    expect(SOURCE.split("CRC_READING_REFUSED").length - 1).toBe(
+      SOURCE.split("export const CRC_READING_REFUSED").length - 1 +
+        (SOURCE.match(/return CRC_READING_REFUSED;/g) ?? []).length,
+    );
+    expect(SOURCE).toContain("export const CRC_READING_REFUSED = 1;");
+  });
+
+  /**
+   * The mutant runs from a tmpdir, so its relative imports are rewritten to
+   * absolute. The alternative — a script with no relative imports — is not
+   * available here: the whole point of this one is that it calls
+   * `readLedger`'s fence rule rather than spelling its own.
+   */
+  function mutantPath(dir: string): string {
+    const src = SOURCE.replace(
+      "export const CRC_READING_REFUSED = 1;",
+      "export const CRC_READING_REFUSED = 0;",
+    ).replace(/from "\.\.\/lib\//g, `from "${join(ROOT, "lib")}/`);
+    expect(src).toContain("CRC_READING_REFUSED = 0;");
+    expect(src).not.toContain('from "../lib/');
+    const at = join(dir, "crc-reading-mutant.ts");
+    writeFileSync(at, src);
+    return at;
+  }
+
+  function run(script: string, args: string[], cwd: string) {
+    return spawnSync("bun", [script, ...args], { encoding: "utf8", cwd });
+  }
+
+  test("a range the page does not cover refuses, and the mutant does not", () => {
+    const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+    try {
+      const entries = join(dir, "entries.json");
+      writeFileSync(
+        entries,
+        JSON.stringify([
+          { number: 15, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+        ]),
+      );
+      const args = ["--lo", "10", "--hi", "20", "--from", entries, "--store", "none.json"];
+
+      const real = run(SCRIPT, args, dir);
+      expect(real.status).toBe(1);
+      expect(real.stderr).toContain(CRC_PREMISE_RANGE_NOT_COVERED);
+
+      const mutant = run(mutantPath(dir), args, dir);
+      expect(mutant.stderr).toContain(CRC_PREMISE_RANGE_NOT_COVERED);
+      // The refusal removed, performed and observed: same input, same
+      // message, exit 0. Without this the case cannot tell a guard that held
+      // from a run that never reached it.
+      expect(mutant.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a clean range scores, records on --record, and prints the delta", () => {
+    const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+    try {
+      const entries = join(dir, "entries.json");
+      writeFileSync(
+        entries,
+        JSON.stringify([
+          { number: 10, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+          {
+            number: 20,
+            passed: true,
+            truncated: false,
+            body: ledgerBody([unmeasured(1, "declined"), measured(2)]),
+          },
+        ]),
+      );
+      const args = [
+        "--lo", "10", "--hi", "20",
+        "--from", entries,
+        "--store", "store.json",
+        "--date", "2026-10-27",
+      ];
+
+      const first = run(SCRIPT, [...args, "--record"], dir);
+      expect(first.stderr).toBe("");
+      expect(first.status).toBe(0);
+      expect(first.stdout).toContain("#10–#20");
+      expect(first.stdout).toContain("first row");
+      expect(first.stdout).toContain("recorded row 1");
+
+      const stored = JSON.parse(readFileSync(join(dir, "store.json"), "utf-8"));
+      expect(stored).toHaveLength(1);
+      expect(stored[0].lo).toBe(10);
+      expect(stored[0].hi).toBe(20);
+      expect(stored[0].split.kinds).toEqual({ measured: 2, declined: 1 });
+
+      const second = run(SCRIPT, args, dir);
+      expect(second.status).toBe(0);
+      expect(second.stdout).toContain("pull request numbers in common");
+      expect(second.stdout).toContain("not recorded");
+      // Without --record the store must not have grown.
+      expect(JSON.parse(readFileSync(join(dir, "store.json"), "utf-8"))).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("allRoundsFor delegates rather than restating", () => {
+  test("a legacy bare array at the cap refuses as a lower bound", () => {
+    // `roundsTaken`'s own refusal, reached through this module — proof the
+    // truncation rule is not copied here, where it would drift flatteringly.
+    const body = [
+      AI_REVIEW_LEDGER_COMMENT_MARKER,
+      "",
+      "```json",
+      JSON.stringify(Array.from({ length: 12 }, (_, i) => measured(i + 1))),
+      "```",
+    ].join("\n");
+    const taken = allRoundsFor(entry({ number: 1, body }));
+    expect("refusal" in taken && taken.refusal).toBe("ROUNDS_TRUNCATION_UNKNOWN");
+    // And the measured-only column still reads it, because an evicted round's
+    // existence is what is unknown there, not its kind.
+    expect(measuredRoundsFor(entry({ number: 1, body }))).toEqual({ rounds: 12, evicted: 0 });
+  });
+});

@@ -1,0 +1,117 @@
+[
+  {
+    "date": "2026-10-27",
+    "lo": 1573,
+    "hi": 1632,
+    "pullRequests": 46,
+    "allRounds": {
+      "measured": 46,
+      "passed": 44,
+      "passedRounds": 191,
+      "mean": 4.340909090909091,
+      "oneRound": 12,
+      "fiveOrMore": 17,
+      "refusals": []
+    },
+    "measuredOnly": {
+      "measured": 33,
+      "passed": 32,
+      "passedRounds": 103,
+      "mean": 3.21875,
+      "oneRound": 15,
+      "fiveOrMore": 9,
+      "refusals": [
+        {
+          "number": 1629,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "4 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1628,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "2 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1623,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "7 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1621,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "6 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1615,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "3 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1613,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "3 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1610,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "5 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1602,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "6 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1599,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "2 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1598,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "3 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1596,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "3 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1593,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "3 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        },
+        {
+          "number": 1589,
+          "refusal": "ZERO_MEASURED_ROUNDS",
+          "detail": "2 round(s) recorded and not one produced a review. A pull request the reviewer never read once has no rounds-to-pass; scoring it as a one-round pass is the most favourable thing this reading could say about a pull request the review system refused."
+        }
+      ]
+    },
+    "measuredOnlyEvicted": 6,
+    "split": {
+      "total": 189,
+      "kinds": {
+        "measured": 105,
+        "no_payload": 36,
+        "declined": 47,
+        "log_unreadable": 1
+      }
+    },
+    "zeroMeasured": [
+      1589,
+      1593,
+      1596,
+      1598,
+      1599,
+      1602,
+      1610,
+      1613,
+      1615,
+      1621,
+      1623,
+      1628,
+      1629
+    ]
+  }
+]
