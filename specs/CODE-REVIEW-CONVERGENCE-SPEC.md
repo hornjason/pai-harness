@@ -1497,7 +1497,7 @@ it.
 | LLM evaluators recognise their own generations and score them higher, with self-preference rising with self-recognition | [Panickssery et al., NeurIPS 2024][self] | A same-model verifier is biased toward **confirming** the finding, which is the costly direction here |
 | Full fixed cascades underperform the best **two**-model pair; longer optimised cascades add at most 0.014 normalised gain over it | [arXiv 2605.06350][casc], §6.2 and Table 2 | `VERIFIER_GROUP_SIZE` of 3 is buying the part the field says does not pay |
 | A plain router beats the best cascade on four of five datasets, "because it avoids paying the cheap model's generation cost on queries routed elsewhere" | [ibid.][casc] | Decide which findings need a vote **before** convening one, rather than voting then filtering |
-| Adaptive sampling reaches up to **7.9×** fewer samples for under 0.1% accuracy drop | [Aggarwal et al., EMNLP 2023][adac] | Stop at the first decisive lead; the third verifier is only paid on a split |
+| Adaptive sampling reaches up to **7.9×** fewer samples for under 0.1% accuracy drop | [Aggarwal et al., EMNLP 2023][adac] | Stop as soon as the outcome is determined. In a unanimous pair that is the first vote to call the finding **real**, which ends the ballot without paying the second |
 | A cheap judge with calibrated escalation keeps a human-agreement guarantee | [Trust or Escalate, ICLR 2025][esc] | The verifier need not be the review model |
 
 **The one thing we got right, and it is the thing that matters.** Debate loses
@@ -1520,9 +1520,26 @@ letting verifiers see each other's ballots; that is the measured-worse design.
    died to one grep of `TRIGGER_NAME`, 0 occurrences. That costs no model call
    and cannot share the generator's prior, because it is not a model.
 2. **Group size 2, not 3.** The cascade-depth reading says the third stage is
-   where the gains stop. A `VERIFIER_GROUP_SIZE` of 2 with the mechanical
-   pre-check as the tie-break is cheaper and is what the measurement supports.
-   `VERIFIER_QUORUM` stays at 2, which makes it unanimity of the pair.
+   where the gains stop, so `VERIFIER_GROUP_SIZE` becomes 2 and
+   `VERIFIER_QUORUM` stays at 2 — unanimity of the pair. **There is no
+   tie-break, and the design must not acquire one.** An earlier draft of this
+   item called the pre-check a tie-break; that was wrong twice over, because
+   the pre-check runs *before* any verifier is convened (item 3), and because
+   under unanimity a split is already decided — a 1-1 vote fails quorum by
+   construction, so there is no tie left for anything to break. Both errors
+   were found by this repository's own reviewer on the pull request that
+   added this section.
+
+   **What the pair decides, and in which direction.** The group votes on
+   whether a finding is FALSE, and a finding is demoted only when **both**
+   verifiers say so. That is the conservative direction and it is chosen
+   deliberately: this document's standing position is that a false block
+   costs a remedy commit, a CI round and an agent's context, but a wrongly
+   demoted true finding costs a defect reaching `main` with the thread that
+   would have caught it never opened. Unanimity-to-demote means a single
+   verifier calling the finding real is enough to keep it, which is also
+   exactly the adaptive stop in the table above: that first vote ends the
+   ballot and the second verifier is never paid.
 3. **Route before convening.** Only findings that survive the mechanical
    pre-check and would block should reach a verifier at all. Today's wiring
    already restricts the jury to would-block findings; the pre-check is the
