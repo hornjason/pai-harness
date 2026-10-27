@@ -345,11 +345,28 @@ both name their range**, and the two readings above this one do not.
 ```sh
 LO=1573 HI=1631   # the RANGE, stated; raise first:N until the page covers it
 gh api graphql -f query='{repository(owner:"hornjason",name:"pai-harness"){pullRequests(first:70,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number merged comments(first:100){totalCount nodes{author{login} body}}}}}}' \
-  --jq '[.data.repository.pullRequests.nodes[] | select(.number>='"$LO"' and .number<='"$HI"') | {number, passed: .merged, truncated: (.comments.totalCount > 100), body: ([.comments.nodes[] | select(.author.login=="github-actions") | .body | select(contains("<!-- rungate:ai-review-ledger:v1 -->"))] | last)}]' > /tmp/crc-prs.json
-jq -e 'map(select(.body == null and .truncated)) | length == 0' /tmp/crc-prs.json \
+  --jq '[.data.repository.pullRequests.nodes[] | select(.number>='"$LO"' and .number<='"$HI"') | {number, passed: .merged, truncated: (.comments.totalCount > 100), body: ([.comments.nodes[] | select(.author.login=="github-actions") | .body | select(contains("<!-- rungate:ai-review-ledger:v1 -->"))] | last)}]' > /tmp/crc-prs.json \
+  && jq -e 'map(select(.body == null and .truncated)) | length == 0' /tmp/crc-prs.json \
   && jq -e '[.[] | .number] | (min == '"$LO"' and max == '"$HI"')' /tmp/crc-prs.json \
   && bun evals/ai-review-control/run.ts rounds /tmp/crc-prs.json
 ```
+
+**The fetch is in the chain too, and the reason is not the one the reviewer
+gave.** It was raised that an unchained `gh api` would leave the guards
+validating leftover data from an earlier run. That cannot happen, and each
+leg was checked rather than argued: `>` truncates before the command runs,
+so there is no stale file; an **empty** file exits 4 at the first `jq -e`; a
+**partial** one dies on `Unfinished JSON term at EOF`; and a **valid but
+empty** array — the one shape that clears the first guard, which it does,
+returning true — is refused by the range guard, because `[] | min` is `null`
+and `null == 1573` is false. All three failure shapes are already loud.
+
+The chain is added anyway. A fetch whose failure is caught only because
+three downstream accidents happen to cover its three failure shapes is
+working by luck, and the next edit to any of those guards removes a
+protection nobody wrote down. One `\` makes the dependency the reader can
+see. That it was missing at all is the same defect as round 2's, one line
+higher up and left behind by the fix.
 
 **The range is a filter, not a page size, and the first draft of this block
 confused the two.** It fetched `first:45` and called the result #1573–#1631,
