@@ -771,7 +771,7 @@ moved.
 
 | Phase | Verdict | PR | Head | Criteria evidenced | What was observed |
 |---|---|---|---|---|---|
-| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Both required contexts SUCCESS — the required set is exactly `test` and `ai-review` (`gh api …/branches/main/protection/required_status_checks`), and all nine check-runs at that head were `success` — with `mergeable: MERGEABLE` and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second, independent draw the same day on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6`: both required contexts SUCCESS, all ten check-runs `success`, exactly one unresolved thread carrying **no finding at all** — an informational note — and resolving it alone moved `BLOCKED` to `UNSTABLE`, not `CLEAN`, on an unchanged head |
+| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Both required contexts SUCCESS — the required set is exactly `test` and `ai-review` (`gh api …/branches/main/protection/required_status_checks`), and all nine check-runs at that head were `success` — with `mergeable: MERGEABLE` and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second draw was recorded by #1617 on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6` and is **WITHDRAWN as a draw**, because its two halves cannot both be true. It said all check-runs were `success` and that resolving the one thread moved `BLOCKED` to `UNSTABLE` — but `UNSTABLE` is produced by a non-successful status or check, so an all-`success` head has nothing left to produce it. Re-reading at that SHA today confirms ten check-runs, all `success`, and the classic status endpoint empty, which reconciles nothing: #1614 merged at `5449750b`, so the post-resolution half cannot be re-taken at all. Whoever recorded it is not available to say which half was mistyped, and a reading nobody can reproduce is UNMEASURED, not weak. It is kept here named rather than deleted so the next reader does not re-derive the contradiction |
 | **1** | PENDING | — | — | — | — |
 | **2** | UNMEASURED — unreachable, see below | — | — | — | — |
 | **3** | PENDING | — | — | — | — |
@@ -890,17 +890,14 @@ the same time. That was true of #1614 and it is not true of the population:
 `7ea82e50`, where resolving two threads and nothing else — no push, no
 re-run — moved `BLOCKED` to `CLEAN`.
 
-The same row records a second draw on #1614 at `471a5b50`, and it is **not**
-the equal of the first: resolving its one thread moved `BLOCKED` to
-`UNSTABLE`, not to `CLEAN`. That still attributes the block to the thread —
-`UNSTABLE` is a non-required context failing, which is a different fact about
-a different check — but a draw that does not reach `CLEAN` is weaker
-evidence, and the row above is where its reading method and outcome live.
-This sentence points at it rather than restating it, because a paraphrase of
-a reading is the thing this whole section is about.
+The same row records a second draw on #1614 at `471a5b50` and that draw is
+now **WITHDRAWN**: its two halves cannot both be true, and #1614 has merged,
+so the post-resolution half cannot be re-taken. The row above says why. It
+is named here rather than quietly dropped because a withdrawn reading that
+disappears is indistinguishable from one that was never taken.
 
-**A third independent draw, which is why this paragraph is being edited
-rather than deleted.** Read **2026-10-26 at 23:16Z** on **#1619**, head
+**A second draw that can be reproduced, which is why this paragraph is being
+edited rather than deleted.** Read **2026-10-26 at 23:16Z** on **#1619**, head
 `3a4eb10e`, before any resolution:
 
 | Reading | Value |
@@ -913,13 +910,13 @@ rather than deleted.** Read **2026-10-26 at 23:16Z** on **#1619**, head
 One check was red — `review`, the local plugin's advisory job — and it is
 **not** in the required set, which is the fact that makes the reading
 unconfounded and is why the contexts are read from the API beside it rather
-than remembered. Three draws, and each reached a different place: #1616
-resolved to `CLEAN`, #1614 resolved to `UNSTABLE`, and #1619 is a **first
-half only** — it was read before any thread was resolved, so it shows
-`BLOCKED` attributable to one thread and shows nothing about what resolving
-it would do. One complete draw, one weaker complete draw, one half — and
-three is still not a population; the boxes above stay open for the reason
-stated there.
+than remembered. So the population is **one complete draw and one half**:
+#1616 resolved to `CLEAN`, and #1619 was read before any thread was
+resolved, so it shows `BLOCKED` attributable to one thread and shows
+nothing about what resolving it would do. This paragraph claimed three
+draws in an earlier round and the count did not survive reading them; the
+boxes above stay open, and now by a wider margin than when they were first
+left open.
 
 **The defect worth keeping is that no elapsed time was required.** The first
 draft of this correction said the two halves disagreed "for two days", a
