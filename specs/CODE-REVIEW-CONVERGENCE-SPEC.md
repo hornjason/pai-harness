@@ -402,11 +402,24 @@ this filter to a REST call silently matches nothing and returns 45 empty
 bodies, which is the same shape as the truncation above: a reading of zero
 that looks like data.
 
-| | their before | their after | 10-23 | 10-24 | **10-27** |
-|---|---|---|---|---|---|
-| mean rounds to pass | 2.08 | 1.32 | 2.64 | 2.65 | **4.19** |
-| passed after one round | 65% | 78% | 39.4% | 44.2% | **27.9%** |
-| five or more rounds | 8.9% | 1.5% | 20.5% | 20.0% | **35.6%** |
+| | their before | their after | 10-23 | 10-24 | **10-27** | 10-27 numerator |
+|---|---|---|---|---|---|---|
+| mean rounds to pass | 2.08 | 1.32 | 2.64 | 2.65 | **4.19** | 180 / **43** |
+| passed after one round | 65% | 78% | 39.4% | 44.2% | **27.9%** | 12 / **43** |
+| five or more rounds | 8.9% | 1.5% | 20.5% | 20.0% | **35.6%** | 16 / **45** |
+
+**The last row has a different denominator from the two above it, and the
+column did not say so until the reviewer could not reproduce it.** No integer
+over 43 rounds to 35.6% — 15 of 43 is 34.9% and 16 of 43 is 37.2%, with
+nothing between them — so a reader checking this cell against the 43 merged pull
+requests the other two rows use gets a number that matches no count. The 45
+is deliberate and is `formatRoundsToPass`'s own choice: the mean and the
+one-round rate are over pull requests that **passed**, and the tail is over
+**all measured**, passed or not, because *"a tail measured on survivors only
+has had its tail cut off"*. Over passed only it would be 16 of 43, 37.2%. The
+numerator column is now part of the table rather than a sentence under it,
+which is the only form of this that a reader can check without rerunning
+anything.
 
 **The headline is the wrong unit, for the same reason it was on 2026-10-24,
 and the split is the reading.** Of the 178 rounds:
