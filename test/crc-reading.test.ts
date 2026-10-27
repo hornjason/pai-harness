@@ -19,6 +19,7 @@ import {
 import {
   CRC_PREMISE_RANGE_NOT_COVERED,
   CRC_PREMISE_UNRESOLVABLE_ABSENCE,
+  CRC_ROUND_MEASURED,
   deltaLines,
   measuredRoundsFor,
   allRoundsFor,
@@ -303,6 +304,36 @@ describe("the split, and the eviction bound", () => {
     ]);
     expect(split.total).toBe(3);
     expect(split.kinds).toEqual({ measured: 1, declined: 1, no_payload: 1 });
+  });
+
+  test("the split's measured total EQUALS the sum of the per-PR measured counts", () => {
+    /**
+     * The property, not another fixture.
+     *
+     * #1633 round 1: `splitRoundKinds` restated `Array.isArray(findings)`
+     * inline instead of reading `toLedgerRound`'s answer, so tightening that
+     * rule would have moved the per-pull-request column and left the split
+     * table saying something else — and every case here would have stayed
+     * green, because they all feed both paths the same literal fixtures.
+     * This asserts the two agree on whatever they are given, which is the
+     * only form of the claim a fixture cannot fake.
+     */
+    const entries = [
+      entry({ number: 1, body: ledgerBody([measured(1), unmeasured(2, "declined")]) }),
+      entry({ number: 2, passed: false, body: ledgerBody([unmeasured(1, "no_payload")]) }),
+      entry({ number: 3, body: ledgerBody([measured(1), measured(2), measured(3)]) }),
+      // A refusal on both sides, so neither contributes and they still agree.
+      entry({ number: 4, body: `${AI_REVIEW_LEDGER_COMMENT_MARKER}\n\n\`\`\`json\n{"rounds":[` }),
+      entry({ number: 5, body: null }),
+    ];
+    const perPr = entries
+      .map(e => measuredRoundsFor(e))
+      .reduce((a, r) => a + ("refusal" in r ? 0 : r.rounds), 0);
+    expect(splitRoundKinds(entries).kinds[CRC_ROUND_MEASURED] ?? 0).toBe(perPr);
+
+    // The negative control: the assertion above is only worth something if
+    // the number it compares is not zero on both sides.
+    expect(perPr).toBe(4);
   });
 
   test("an evicted round makes the measured-only figure a lower bound, and says so", () => {

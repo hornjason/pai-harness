@@ -265,12 +265,30 @@ export interface CrcSplit {
   readonly kinds: Readonly<Record<string, number>>;
 }
 
+/** The split's name for a round that produced a review. */
+export const CRC_ROUND_MEASURED = "measured";
+
 /**
  * The round-kind split, over ALL pull requests in the range, merged or not.
  *
- * This is the only reading in the module that needs the round entry as
- * written: `LedgerRound` has no slot for the `unmeasured` discriminator, so
- * it comes from `ledgerRawRounds` and `readRecordedUnmeasuredState`.
+ * This reading needs BOTH views of each round and takes each from its own
+ * owner. **Whether the round was measured comes from `readLedger`** —
+ * `toLedgerRound` already computes `Array.isArray(findings)` and that is the
+ * only place in the tree allowed to decide it, so the split's `measured`
+ * total and `measuredRoundsFor`'s per-pull-request counts cannot drift.
+ * **Which KIND of unmeasured comes from the raw entry**, because
+ * `LedgerRound` has no slot for the `unmeasured` discriminator.
+ *
+ * The first draft restated the measured predicate inline, hardcoding the
+ * string `"findings"` beside a docblock arguing against exactly that. A
+ * reviewer caught it on #1633 and was right: tightening `toLedgerRound`'s
+ * rule would have moved one column and not the other, silently.
+ *
+ * The two views are `readLedger(body).rounds` and `ledgerRawRounds(body)`,
+ * which are the same array — one mapped, one not — so they align by index.
+ * That is asserted rather than assumed: a length mismatch means one of the
+ * two parsers changed and the pull request is skipped rather than zipped
+ * against the wrong entries.
  *
  * A ledger that refuses contributes nothing and is not counted as zero
  * rounds. Its pull request is already named in both columns' refusals.
@@ -279,16 +297,15 @@ export function splitRoundKinds(entries: readonly CrcEntry[]): CrcSplit {
   const kinds: Record<string, number> = {};
   let total = 0;
   for (const entry of entries) {
+    const reading = readLedger(entry.body);
     const raw = ledgerRawRounds(entry.body);
-    if (raw === null) continue;
-    for (const round of raw) {
+    if (reading.status !== AI_REVIEW_LEDGER_READ || raw === null) continue;
+    if (raw.length !== reading.rounds.length) continue;
+    for (let i = 0; i < raw.length; i++) {
       total++;
-      const measured =
-        typeof round === "object" &&
-        round !== null &&
-        !Array.isArray(round) &&
-        Array.isArray((round as Record<string, unknown>).findings);
-      const kind = measured ? "measured" : readRecordedUnmeasuredState(round);
+      const kind = reading.rounds[i].measured
+        ? CRC_ROUND_MEASURED
+        : readRecordedUnmeasuredState(raw[i]);
       kinds[kind] = (kinds[kind] ?? 0) + 1;
     }
   }
@@ -480,7 +497,7 @@ export function deltaLines(previous: CrcReadingRow | null, row: CrcReadingRow): 
       })),
     );
   }
-  const un = (s: CrcSplit) => s.total - (s.kinds.measured ?? 0);
+  const un = (s: CrcSplit) => s.total - (s.kinds[CRC_ROUND_MEASURED] ?? 0);
   lines.push(
     `unmeasured rounds: ${pct(un(previous.split), previous.split.total)} ` +
       `(${un(previous.split)}/${previous.split.total}) → ${pct(un(row.split), row.split.total)} ` +
