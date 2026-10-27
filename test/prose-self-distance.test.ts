@@ -15,10 +15,10 @@
  * **205** tracked non-fixture markdown files and the pattern admits
  * `before`/`after` — both because the #1624 review found the first version's
  * scope narrower than the census row advertising it. The wider reading
- * carries **38** distance-claim lines and **none** self-referential, which is
- * the same answer at four times the sample. (38 rather than 40: round 2 of
- * the review added the teens to `QUANTITY` and removed `on` from
- * `DIRECTION`.)
+ * carries **41** distance claims and **none** self-referential, which is the
+ * same answer at four times the sample. The count moved every round — 40,
+ * then 38, then 41 — so it is restated from a fresh measurement each time
+ * rather than carried forward.
  *
  * So `NOT_A_CLAIM` below is not padding. Every row in it but the last is a
  * real sentence from the tree — `grep -rF` before pasting, and `DOC-DIST-3c`
@@ -95,8 +95,12 @@ const IS_A_CLAIM = [
   "the compliance factors are listed four paragraphs after this heading",
   "sixty lines after this bullet the same number is written differently",
   // the teens, which the first two drafts skipped entirely — the reviewer's
-  // own example, verbatim
-  "SC-900 is ticked, fourteen lines above this heading, confirming the criterion.",
+  // own example, with its id moved into the fixture range. The reviewer's id
+  // sat in the LIVE range, which the fixture-namespace census refuses — and
+  // refused twice, because naming the old id in this very comment counts as
+  // using it. The sentence is otherwise unchanged, and saying so matters
+  // because "verbatim" was the claim the row was added under.
+  "SC-9001 is ticked, fourteen lines above this heading, confirming the criterion.",
   "nineteen rows below this table the same id appears again",
 ];
 
@@ -130,6 +134,11 @@ const NOT_A_CLAIM = [
   // as a row rather than deleted with the word, because the cheapest way to
   // bring `on` back is not to notice it was ever a problem.
   "This file lists two pages on this document that still need review.",
+  // WRITTEN HERE. Round 3 of the #1624 review: `a` is a determiner, not a
+  // count, and admitting it refused ordinary instructions. Kept for the same
+  // reason as the row above — a removed character leaves no trace of why.
+  "Add a line above this heading explaining the exception.",
+  "Put a paragraph below this section saying which claim it moves.",
 ];
 
 /**
@@ -220,6 +229,36 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
     for (const text of UNCAUGHT) {
       expect(corpus.includes(text), `no longer in the tree: ${text}`).toBe(true);
     }
+  });
+
+  test("DOC-DIST-3d: a claim that WRAPS is caught, and a blank line still stops it", () => {
+    // Round 3 of the #1624 review. Every row above is one physical line, and
+    // so were both live instances, so the whole suite — and the "0
+    // violations" measurement — was silent about the way this repo actually
+    // writes prose: hard-wrapped at about 76 characters.
+    const wrapped = "that criterion was ticked some 46 lines above\nthis document's own listing of criteria.";
+    const hits = proseSelfDistanceViolations([{ path: "f.md", text: wrapped }]);
+    expect(hits, "a claim wrapped across a line break went unrefused").toHaveLength(1);
+    expect(hits[0]!.line, "the line reported is not where the claim starts").toBe(1);
+    expect(hits[0]!.text, "the quoted text still carries a newline").not.toContain("\n");
+
+    // The control for the control. A blank line is a hard stop: two
+    // paragraphs are two thoughts, and joining them manufactures a claim
+    // nobody wrote. Without this row, "the window crosses newlines" is
+    // indistinguishable from "the window crosses anything".
+    const paragraphs = "that criterion was ticked some 46 lines above\n\nthis document's own listing of criteria.";
+    expect(
+      proseSelfDistanceViolations([{ path: "f.md", text: paragraphs }]),
+      "two separate paragraphs were joined into one claim",
+    ).toHaveLength(0);
+
+    // And the `g` flag, the reviewer's lower-severity half: one `exec`
+    // reported the first match on a line and stopped.
+    const twice = "three lines above this bullet, and nineteen rows below this table.";
+    expect(
+      proseSelfDistanceViolations([{ path: "f.md", text: twice }]),
+      "a second claim on the same line was not reported",
+    ).toHaveLength(2);
   });
 
   test("DOC-DIST-4: the tree holds none", () => {

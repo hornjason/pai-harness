@@ -11,12 +11,16 @@
  *
  * The deciding measurement, 2026-10-27, over `specs/`, `.claude/rules/`,
  * `docs/` and `reference/`: **19** distance claims, **17** of that kind.
- * After two rounds of #1624 review moved the pattern and the scanned set, the
- * population is **38** distance-claim lines across **205** tracked
+ * After three rounds of #1624 review moved the pattern and the scanned set,
+ * the population is **41** distance claims across **205** tracked
  * non-fixture markdown files, and the ratio did not move in the direction
- * that would matter — **none** of the 38 is self-referential. The figure is
- * the count under the CURRENT vocabulary: round 2 added the teens and removed
- * `on`, which is why it is 38 rather than the 40 the first round measured.
+ * that would matter — **none** of the 41 is self-referential.
+ *
+ * The figure is the count under the CURRENT rule, and it has moved every
+ * round, which is why it is restated rather than inherited: 40 at round 1,
+ * **38** at round 2 (teens added, `on` removed), **41** at round 3 (`a`/`an`
+ * removed, and the window allowed to cross a line wrap, which found three
+ * claims no line-by-line scan could see).
  *
  * The two that were not are a different animal: *"roughly two hundred lines
  * above this bullet"*. The referent is the document itself, so the claim is
@@ -98,12 +102,19 @@ const REFERENTS =
  * no digit and so is invisible to `.claude/line-citation-ratchet.json`, which
  * counts `path:NNN` citations. That gap is why this is a separate check and
  * not a widening of that one.
+ *
+ * **`a` and `an` are NOT counts, and were removed in round 3 of the #1624
+ * review.** *"Add a line above this heading explaining the exception"* is an
+ * instruction, not a claim, and the first two drafts refused it — the same
+ * false positive as `on` in `DIRECTION`, which I had already found and fixed
+ * without applying the lesson one constant over. An article is a determiner;
+ * every member left is a number or a word that means one.
  */
 const QUANTITY =
   "(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve" +
   "|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen" +
   "|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety" +
-  "|hundred|dozen|a|an|several|many|[0-9][0-9,]*)" +
+  "|hundred|dozen|several|many|[0-9][0-9,]*)" +
   "(?:[ -](?:hundred|thousand))?";
 
 /**
@@ -156,8 +167,30 @@ const UNIT = "lines?|rows?|sections?|paragraphs?|bullets?|columns?|pages?";
  * "167 lines below this spec's own …" matches, and no more, because the wider
  * the window the more likely two unrelated clauses are joined into a claim
  * nobody made.
+ *
+ * ## The window crosses a line break, and that is the whole point
+ *
+ * The first two drafts matched each physical line on its own. This repo
+ * hard-wraps prose at around 76 characters, so a claim whose distance and
+ * deictic land on opposite sides of a wrap was invisible:
+ *
+ *     that criterion was ticked some 46 lines above
+ *     this document's own listing of criteria.
+ *
+ * — exactly the shape the module exists to refuse. The review of #1624 found
+ * it, and the measurement this module reported did not: both live instances
+ * sat on single very long unwrapped lines, so **"0 violations" was a property
+ * of how today's tree happens to wrap**, not of the rule. A detector narrower
+ * than what it detects, in the one place that is least excusable.
+ *
+ * So the gap admits a newline — `\n` not followed by a blank line — and the
+ * scan runs over the whole file rather than line by line. A **blank** line is
+ * still a hard stop, because two paragraphs are two thoughts and joining them
+ * manufactures a claim nobody wrote.
  */
-export const PROSE_SELF_DISTANCE_DEICTIC = `[^.!?\\n]{0,60}?\\bthis\\s+(?:${REFERENTS})\\b`;
+const GAP = "(?:[^.!?\\n]|\\n(?![ \\t]*\\n))";
+
+export const PROSE_SELF_DISTANCE_DEICTIC = `${GAP}{0,60}?\\bthis\\s+(?:${REFERENTS})\\b`;
 
 /**
  * ONE binding, so there is one site for a mutation to remove. A second
@@ -168,16 +201,27 @@ export const PROSE_SELF_DISTANCE_DEICTIC = `[^.!?\\n]{0,60}?\\bthis\\s+(?:${REFE
 export const PROSE_SELF_DISTANCE_PATTERN =
   `\\b${QUANTITY}\\s+(?:${UNIT})\\s+(?:${DIRECTION})\\b` + PROSE_SELF_DISTANCE_DEICTIC;
 
+/**
+ * Every claim in every file, each with the line its distance phrase STARTS on.
+ *
+ * `g`, not a single `exec`: the earlier version reported the first match per
+ * line and stopped, so a line carrying two claims answered for one — the
+ * reviewer's lower-severity half of the same finding. The scan is over the
+ * whole text because the window crosses wraps (see
+ * `PROSE_SELF_DISTANCE_DEICTIC`), so the line number is counted from the
+ * match offset rather than handed over by a loop index, and the quoted text
+ * has its newlines flattened so a failure message stays one line per claim.
+ */
 export function proseSelfDistanceViolations(
   files: ReadonlyArray<{ readonly path: string; readonly text: string }>,
 ): ProseSelfDistance[] {
-  const pattern = new RegExp(PROSE_SELF_DISTANCE_PATTERN, "i");
   const out: ProseSelfDistance[] = [];
   for (const { path, text } of files) {
-    text.split("\n").forEach((raw, i) => {
-      const hit = pattern.exec(raw);
-      if (hit !== null) out.push({ file: path, line: i + 1, text: hit[0] });
-    });
+    const pattern = new RegExp(PROSE_SELF_DISTANCE_PATTERN, "gi");
+    for (const hit of text.matchAll(pattern)) {
+      const line = text.slice(0, hit.index).split("\n").length;
+      out.push({ file: path, line, text: hit[0].replace(/\s*\n\s*/g, " ") });
+    }
   }
   return out;
 }

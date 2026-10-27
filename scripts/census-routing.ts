@@ -284,6 +284,15 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     event: "added a test file",
     tests: [
       "test/sc-id-namespace.test.ts",
+      // Added after it reddened CI on a branch whose local census was green
+      // (#1624). `sc-id-namespace` refuses an UNQUALIFIED `SC-N` mention and
+      // `sc-fixture-namespace` refuses a fixture id inside the LIVE range —
+      // different refusals, and a new test file quoting an id can trip
+      // either, so routing only the first sends an agent away believing the
+      // question was asked. It cost two red shards and two pushes: the id
+      // was in a fixture string, then in the comment explaining why the
+      // fixture string had changed.
+      "test/sc-fixture-namespace.test.ts",
       "test/scratch-paths-unique.test.ts",
       "test/scratch-cleanup.test.ts",
       "test/consumer-no-rebuild-delegation.test.ts",
