@@ -342,6 +342,33 @@ them with a regex over three bucket names missed the other four spellings.
 reports them, and the sections below are the per-criterion truth. A number
 that lives in one place and is computed cannot disagree with itself.
 
+**A document-wide guard was then proposed twice, and measurement refuses
+both.** Review round 7 asked for one check over the whole body requiring
+every bold-faced count to resolve to a computed source. Counted, that is
+168 bolded spans carrying a digit outside tables, nearly all of them
+criterion ids, issue numbers and dates:
+
+```sh
+grep -vE '^\s*\|' specs/CODE-REVIEW-CONVERGENCE-SPEC.md \
+  | grep -oE '\*\*[^*]*[0-9][^*]*\*\*' | wc -l
+```
+
+The narrower hypothesis — that every instance found so far is a
+*restatement*, so no cardinal may appear twice in prose — fails the same
+way. Stripping criterion ids, issue numbers, dates, times, percentages and
+code spans still leaves 57 distinct cardinals occurring more than once, and
+the dense end of that distribution is ordinary English rather than
+measurement. Both readings are commands, not assertions, and both can be
+re-taken against whatever this file says today.
+
+So the class is real and it is not closable by a guard over this file at a
+price worth paying. It is a property of the genre — a long hand-written
+document that restates its own measurements — and the honest scope for
+closing it is moving every measurement into one generated section, which is
+a piece of work rather than a review round. The guards that exist bind the
+regions where a restatement has actually been found, and that is stated as
+a floor, not as coverage.
+
 Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4, and
 again after #1448 bound CRC-M11; re-counted on 2026-10-24 after #1587 bound
 CRC-B7, which moved one criterion out of *not done* and no other category. The audit above was taken the same day, at 0
@@ -466,7 +493,9 @@ detects* shape `.claude/rules/checks-must-be-able-to-fail.md` warns about.
 A gate whose trigger is optional is not a gate. The repair is the repo's
 standing one: the unreadable state is a refusal, not a pass.
 
-**Three controls, and the third is the one that was missing:**
+**Every state the tag field can be in, and what each must produce.** The
+table is the vocabulary, so it is exhaustive by construction rather than by
+a count stated beside it:
 
 | Input | Required outcome | What it proves |
 |---|---|---|
@@ -476,15 +505,16 @@ standing one: the unreadable state is a refusal, not a pass.
 | **both tags**, or a `class:` with no name | **refuse, naming the tag** | an unreadable tag is not a third policy |
 
 "Exactly one" in step 1 is an instruction to the reviewer, and an
-instruction is not an enforcement — the fourth row is what makes the
+instruction is not an enforcement — the malformed-tag row is what makes the
 vocabulary closed. Both tags together and a malformed `class:` are
 **UNMEASURED**, which refuses: a gate that silently picks one of two
 conflicting tags, or reads an unparseable one as `instance-only`, hands the
 tagger a way to choose the outcome by writing something ambiguous.
 
-Without row two the check cannot distinguish a swept class from an unswept
-one — it just requires a number everywhere, which every author learns to
-type. Without row three the gate is opt-in by the party it constrains. A
+Without the `instance-only` row the check cannot distinguish a swept class
+from an unswept one — it just requires a number everywhere, which every
+author learns to type. Without the untagged row the gate is opt-in by the
+party it constrains. A
 battery feeding it only class-tagged threads varies one axis while the
 defect sits on the other.
 
@@ -594,10 +624,11 @@ that carry would have removed the second chance that was masking it**: under
 `scope=full` the reviewer re-reads the branch and can re-find a defect the
 carry dropped, and under `scope=diff` a dropped finding in an untouched file
 is seen by nothing at all. **That second chance has since been measured and
-it is small — 33 drops across the corpus, 2 raised again, 1 of those a clean
-instance** (see *Measured non-obvious facts*). The ordering was right and the
-quantity behind it is one finding rather than a category, which is worth
-knowing before anyone cites this paragraph as though the cost were large. So the condition for adopting CRC-N2 is not *the
+it is rare** — the drop corpus, the re-raises and how clean they were are
+recorded once, in *Measured non-obvious facts*, and deliberately not restated
+here. The ordering was right, and the quantity behind it is far smaller than
+this paragraph reads, which is worth knowing before anyone cites it as though
+the cost were large. So the condition for adopting CRC-N2 is not *the
 carry emits findings* but *the carry does not silently drop them*, and the
 first was being read as the second. **#1600 therefore ships the content-
 addressed anchor first and the narrowing on top of it**, in that order, and
