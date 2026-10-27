@@ -15,6 +15,8 @@ import { join } from "node:path";
 import {
   AI_REVIEW_LEDGER_COMMENT_MARKER,
   ledgerRawRounds,
+  readLedger,
+  AI_REVIEW_LEDGER_READ,
 } from "../lib/ai-review-rounds.ts";
 import {
   CRC_PREMISE_DUPLICATE,
@@ -681,6 +683,71 @@ describe("the script refuses, and the refusal can be removed", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("one fence parser, and it cannot throw into a range read", () => {
+  /**
+   * #1633 round 6. `readLedger` and `ledgerRawRounds` each computed the three
+   * fence offsets themselves and agreed by convention, with nothing enforcing
+   * it — *two deciders that agree*, where no behavioural test can tell them
+   * apart and a mutation of either leaves the other holding the case up. The
+   * reviewer could not show them already diverging and did not need to: the
+   * defect is that nothing could have shown it.
+   *
+   * `ledgerPayloadText` is now the only site, so the question of agreement
+   * does not arise. These assert the two properties that fix buys.
+   */
+  const BODIES: readonly (string | null)[] = [
+    null,
+    "",
+    "not a ledger at all",
+    AI_REVIEW_LEDGER_COMMENT_MARKER,
+    `${AI_REVIEW_LEDGER_COMMENT_MARKER}\n\nno fence here\n`,
+    `${AI_REVIEW_LEDGER_COMMENT_MARKER}\n\n\`\`\`json\n{"rounds":[]}`,
+    `${AI_REVIEW_LEDGER_COMMENT_MARKER}\n\n\`\`\`json\n{not json}\n\`\`\`\n`,
+    `${AI_REVIEW_LEDGER_COMMENT_MARKER}\n\n\`\`\`json\n"a string"\n\`\`\`\n`,
+    `${AI_REVIEW_LEDGER_COMMENT_MARKER}\n\n\`\`\`json\n{"other":[]}\n\`\`\`\n`,
+    ledgerBody([]),
+    ledgerBody([measured(1), unmeasured(2, "declined")]),
+    // The live failure: a finding that quotes a fenced block. The naive
+    // split cuts here; the shared rule does not.
+    ledgerBody([measured(1, [{ summary: "the recipe was ```json\\n…\\n``` and it cut itself" }])]),
+  ];
+
+  test("the fence offsets are computed in exactly ONE place", () => {
+    // The structural assertion. Without it the two parsers could come back
+    // and nothing behavioural would notice — which is the whole finding.
+    const source = readFileSync(join(ROOT, "lib/ai-review-rounds.ts"), "utf-8");
+    const code = source
+      .split("\n")
+      .filter(line => !line.trimStart().startsWith("*"))
+      .join("\n");
+    expect(
+      (code.match(/indexOf\("```json"/g) ?? []).length,
+      "A second `indexOf(\"```json\")` is a second fence parser. Call " +
+        "ledgerPayloadText instead — see .claude/rules/checks-must-be-able-to-fail.md.",
+    ).toBe(1);
+  });
+
+  test("ledgerRawRounds never throws, and agrees with readLedger on every body", () => {
+    for (const body of BODIES) {
+      const reading = readLedger(body);
+      // No try/catch here on purpose: a throw fails the case, which is the
+      // property. A range reader calls this once per pull request and one
+      // exception would lose the other forty-five.
+      const raw = ledgerRawRounds(body);
+      if (reading.status === AI_REVIEW_LEDGER_READ) {
+        expect(raw, `READ body produced no raw rounds: ${String(body).slice(0, 60)}`).not.toBeNull();
+        expect(raw).toHaveLength(reading.rounds.length);
+      } else {
+        expect(raw, `non-READ body produced raw rounds: ${String(body).slice(0, 60)}`).toBeNull();
+      }
+    }
+    // The battery is not vacuous: it reaches both sides of that branch.
+    const readable = BODIES.filter(b => readLedger(b).status === AI_REVIEW_LEDGER_READ);
+    expect(readable.length).toBeGreaterThan(1);
+    expect(readable.length).toBeLessThan(BODIES.length);
   });
 });
 
