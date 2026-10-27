@@ -51,6 +51,7 @@ import {
 } from "../lib/crc-reading.ts";
 import { AI_REVIEW_LEDGER_COMMENT_MARKER } from "../lib/ai-review-rounds.ts";
 import { localCalendarDay } from "../lib/local-calendar-day.ts";
+import { writeSpec } from "../lib/write-spec.ts";
 
 /**
  * THE ONE EXIT CODE every refusal routes through.
@@ -296,7 +297,7 @@ export function main(argv: readonly string[]): number {
   // It is not atomic and does not claim to be: two writes can still part
   // company on a disk error. What it buys is that no refusal this program
   // can *decide* leaves the store ahead of the document.
-  let specWrite: { readonly at: string; readonly text: string } | null = null;
+  let specWrite: { readonly at: string; readonly text: string; readonly label: string } | null = null;
   if (args.writeSpec !== null) {
     const at = join(process.cwd(), args.writeSpec);
     let document: string;
@@ -317,7 +318,7 @@ export function main(argv: readonly string[]): number {
       );
       return CRC_READING_REFUSED;
     }
-    specWrite = { at, text: spliced };
+    specWrite = { at, text: spliced, label: args.writeSpec };
   }
 
   if (args.record) {
@@ -328,8 +329,17 @@ export function main(argv: readonly string[]): number {
   }
 
   if (specWrite !== null) {
-    const { at, text: spliced } = specWrite;
-    writeFileSync(at, spliced);
+    // `writeSpec`, not `writeFileSync`. This puts bytes on a path under
+    // `specs/`, so it goes through the chokepoint that asks whether the
+    // document is derived (#1552) — and the sweep names any raw primitive
+    // aimed at a spec path, which is how this one was found. A destructured
+    // binding here previously hid it behind an opaque-target ratchet entry:
+    // the target was unresolvable, so the stricter check never ran.
+    const result = writeSpec(specWrite.at, specWrite.text, { label: specWrite.label });
+    if (!result.written) {
+      process.stdout.write(`${result.refusal}\n`);
+      return CRC_READING_REFUSED;
+    }
     process.stdout.write(`rendered the block into ${args.writeSpec}\n`);
   }
   return 0;

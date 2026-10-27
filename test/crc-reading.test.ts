@@ -836,6 +836,86 @@ describe("one fence parser, and it cannot throw into a range read", () => {
   });
 });
 
+describe("the cohort guards are a closed set, not four ad hoc checks", () => {
+  /**
+   * #1633 round 8, which re-emitted round 5's structural finding and said
+   * exactly what would settle it: the closed-table pattern the columns got
+   * is a one-off unless `premiseViolations`'s four checks get it too, in
+   * which case "the next edge case costs another round" stops being true
+   * of this file.
+   *
+   * It is the same instrument as the columns' table — enumerate the cohort
+   * shapes, name the violation set each must produce, and refuse any
+   * combination the table does not name. A fifth guard, or a change to any
+   * of the four, lands here before it reaches a reading.
+   *
+   * It is NOT a claim that every cohort defect is now anticipated. It is
+   * the weaker and checkable one: the guards' JOINT behaviour over the
+   * shapes this file can build is written down rather than discovered one
+   * round at a time.
+   */
+  const E = (number: number, over: Partial<CrcEntry> = {}) => entry({ number, ...over });
+  const kinds = (es: CrcEntry[], lo: number, hi: number) =>
+    premiseViolations(es, lo, hi)
+      .map(v => v.kind)
+      .sort()
+      .join("+");
+
+  /** cohort shape → the EXACT violation set it must produce. */
+  const SHAPES: readonly (readonly [string, CrcEntry[], string])[] = [
+    ["a clean full range", [E(10), E(15), E(20)], ""],
+    ["the two ends only", [E(10), E(20)], ""],
+    ["an empty page", [], CRC_PREMISE_RANGE_NOT_COVERED],
+    ["a page stopping short", [E(10), E(15)], CRC_PREMISE_RANGE_NOT_COVERED],
+    ["a page starting late", [E(15), E(20)], CRC_PREMISE_RANGE_NOT_COVERED],
+    [
+      "a number outside the range",
+      [E(10), E(99), E(20)],
+      [CRC_PREMISE_OUT_OF_RANGE, CRC_PREMISE_RANGE_NOT_COVERED].sort().join("+"),
+    ],
+    ["a duplicate inside the range", [E(10), E(15), E(15), E(20)], CRC_PREMISE_DUPLICATE],
+    [
+      "a full comment page with no ledger",
+      [E(10), E(15, { truncated: true }), E(20)],
+      CRC_PREMISE_UNRESOLVABLE_ABSENCE,
+    ],
+    [
+      "a full page AND a duplicate — two independent guards at once",
+      [E(10), E(15, { truncated: true }), E(15), E(20)],
+      [CRC_PREMISE_UNRESOLVABLE_ABSENCE, CRC_PREMISE_DUPLICATE].sort().join("+"),
+    ],
+    [
+      "a short page with no ledger — a real absence, and no violation",
+      [E(10), E(15, { body: null, truncated: false }), E(20)],
+      "",
+    ],
+  ];
+
+  test("every cohort shape produces EXACTLY the violation set the table names", () => {
+    for (const [name, entries, expected] of SHAPES) {
+      expect(kinds(entries, 10, 20), `${name}: wrong violation set`).toBe(expected);
+    }
+  });
+
+  test("the table reaches every guard, and every guard can stay silent", () => {
+    // Without this the table could name four combinations none of which
+    // actually fires a given guard, and the case above would be green
+    // having exercised three checks — `.claude/rules/checks-must-be-able-to-fail.md`.
+    const produced = new Set(SHAPES.flatMap(([, es]) => premiseViolations(es, 10, 20).map(v => v.kind)));
+    expect([...produced].sort().join("+")).toBe(
+      [
+        CRC_PREMISE_DUPLICATE,
+        CRC_PREMISE_OUT_OF_RANGE,
+        CRC_PREMISE_RANGE_NOT_COVERED,
+        CRC_PREMISE_UNRESOLVABLE_ABSENCE,
+      ]
+        .sort()
+        .join("+"),
+    );
+    expect(SHAPES.filter(([, , expected]) => expected === "").length).toBeGreaterThan(1);
+  });
+});
+
 describe("the two columns may disagree in exactly two ways, and they are named", () => {
   /**
    * The closed invariant round 4 asked for, as a property rather than one
