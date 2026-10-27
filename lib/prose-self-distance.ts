@@ -18,9 +18,22 @@
  *
  * The figure is the count under the CURRENT rule, and it has moved every
  * round, which is why it is restated rather than inherited: 40 at round 1,
- * **38** at round 2 (teens added, `on` removed), **41** at round 3 (`a`/`an`
- * removed, and the window allowed to cross a line wrap, which found three
- * claims no line-by-line scan could see).
+ * **38** at round 2 (teens added, `on` removed), **41** at rounds 3 and 4.
+ *
+ * **Round 3 explained that last move wrongly and the correction matters.**
+ * It said the wrap-crossing window "found three claims no line-by-line scan
+ * could see" — read off the delta 38 → 41, with two changes in the commit.
+ * Counted directly: **5** of the 41 span a newline, and every one of them
+ * spans it inside the distance phrase itself (`"twenty\nlines above"`),
+ * where the separator is `\s+` and always was. Removing `a`/`an` took two
+ * away; whole-text matching added five; the net was three and the three were
+ * never a population.
+ *
+ * Which leaves a fact worth stating plainly rather than leaving implied:
+ * **no claim in this tree exercises the GAP's newline at all.** The wrap
+ * case is real — it is why round 3 exists — but against the live corpus the
+ * crossing is UNMEASURED, and its only evidence is the planted rows in
+ * `DOC-DIST-3d` and `DOC-DIST-3e`.
  *
  * The two that were not are a different animal: *"roughly two hundred lines
  * above this bullet"*. The referent is the document itself, so the claim is
@@ -183,12 +196,35 @@ const UNIT = "lines?|rows?|sections?|paragraphs?|bullets?|columns?|pages?";
  * of how today's tree happens to wrap**, not of the rule. A detector narrower
  * than what it detects, in the one place that is least excusable.
  *
- * So the gap admits a newline — `\n` not followed by a blank line — and the
- * scan runs over the whole file rather than line by line. A **blank** line is
- * still a hard stop, because two paragraphs are two thoughts and joining them
- * manufactures a claim nobody wrote.
+ * So the gap admits a newline and the scan runs over the whole file rather
+ * than line by line.
+ *
+ * ## But a newline is not only a wrap, and a blank line is not the only stop
+ *
+ * The first attempt at the above crossed ANY non-blank newline, which let the
+ * window walk out of one block and into the next. Round 4 of the #1624 review
+ * produced the input:
+ *
+ *     - the offset drifts three lines down
+ *     - this paragraph is unrelated
+ *
+ * Two unrelated bullets. The first ends with no terminal stop, so the gap
+ * crossed `\n- ` — three characters of its sixty — and read them as one
+ * claim. That is the seventeen-false-positives shape the whole module was
+ * narrowed to avoid, reintroduced by the fix for the wrap. The reviewer's
+ * sharper point is the one worth keeping: **`DOC-DIST-4` passing proved only
+ * that today's tree does not contain the input**, and no row covered it, so
+ * the mechanism had no evidence either way.
+ *
+ * A newline may therefore be crossed only into a **continuation** — a line
+ * that starts no new block. A blank line stops it, and so does a list
+ * marker, a table row, a heading, a blockquote and a fence, because each of
+ * those opens something the previous line was not part of. `DOC-DIST-3e`
+ * plants one of each.
  */
-const GAP = "(?:[^.!?\\n]|\\n(?![ \\t]*\\n))";
+const BLOCK_START = "[-*+>|#]|[0-9]+[.)]|```|~~~";
+
+const GAP = `(?:[^.!?\\n]|\\n(?![ \\t]*(?:\\n|${BLOCK_START})))`;
 
 export const PROSE_SELF_DISTANCE_DEICTIC = `${GAP}{0,60}?\\bthis\\s+(?:${REFERENTS})\\b`;
 

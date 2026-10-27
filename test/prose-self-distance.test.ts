@@ -18,7 +18,12 @@
  * carries **41** distance claims and **none** self-referential, which is the
  * same answer at four times the sample. The count moved every round — 40,
  * then 38, then 41 — so it is restated from a fresh measurement each time
- * rather than carried forward.
+ * rather than carried forward. Round 3 attributed the last move to the
+ * wrap-crossing window on the strength of the delta alone, with two changes
+ * in one commit; counted directly it is five spanning matches and two
+ * removals. `lib/prose-self-distance.ts` carries the correction and the
+ * consequence — the GAP's newline has no live instance in this tree, so
+ * `DOC-DIST-3d` and `DOC-DIST-3e` are its only evidence.
  *
  * So `NOT_A_CLAIM` below is not padding. Every row in it but the last is a
  * real sentence from the tree — `grep -rF` before pasting, and `DOC-DIST-3c`
@@ -259,6 +264,38 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
       proseSelfDistanceViolations([{ path: "f.md", text: twice }]),
       "a second claim on the same line was not reported",
     ).toHaveLength(2);
+  });
+
+  test("DOC-DIST-3e: a newline is crossed into a CONTINUATION, never into a new block", () => {
+    // Round 4 of the #1624 review. The wrap fix crossed any non-blank
+    // newline, which let the window leave one block and land in the next —
+    // reintroducing the false-positive shape the module was narrowed to
+    // avoid, in the commit that widened it. The reviewer's sharper point was
+    // that DOC-DIST-4 passing proved only that the tree lacks the input;
+    // these rows are the evidence it lacked.
+    const blocks: Array<[string, string]> = [
+      ["list", "- the offset drifts three lines down\n- this paragraph is unrelated"],
+      ["numbered list", "the offset drifts three lines down\n2. this paragraph is unrelated"],
+      ["table row", "| the offset drifts three lines down | x |\n| this table says otherwise | y |"],
+      ["heading", "the offset drifts three lines down\n## this section is unrelated"],
+      ["blockquote", "the offset drifts three lines down\n> this note is unrelated"],
+      ["fence", "the offset drifts three lines down\n```\nthis line is code\n```"],
+    ];
+    for (const [kind, text] of blocks) {
+      expect(
+        proseSelfDistanceViolations([{ path: "f.md", text }]),
+        `the window walked out of one block and into the next (${kind})`,
+      ).toHaveLength(0);
+    }
+
+    // THE CONTROL, and without it every row above is satisfied by a gap that
+    // crosses no newline at all — which is the bug round 3 fixed.
+    expect(
+      proseSelfDistanceViolations([
+        { path: "f.md", text: "the offset drifts three lines down\nthis paragraph continues it" },
+      ]),
+      "an ordinary soft wrap stopped being crossed, so the round-3 fix is gone",
+    ).toHaveLength(1);
   });
 
   test("DOC-DIST-4: the tree holds none", () => {
