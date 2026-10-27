@@ -257,6 +257,26 @@ function remainderSection(body: string): string | null {
  * this project's own rule; one that implies more is the defect rounds 4-8
  * kept finding.
  */
+/**
+ * The audit section, cut the same way `measuredFactsSection` cuts its own.
+ *
+ * Scoped deliberately. A whole-document search for the guard below would be
+ * satisfied or defeated by prose anywhere in the file, which is how the
+ * first version of that guard passed by coincidence.
+ */
+function untickedBoxSection(body: string): string | null {
+  const start = body.search(/^## What an unticked box means here/m);
+  if (start === -1) return null;
+  const rest = body.slice(start).replace(/^## .*\n/, "");
+  // Stops at the first `###` as well as the next `##`. The audit SUMMARY is
+  // the prose before the per-bucket subsections; running to the next `##`
+  // swallows those tables, whose cells legitimately carry dates, percentages
+  // and round numbers in bold. The first draft did that and reported nine
+  // matches, none of them a tally.
+  const end = rest.search(/^#{2,3} /m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
 function measuredFactsSection(body: string): string | null {
   const start = body.search(/^## Measured non-obvious facts/m);
   if (start === -1) return null;
@@ -525,7 +545,7 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
     }
   });
 
-  test("the audit summary is a dated reading, not a live hand-tally", () => {
+  test("the audit section carries no hand-written count", () => {
     // This REPLACES an agreement between the summary sentence and the ticked
     // count, and the replacement is the point.
     //
@@ -542,20 +562,28 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
     // drift, because it describes that day rather than this tree. Live
     // counts come from `bun bin/rungate.ts audit-specs`, which derives them
     // instead of restating them.
-    const tally = /\*\*(\d+)\s+(bound|not done|contested)\*\*/i.exec(body!);
-    expect(
-      tally?.[0] ?? null,
-      "a bolded present-tense bucket count is back in the audit prose. Nothing " +
-        "derives it, so it will drift the next time a criterion changes bucket — " +
-        "it already has, four times. State the figures as a reading taken on a " +
-        "named day, or get them from `bun bin/rungate.ts audit-specs`.",
-    ).toBeNull();
+    const section = untickedBoxSection(body!);
+    expect(section, "the audit section is gone, so this guard reads nothing").not.toBeNull();
 
+    // ANY digit, not a list of bucket names. The previous version of this
+    // guard matched `bound|not done|contested` and the original sentence
+    // bolded all SEVEN buckets, so four spellings walked straight past it —
+    // a detector narrower than the thing it detects, which is the shape
+    // `.claude/rules/checks-must-be-able-to-fail.md` names and which this
+    // very guard committed on the round that introduced it.
+    // `[^*\n]` and not `[^*]`: a bolded span is within a line, and letting
+    // the class cross newlines pairs the opening `**` with one paragraphs
+    // away, so the match swallows prose that contains a digit incidentally.
+    // The first draft of this line did exactly that and reported 267 lines.
+    const bolded = [...section!.matchAll(/\*\*([^*\n]*\d[^*\n]*)\*\*/g)].map(m => m[1]);
     expect(
-      /\bAs read on \d{4}-\d{2}-\d{2}\b/.test(body!),
-      "the audit summary lost its dated-reading marker, so its figures now read " +
-        "as a claim about the current tree — which is the shape that drifted.",
-    ).toBe(true);
+      bolded,
+      "a bolded number is back in the audit section. Nothing derives it, so it " +
+        "drifts the moment a criterion changes bucket — this sentence did, four " +
+        "times, and two successive guards were themselves too narrow to catch it. " +
+        "Counts belong in `bun bin/rungate.ts audit-specs`, which computes them, " +
+        "or in the per-criterion sections below, which are the truth they summarise.",
+    ).toEqual([]);
   });
 
   /**

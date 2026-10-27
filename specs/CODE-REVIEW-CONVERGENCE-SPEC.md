@@ -318,26 +318,29 @@ reportable, and a reading of this kind should not be published without it.
 
 ## What an unticked box means here
 
-Audited criterion by criterion on 2026-10-23, when **0 of 56 were ticked and
-0 carried a claiming test**. A spec nothing is bound to cannot drift, because
-there is nothing for it to drift from; the number below is what replaces that.
+Audited criterion by criterion on 2026-10-23. A spec nothing is bound to
+cannot drift, because there is nothing for it to drift from; what replaces
+that is the per-criterion placement in the sections below, which a test
+reads.
 
-**As read on 2026-10-23, and deliberately left as that day's reading:** of
-the 56 declared then — 10 bound, 8 where a mechanism exists that nothing in
-this repository can observe, 4 that cannot be meaningful in this deployment,
-2 blocked on an owner decision, 1 contested, 2 declared deviations, 29 not
-done.
+**The per-bucket tally that stood here has been deleted rather than
+corrected, and that is the repair.** It enumerated how many criteria sat in
+each of seven buckets. Nothing derived those figures, so every criterion
+that changed bucket falsified them silently: they drifted four times, and
+**five consecutive review rounds each found a different miscount** — the
+total, the unobservable count, the deviations row, and then two defects in
+the guard written to stop it. Each repair fixed the sentence that round
+happened to construct.
 
-**Do not re-tally this sentence by hand.** It has now drifted four times,
-and three consecutive review rounds each found a fresh miscount in it — the
-total, the unobservable count, and the deviations row — because a
-*present-tense* summary of a document that changes underneath it is a claim
-nothing derives. Each repair was another hand-authored assertion about one
-sentence, which is the defect class this spec's own CRC-N3 section is about,
-committed here by its author. The fix is the one that closes the class
-rather than the instance: the figures above are a **dated reading**, which
-cannot drift because it describes a day rather than the file, and the live
-counts come from `bun bin/rungate.ts audit-specs`, which derives them.
+That is the defect class this spec's own CRC-N3 section is about, committed
+here by its author, and the two failed repairs are worth naming because both
+were narrower than the thing they guarded. Restating the figures as a
+*dated* reading still left seven hand-written numbers in prose. Guarding
+them with a regex over three bucket names missed the other four spellings.
+
+**The counts are now derived or absent.** `bun bin/rungate.ts audit-specs`
+reports them, and the sections below are the per-criterion truth. A number
+that lives in one place and is computed cannot disagree with itself.
 
 Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4, and
 again after #1448 bound CRC-M11; re-counted on 2026-10-24 after #1587 bound
