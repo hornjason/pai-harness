@@ -3320,3 +3320,51 @@ describe("AC-L18 (#1511): a single round that cannot fit is refused, not trimmed
     expect(r.stdout).not.toContain("NOT recorded");
   });
 });
+
+/**
+ * AC-L30: the ledger comment is COLLAPSED, and collapsing it did not hide the
+ * payload from the reader.
+ *
+ * The ledger is machine state. It was rendering 1,906 characters of
+ * format prose above the JSON on every round, on every pull request, and a
+ * human reader reported it as noise that "means nothing" — which is accurate:
+ * nothing reads the prose. It is now inside a `<details>` block.
+ *
+ * The risk the collapse creates is the only reason this case exists. The carry
+ * step recovers the rounds by splitting the comment body on the marker, then
+ * on the fence, then on the closing fence — so any change to what surrounds
+ * the fence is a change to that reader's input. `<details>` and `</details>`
+ * are plain text lines to a splitter and must stay invisible to it.
+ *
+ * So the second assertion is the load-bearing one: the SAME raw body the step
+ * sent is parsed back into rounds. Asserting only the tags would certify the
+ * markup while saying nothing about whether the ledger still works.
+ */
+describe("AC-L30: the ledger body is collapsed, and still parses", () => {
+  test("AC-L30a: the body opens <details> and closes it around the fence", () => {
+    const r = runPersist({ list: [], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    const body = r.sentRaw!;
+
+    const marker = body.indexOf(AI_REVIEW_LEDGER_MARKER);
+    const open = body.indexOf("<details>");
+    const fence = body.indexOf("```json");
+    const close = body.lastIndexOf("</details>");
+
+    expect(marker, "the marker is absent, so no reader can find this comment").toBeGreaterThanOrEqual(0);
+    expect(open, "the ledger is not collapsed — it renders in full on every round").toBeGreaterThan(marker);
+    expect(fence, "the JSON fence is absent").toBeGreaterThan(open);
+    expect(close, "the <details> block is never closed, so the fence leaks out of it").toBeGreaterThan(fence);
+  });
+
+  test("AC-L30b: the collapsed body still yields its rounds to the reader", () => {
+    const r = runPersist({ list: [], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+
+    // Not a second parser: `rounds` is read back off the body the step
+    // actually sent, by the same path the carry step uses. A collapse that
+    // broke extraction shows up here as an absent or empty reading.
+    expect(r.sentRaw, "nothing was sent, so there is no body to parse").toBeTruthy();
+    expect(r.rounds, "the collapsed body yielded no rounds — the <details> wrapper broke the fence extraction").toHaveLength(1);
+  });
+});

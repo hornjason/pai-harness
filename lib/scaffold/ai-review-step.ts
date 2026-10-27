@@ -10790,7 +10790,8 @@ case "\${total_truncated}" in
 esac
 {
   printf '%s\\n' '${AI_REVIEW_LEDGER_MARKER}'
-  printf '%s\\n\\n' '### AI review findings ledger'
+  printf '%s\\n' '<details>'
+  printf '%s\\n\\n' '<summary>AI review findings ledger — machine state, carried to the next round. Nothing here needs a human.</summary>'
   printf '%s\\n\\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168).'
   printf '%s\\n\\n' 'A \`${AI_REVIEW_FINDINGS_KEY}\` of null means the round was NOT measured — the payload was absent or unparseable. An empty array means the round was read and found nothing. They are different facts.'
   printf '%s\\n\\n' 'THIS IS A WINDOW, NOT A HISTORY. At most ${AI_REVIEW_LEDGER_MAX_ROUNDS} rounds are retained, and fewer when they would not fit — a comment body has a hard ${AI_REVIEW_LEDGER_MAX_BODY} character limit, so the body is rendered and measured before it is written. \`${AI_REVIEW_LEDGER_TRUNCATED_FIELD}\` is how many rounds have fallen off the front of it, by either route. A dropped round is gone rather than empty, so a finding only that round recorded can no longer be carried forward; without the count, nothing downstream could tell that from a finding nobody ever raised. An ABSENT \`${AI_REVIEW_LEDGER_TRUNCATED_FIELD}\` means the depth is unknown, which is not the same as zero.'
@@ -10799,6 +10800,7 @@ esac
   printf '%s\\n' '${fence}json'
   printf '%s\\n' "\${doc}"
   printf '%s\\n' '${fence}'
+  printf '%s\\n' '</details>'
 } > "\${body_file}"
 
 # The RENDERED body, in bytes. \`wc -c\` counts bytes and GitHub's limit is in
