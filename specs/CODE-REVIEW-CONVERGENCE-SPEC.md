@@ -318,14 +318,79 @@ reportable, and a reading of this kind should not be published without it.
 
 ## What an unticked box means here
 
-Audited criterion by criterion on 2026-10-23, when **0 of 56 were ticked and
-0 carried a claiming test**. A spec nothing is bound to cannot drift, because
-there is nothing for it to drift from; the number below is what replaces that.
+Audited criterion by criterion on 2026-10-23. A spec nothing is bound to
+cannot drift, because there is nothing for it to drift from; what replaces
+that is the per-criterion placement in the sections below, which a test
+reads.
 
-Of the 56: **10 bound**, **8 where a mechanism exists that nothing in this
-repository can observe**, **4 that cannot be meaningful in this deployment**,
-**2 blocked on an owner decision**, **1 contested**, **2 declared
-deviations**, **29 not done**.
+**The per-bucket tally that stood here has been deleted rather than
+corrected, and that is the repair.** It enumerated how many criteria sat in
+each of seven buckets. Nothing derived those figures, so every criterion
+that changed bucket falsified them silently: they drifted four times, and
+**five consecutive review rounds each found a different miscount** — the
+total, the unobservable count, the deviations row, and then two defects in
+the guard written to stop it. Each repair fixed the sentence that round
+happened to construct.
+
+That is the defect class this spec's own CRC-N3 section is about, committed
+here by its author, and the two failed repairs are worth naming because both
+were narrower than the thing they guarded. Restating the figures as a
+*dated* reading still left seven hand-written numbers in prose. Guarding
+them with a regex over three bucket names missed the other four spellings.
+
+**The counts are now derived or absent.** `bun bin/rungate.ts audit-specs`
+reports them, and the sections below are the per-criterion truth. A number
+that lives in one place and is computed cannot disagree with itself.
+
+**A document-wide guard was then proposed twice, and measurement refuses
+both.** Review round 7 asked for one check over the whole body requiring
+every bold-faced count to resolve to a computed source. Counted, that is
+168 bolded spans carrying a digit outside tables, nearly all of them
+criterion ids, issue numbers and dates:
+
+```sh
+grep -vE '^\s*\|' specs/CODE-REVIEW-CONVERGENCE-SPEC.md \
+  | grep -oE '\*\*[^*]*[0-9][^*]*\*\*' | wc -l
+```
+
+The narrower hypothesis — that every instance found so far is a
+*restatement*, so no cardinal may appear twice in prose — fails the same
+way. Stripping criterion ids, issue numbers, dates, times, percentages and
+code spans still leaves 57 distinct cardinals occurring more than once, and
+the dense end of that distribution is ordinary English rather than
+measurement. Both readings are commands, not assertions, and both can be
+re-taken against whatever this file says today.
+
+So the class is real and it is not closable by a guard over this file at a
+price worth paying. It is a property of the genre — a long hand-written
+document that restates its own measurements — and the honest scope for
+closing it is moving every measurement into one generated section, which is
+a piece of work rather than a review round. The guards that exist bind the
+regions where a restatement has actually been found, and that is stated as
+a floor, not as coverage.
+
+**The next instrument is a section census, and it is specified here rather
+than built here.** It asserts that every heading is either read by a guard
+in `test/code-review-convergence-spec.test.ts` or carries a written reason
+for not being — so adding a section turns the suite red until someone
+decides which. It does not close the class; it converts a silent hole into
+a loud one, which is the only move the measurements above leave open. Two
+readings justify it and both were taken on 2026-10-27, by writing the
+census, running it once, and removing it again:
+
+```sh
+grep -cE '^#{2,3} ' specs/CODE-REVIEW-CONVERGENCE-SPEC.md
+```
+
+At `##` granularity the census leaves most sections unaccounted on its first
+run, including the one holding the prior-art bullets this round found wrong.
+And `##` is the wrong granularity: `untickedBoxSection` and
+`remainderSection` both read sub-sections of *the same* `##`, whose bulk is
+read by neither, so a census at that level would report coverage the guards
+do not have. The honest unit is the `###`, which the command above counts.
+That scale — not the principle — is why this is separate work: introducing
+a new instrument at round 8 of a three-round budget, in the document that
+criticises exactly that, would be the behaviour rather than the fix.
 
 Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4, and
 again after #1448 bound CRC-M11; re-counted on 2026-10-24 after #1587 bound
@@ -356,9 +421,146 @@ Do not tick these, and do not count them as remaining work either.
 | CRC-C1 | The security review runs as a local Claude Code plugin an agent invokes per session. | It is not repo CI. `.github/workflows/` contains no security pass, so no artefact in this tree records that one ran. |
 | CRC-C2 | **The bug-review half holds.** `test` and `ai-review` are required contexts on `main` with `enforce_admins` on, so a blocking finding reds the check and the merge is refused. Read from the API on 2026-10-23. | Branch protection is GitHub state, not tree state. The security-review half does not hold at all — there is no security check to require. **`required_conversation_resolution` is `true`** (read 2026-10-25; this cell said `false` until then), so an open thread DOES block. **The producer has since landed** (2026-10-26): the generated workflow's step `Post this round's findings onto the diff` runs `ai-review-threads`, and #1614 carries four `github-actions`-authored review threads. The security-review half still does not hold, for its own reason — there is no security check to require — so the verdict is unchanged, but it no longer rests on the absent-producer claim. |
 | CRC-M2 | `REVIEW_OUTCOME_PLANTS` holds four findings whose outcome was established independently. | Expert confirmation is a human act, and those four grade the outcome sweep rather than an incident case set. |
-| CRC-N3 | `REVIEW.md` asks for the class and not the line, and CRC-A6's check proves the reviewer read it. | Whether it complied is a property of a sampled model. No artefact records a finding the reviewer generalised. |
+| CRC-N3 | `REVIEW.md` asks for the class and not the line, and CRC-A6's check proves the reviewer read it. **An artefact now exists**: #1614's ledger round 12 raised a finding against `lib/review-tool-agreement.ts` whose summary is the class itself — that each prior fix "closed the one bypass shape a reviewer happened to construct that round rather than a general property" — and recommended a structural parse over the hand-rolled regex. Round 13 records the recommendation carried out and the class closed. | Whether it complied is still a property of a sampled model, and **one instance is not a rate**. The cell no longer rests on *no artefact exists*; it rests on there being no denominator. The instance also arrived at **round 12 of 15**, so it is evidence the behaviour is reachable, not evidence it is timely — see *The author-side half of CRC-N3* below. |
 | CRC-H1, CRC-H3, CRC-H4, CRC-H5 | Statements about human judgement. | Nothing distinguishes them being honoured from them being ignored. |
 | CRC-N2 | **Adopted in #1600, and it moved here out of *Deliberately not adopted*.** The generated `ai-review-carry` step writes `review_scope=diff` from round 3 when the carry reading is complete, the prompt states both words, and the carried list is declared outside the scope so a prior finding whose file the diff does not touch is still raised. **Adoption was conditional on #1601 and the condition was met in the same change, not waived:** narrowing is only safe while the carry does not silently drop a finding, and until 2026-10-24 it did — the anchor was a line number. `review_scope=diff` is now reachable only when the carry read is complete AND the ledger records no truncation AND the prior rounds are `1..r-1` with no hole; every other reading answers `full`. | **The scope is a WORD, and whether the reviewer confines its reads to it is a BEHAVIOUR.** #1533 measured the reviewer reading whole files rather than the diff. A narrowed round leaves no artefact distinguishing *the reviewer confined its reads* from *the reviewer was asked to and did not* — the step records the request; the reviewer's reads are recorded nowhere. See *Measured non-obvious facts* below. |
+
+### The author-side half of CRC-N3 is unowned
+
+CRC-N3 puts the duty on the **reviewer**: flag the class. CRC-A8 *would*
+cover **cross-PR** recurrence — a repeated finding becoming a rule or a
+lint — but **it is unticked and nothing implements it**: no path routes a
+review finding into a skill, a lint rule or an instruction file, and
+`lib/rule-promotion.ts` promotes from compliance failures rather than from
+findings. So the cross-PR half is a plan, not a mechanism. Between
+them sits the case that actually costs rounds here — **the author fixing one
+instance of a class inside a single pull request, while the siblings sit
+untouched in the same file** — and no criterion owns it.
+
+#1614 is the worked instance, and it is unusually legible because the ledger
+kept every round. Rounds 10, 11 and 12 each found a defect of **one class**:
+hand-rolled regex reads of the `on:` and `if:` YAML in
+`lib/review-tool-agreement.ts`. Nested keys over-matching, then a YAML merge
+key under-matching, then a vacuous test control over the same function. Each
+was repaired at the spelling the reviewer happened to construct. Round 12
+named the class and recommended a structural parse; round 13 records that it
+shipped and the class closed in one change.
+
+**The reviewer got there. It took eleven rounds first.** That is the gap: not
+that the class is never named, but that naming it is a sampled behaviour
+competing with the much easier move of answering the instance in front of you.
+The author-side obligation — *given one confirmed defect, enumerate the
+population* — is the half nothing in this document requires.
+
+#### What the industry calls this, and what it has built
+
+The name is **variant analysis**: given one confirmed defect, find every
+sibling. It is a mature practice and this repository has adopted none of it.
+
+- **CodeQL** is the reference implementation. GitHub Security Lab passed
+  **500 CVEs disclosed in open-source projects** and credits CodeQL for the
+  pace ([GitHub blog, 2023][gh500]) — that figure covers all of the Lab's
+  disclosures, and **no published figure isolates variant analysis alone**,
+  so do not cite one. An earlier draft of this bullet claimed "400+ CVEs
+  found by variant analysis"; it traced to a secondary blog post and was
+  removed when the reviewer asked where it came from. CodeQL is free for
+  public repositories and **has never been enabled here**: the code-scanning
+  alerts API answers `no analysis found` for this repository, read on
+  2026-10-27.
+
+[gh500]: https://github.blog/security/vulnerability-research/the-github-security-labs-journey-to-disclosing-500-cves-in-open-source-projects/
+- **Semgrep** covers the same move at lower cost for syntactic classes.
+- **Trail of Bits' variant-analysis methodology** names *narrow scope —
+  searching only the original module* as the first failure mode, which is
+  exactly #1614's rounds 10 through 12.
+- **Tricorder** (Sadowski et al., ICSE 2015, [paper][tri]) is the closest
+  prior art to CRC-A8: review findings become executable analyzers, most
+  contributed by the developer who hit the bug, governed by an **effective
+  false-positive** budget — a report the user took no action on. Above
+  **10%** the analyzer goes on probation and its author must show progress;
+  above **25%** the Tricorder team may switch it off immediately. An earlier
+  draft of this bullet said "<5% … and the analyzer is disabled", which is
+  wrong in both the threshold and the consequence. The graduated contract is
+  the part worth copying, and the probation tier is the half the wrong
+  version lost: an analyzer nobody can switch off becomes an analyzer
+  everybody clicks past, but one switched off at the first bad week never
+  gets fixed.
+
+[tri]: https://research.google/pubs/tricorder-building-a-program-analysis-ecosystem/
+
+#### Build or adopt — the answer is mostly adopt, and the honest caveat
+
+**Do not build a variant finder.** Three exist, one is free and unenabled.
+
+| Need | Decision |
+|---|---|
+| find siblings of a defect in TypeScript | **adopt** CodeQL; it is free here and switched off |
+| syntactic class sweeps | **adopt** Semgrep, or `rg` for a one-off |
+| lint `run:` blocks in workflows | **adopt** actionlint — **and assert shellcheck is on PATH**, because with it absent actionlint skips every block and exits 0, which is a fail-open gate |
+| require the author to state the population | **build** — nothing off the shelf does this, and it is small |
+
+**The caveat, stated plainly: none of the adopted tools would have caught the
+three defects found on #1621 and #1623.** Those are semantic claims about what
+a command's exit code *means* — `if ! jq -e …` collapsing exit 1 and exit 5
+into one observable — living in shell embedded in TypeScript template
+literals. Neither CodeQL nor Semgrep parses that. Adopting them is still right,
+because they cover classes we currently cannot see at all; it is not a fix for
+the class this document keeps hitting.
+
+#### The gate worth building, and the control that stops it being vacuous
+
+Small, and it reuses the thread reader Increments **1a and 1b already
+shipped** — the suppression gate's `pulls/{n}/comments` plus GraphQL
+`isResolved` read (#1621) and carry-forward's read of the same (#1623).
+That reader exists in the tree today, and so does the two-push evidence
+that it does not duplicate (`AS-10`). What remains is 1c, the removal of
+the ledger comment:
+
+1. The reviewer tags every finding with **exactly one** of `class:<name>` or
+   `instance-only`, and a `class:` tag names the search that finds the siblings.
+2. The author's reply to a class-tagged thread must carry a population count —
+   `N sites, M defective` — and the search that produced it.
+3. A check refuses merge on a class-tagged thread **resolved without one**.
+4. **An untagged finding refuses too.** Absence of a tag is UNMEASURED, not
+   `instance-only`.
+
+**Step 4 is the one the first draft of this section got wrong, and the
+reviewer caught it on #1627.** As first written the check fired only on
+threads already carrying `class:`, so never applying the tag bypassed the
+whole mechanism with zero friction — the *detector narrower than what it
+detects* shape `.claude/rules/checks-must-be-able-to-fail.md` warns about.
+A gate whose trigger is optional is not a gate. The repair is the repo's
+standing one: the unreadable state is a refusal, not a pass.
+
+**Every state the tag field can be in, and what each must produce.** The
+table is the vocabulary, so it is exhaustive by construction rather than by
+a count stated beside it:
+
+| Input | Required outcome | What it proves |
+|---|---|---|
+| `class:<name>`, resolved with no count | **refuse** | the gate fires at all |
+| `instance-only`, resolved with no count | **allow** | it is not just demanding a number on every thread |
+| **untagged**, resolved with no count | **refuse** | the trigger cannot be declined |
+| **both tags**, or a `class:` with no name | **refuse, naming the tag** | an unreadable tag is not a third policy |
+
+"Exactly one" in step 1 is an instruction to the reviewer, and an
+instruction is not an enforcement — the malformed-tag row is what makes the
+vocabulary closed. Both tags together and a malformed `class:` are
+**UNMEASURED**, which refuses: a gate that silently picks one of two
+conflicting tags, or reads an unparseable one as `instance-only`, hands the
+tagger a way to choose the outcome by writing something ambiguous.
+
+Without the `instance-only` row the check cannot distinguish a swept class
+from an unswept one — it just requires a number everywhere, which every
+author learns to type. Without the untagged row the gate is opt-in by the
+party it constrains. A
+battery feeding it only class-tagged threads varies one axis while the
+defect sits on the other.
+
+What would falsify the whole idea: the counts get written, and the five-or-more
+tail on **measured** rounds does not move off 4.4%. The population to watch is
+measured rounds, not all rounds — conflating them points this at the half of
+the problem these mechanisms cannot reach.
 
 ### Cannot be meaningful in this deployment
 
@@ -461,10 +663,11 @@ that carry would have removed the second chance that was masking it**: under
 `scope=full` the reviewer re-reads the branch and can re-find a defect the
 carry dropped, and under `scope=diff` a dropped finding in an untouched file
 is seen by nothing at all. **That second chance has since been measured and
-it is small — 33 drops across the corpus, 2 raised again, 1 of those a clean
-instance** (see *Measured non-obvious facts*). The ordering was right and the
-quantity behind it is one finding rather than a category, which is worth
-knowing before anyone cites this paragraph as though the cost were large. So the condition for adopting CRC-N2 is not *the
+it is rare** — the drop corpus, the re-raises and how clean they were are
+recorded once, in *Measured non-obvious facts*, and deliberately not restated
+here. The ordering was right, and the measurement is worth reading before
+anyone cites this paragraph as though the cost were large. So the condition
+for adopting CRC-N2 is not *the
 carry emits findings* but *the carry does not silently drop them*, and the
 first was being read as the second. **#1600 therefore ships the content-
 addressed anchor first and the narrowing on top of it**, in that order, and
@@ -508,13 +711,15 @@ hand-types dozens of other tallies — *272 (finding, later round) pairs*,
 *147 parseable ledgers*, *161 distinct rounds*, *31 review threads of which
 12 were one note* — none of them bound by anything, and offered two ways out:
 machine-verify them, or declare them exempt. **Machine-verifying them is not
-possible and would be wrong if it were.** The numbers fall into two classes
-and only one of them is a property of this document:
+possible and would be wrong if it were.** The classes below are sorted by
+where the authority for a number lives, and only the first is a property of
+this document:
 
 | Class | Example | Can a test recompute it? | Rule |
 |---|---|---|---|
 | **Document-derived** | the bullet count, the id set, which criteria sit in which bucket | Yes — it is in the file | **Must be computed.** A hand-typed one is a defect |
 | **World-derived** | `15 ai-review runs`, `147 parseable ledgers`, `12 entries and truncated 5` | No | **Must carry its date and the command that took it** |
+| **Cited** | Tricorder's 10% probation threshold, GitHub Security Lab's 500 CVEs | No — nothing here can take the reading | **Must name a retrievable primary source.** A figure whose only trace is a secondary summary is not citable and must be dropped, not softened |
 
 A world-derived number re-measured gives a **different** answer, because the
 world moved — that is what makes it a measurement rather than a tally. Re-
@@ -793,16 +998,44 @@ claims, deliberately kept in three places, and the reason is in that section.
 
 | PR | Phase / increment | Criteria it is pointed at | State |
 |---|---|---|---|
-| — | Increment 1b — carry-forward decides "still unanswered" from an OPEN thread and treats a RESOLVED one as answered | CRC-N4, CRC-B5 | next. **1a merged in #1618**: a posted thread now carries the key it was raised under, base64 in an HTML comment, which is what makes a thread re-keyable at all |
-| — | Increment 1c — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4 | gated on 1b. Not before: the producer posts the repeat-SUPPRESSED set and the gate that suppresses reads the ledger, so removing it first opens a duplicate thread per finding per round |
+| — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4 | **unblocked, and the gate is satisfied rather than waived.** AC-5 reads *"only once AC-1..AC-4 are green"*. 1a (#1621) carries AC-1 and AC-4, 1b (#1623) carries AC-2, and **AC-3 is `AS-10` in `test/ai-review-suppression.test.ts`** — the producer run twice against a poster that behaves as GitHub does, with both vacuity controls (`AS-10b`: no gate gives two threads; `AS-10c`: a different defect still gets its own). #1628 (`242c9ceb`) folded the comment into a `<details>` block as interim relief; 1c removes it. **1c is a migration and not a deletion** — see below |
 | — | Increment 2 — a verifier invocation writes a ballot, three invocations with per-verifier directories | CRC-B4, CRC-B3 | blocked on the ordering defect below |
 | — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
 
 **Merged, and kept out of this table on purpose.** #1614 (`1b9ffce3`), #1616
 (`1804ae9d`), #1617 (`aed22884`) and #1618 (`fe1f9292`) all landed on
-2026-10-26. A merged branch is not work in flight, and its record lives in
+2026-10-26; #1621 (`cc658f6e`), #1623 (`a8fd0311`) and #1619 (`da7b49a6`) on
+2026-10-27. A merged branch is not work in flight, and its record lives in
 *Readings taken* and in git rather than in a row that would otherwise
 accumulate for ever.
+
+**Two things carry the name "1a" and they are different changes.** #1618 made
+a posted thread carry the key it was raised under, which is what makes a
+thread re-keyable at all; #1621 made the suppression gate read those threads
+instead of the ledger. The AC list at #1614 is the authority — AC-1 is the
+suppression gate — so **#1621 is 1a and #1618 is its prerequisite**. An
+earlier revision of this table called #1618 "1a", which is why the two
+numberings appear in the history.
+
+**1c is a migration, and reading AC-5 as a deletion will break the carry.**
+AC-5 says *"stop posting the ledger, and remove the steps that wrote it
+rather than leaving them dormant"*, which presupposes nothing still reads
+it. Something does. The carry step composes the carried list from **two**
+sources: the ledger rounds supply the candidate findings, and the resolved
+thread bodies supply only which of them are answered. The suppression gate
+moved to threads in 1a and `ledgerPriorKeysFrom` is dormant — but the
+*carried list itself* is still ledger-sourced, so deleting the writer leaves
+the reviewer with no record of what earlier rounds raised.
+
+So 1c is: move the carried list's source to the thread list, then delete the
+writer. Two things that migration has to answer, because the ledger holds
+them and a thread does not: a thread carries `severity` and `summary` in its
+body and its `path`/`line` as API fields, but **no round number** — the
+`[round N]` prefix the reviewer is shown has no thread-side equivalent — and
+a dropped round is visible in the ledger as `truncated` with no counterpart
+in a thread list that GitHub never truncates. Decide what replaces each
+before removing the writer, rather than discovering it from a reviewer that
+stops being told anything.
 
 **A row with no pull request is work this spec says is next and nobody has
 claimed.** That is the state worth seeing, and it is the one a tracker of

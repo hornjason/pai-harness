@@ -257,6 +257,26 @@ function remainderSection(body: string): string | null {
  * this project's own rule; one that implies more is the defect rounds 4-8
  * kept finding.
  */
+/**
+ * The audit section, cut the same way `measuredFactsSection` cuts its own.
+ *
+ * Scoped deliberately. A whole-document search for the guard below would be
+ * satisfied or defeated by prose anywhere in the file, which is how the
+ * first version of that guard passed by coincidence.
+ */
+function untickedBoxSection(body: string): string | null {
+  const start = body.search(/^## What an unticked box means here/m);
+  if (start === -1) return null;
+  const rest = body.slice(start).replace(/^## .*\n/, "");
+  // Stops at the first `###` as well as the next `##`. The audit SUMMARY is
+  // the prose before the per-bucket subsections; running to the next `##`
+  // swallows those tables, whose cells legitimately carry dates, percentages
+  // and round numbers in bold. The first draft did that and reported nine
+  // matches, none of them a tally.
+  const end = rest.search(/^#{2,3} /m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
 function measuredFactsSection(body: string): string | null {
   const start = body.search(/^## Measured non-obvious facts/m);
   if (start === -1) return null;
@@ -525,18 +545,48 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
     }
   });
 
-  test("the stated counts are the measured ones", () => {
-    // The prose says the split in words. A reader acts on that sentence and
-    // not on the sections below it, so it is the thing most worth holding to
-    // the tree — and the cheapest way for this whole audit to go quietly
-    // wrong is for someone to move a criterion and leave the summary.
-    const stated = /\*\*(\d+) bound\*\*/.exec(body!);
-    expect(stated, "the summary sentence no longer states a bound count").not.toBeNull();
-    const ticked = (body!.match(/^- \[[xX]\] CRC-/gm) ?? []).length;
+  test("the audit section carries no hand-written count", () => {
+    // This REPLACES an agreement between the summary sentence and the ticked
+    // count, and the replacement is the point.
+    //
+    // That comparison is *why* the sentence drifted. It held a present-tense
+    // claim about a document that moves underneath it, so every criterion
+    // that changed bucket silently falsified it, and the repair was always
+    // another hand-edit to one sentence. Successive review rounds on #1627
+    // each found a DIFFERENT miscount in it — the signature of a class being
+    // patched one instance at a time rather than closed. The running count of
+    // those rounds is NOT repeated here: an earlier draft of this comment said
+    // "three", the spec's own prose later said "five", and the two disagreed
+    // for four rounds. A comment restating a number the spec already carries
+    // is the same defect this guard exists to catch, in a file no guard reads.
+    //
+    // The general property that replaces it: this spec may state bucket
+    // counts only as a reading taken on a named day. A dated reading cannot
+    // drift, because it describes that day rather than this tree. Live
+    // counts come from `bun bin/rungate.ts audit-specs`, which derives them
+    // instead of restating them.
+    const section = untickedBoxSection(body!);
+    expect(section, "the audit section is gone, so this guard reads nothing").not.toBeNull();
+
+    // ANY digit, not a list of bucket names. The previous version of this
+    // guard matched `bound|not done|contested` and the original sentence
+    // bolded all SEVEN buckets, so four spellings walked straight past it —
+    // a detector narrower than the thing it detects, which is the shape
+    // `.claude/rules/checks-must-be-able-to-fail.md` names and which this
+    // very guard committed on the round that introduced it.
+    // `[^*\n]` and not `[^*]`: a bolded span is within a line, and letting
+    // the class cross newlines pairs the opening `**` with one paragraphs
+    // away, so the match swallows prose that contains a digit incidentally.
+    // The first draft of this line did exactly that and reported 267 lines.
+    const bolded = [...section!.matchAll(/\*\*([^*\n]*\d[^*\n]*)\*\*/g)].map(m => m[1]);
     expect(
-      Number(stated![1]),
-      `the summary says ${stated![1]} bound and ${ticked} boxes are ticked`,
-    ).toBe(ticked);
+      bolded,
+      "a bolded number is back in the audit section. Nothing derives it, so it " +
+        "drifts the moment a criterion changes bucket — this sentence did, four " +
+        "times, and two successive guards were themselves too narrow to catch it. " +
+        "Counts belong in `bun bin/rungate.ts audit-specs`, which computes them, " +
+        "or in the per-criterion sections below, which are the truth they summarise.",
+    ).toEqual([]);
   });
 
   /**
