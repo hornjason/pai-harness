@@ -1646,6 +1646,258 @@ describe("AC-T1 (AC-1): the carry step writes the review threads", () => {
 });
 
 /**
+ * AC-2 (Increment 1b): carry-forward decides "still unanswered" from an OPEN
+ * thread, and treats a RESOLVED one as answered.
+ *
+ * ## The gate and this reader deliberately disagree, and that is the point
+ *
+ * `aiReviewSuppressionGate` asks "has this already been RAISED?", so a
+ * resolved thread counts as raised and the finding is not posted twice. This
+ * reader asks "is this still UNANSWERED?", so a resolved thread counts as
+ * answered and the finding is dropped. Same input, two questions, two
+ * answers. A single shared helper returning one boolean would have to pick
+ * one of them and silently break the other — which is why the resolution flag
+ * is read here rather than folded away in `priorKeysFrom`.
+ *
+ * ## Why this is not the anchor rule in different clothes
+ *
+ * The anchor rule asks the CODE whether a finding is fixed. It cannot see an
+ * answer that is not a code change — a false positive closed with a reason,
+ * which CRC-C3 exists for. Before this, answering such a thread left the
+ * finding carried forever and the reviewer re-raised it every round. That is
+ * CRC-N4 measured on #1616: eleven threads for three distinct findings.
+ */
+describe("AC-C8 (AC-2): a RESOLVED thread answers a carried finding", () => {
+  const TEXT = "const n = xs[i]";
+  const SUMMARY = "unchecked index";
+  const FILE = "lib/a.ts";
+  // `carryKey` is nullable, and a null here would spell "no key in the body",
+  // which every row below would read as "no thread matched" — row (b) would
+  // fail for a reason that has nothing to do with resolution. Refuse it at
+  // the fixture rather than diagnosing it at the assertion.
+  const liveKey = (): string => {
+    const k = carryKey({ file: FILE, line: 1, summary: SUMMARY }, TEXT);
+    if (k === null) throw new Error("carryKey returned null, so this fixture cannot key a thread");
+    return k;
+  };
+  const ledger = () => [botComment(5, windowBody([round(5, [recorded(FILE, 1, SUMMARY, TEXT)])]))];
+  const files = { [FILE]: `${TEXT}\n` };
+  const thread = (isResolved: boolean, key: string = liveKey()) => ({
+    isResolved,
+    body: threadBody({ severity: "high", summary: SUMMARY }, key),
+  });
+
+  test("AC-C8a: the control — an OPEN thread leaves the finding carried", () => {
+    // Without this row the next one is satisfied by a step that drops
+    // everything the moment any thread exists.
+    const r = runCarry({ list: ledger(), files, threadPages: [[thread(false)]] });
+    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
+    expect(r.carried, "an open thread stopped the finding being carried").toHaveLength(1);
+  });
+
+  test("AC-C8b: a RESOLVED thread drops it, with the code UNCHANGED", () => {
+    // The anchor still matches — `files` is identical to row (a) — so the
+    // anchor rule carries. Only the resolution can drop it, which is the
+    // whole criterion.
+    const r = runCarry({ list: ledger(), files, threadPages: [[thread(true)]] });
+    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
+    expect(
+      r.carried,
+      "a thread answered and resolved by a human still carried, so the reviewer re-raises it next round",
+    ).toHaveLength(0);
+  });
+
+  test("AC-C8c: a resolved thread for a DIFFERENT finding drops nothing", () => {
+    // The drop is keyed, not blanket. Without this, a reader that dropped
+    // every finding whenever ANY resolved thread existed passes row (b).
+    const r = runCarry({
+      list: ledger(),
+      files,
+      threadPages: [[thread(true, `${FILE}\u0000t:something else\u0000a different summary`)]],
+    });
+    expect(r.carried, "an unrelated resolved thread answered this finding").toHaveLength(1);
+  });
+
+  test("AC-C8d: threads that could not be read carry, rather than resolving", () => {
+    // The direction this must fail in. An unreadable thread list is not
+    // evidence that anything was answered, and the costly error is the silent
+    // drop — a live finding that vanishes with the check reporting CLEAN.
+    const r = runCarry({ list: ledger(), files, threadPages: null });
+    expect(
+      r.carried,
+      "an unreadable thread list was treated as every finding having been answered",
+    ).toHaveLength(1);
+  });
+});
+
+describe("AC-C8 (AC-2): the drop, performed", () => {
+  const TEXT = "const n = xs[i]";
+  const SUMMARY = "unchecked index";
+  const FILE = "lib/a.ts";
+  const ledger = () => [botComment(5, windowBody([round(5, [recorded(FILE, 1, SUMMARY, TEXT)])]))];
+  const files = { [FILE]: `${TEXT}\n` };
+
+  test("AC-C8e: the MUTANT — the resolved filter removed — carries the answered finding", () => {
+    // Without this row, AC-C8b is satisfied by any step that drops the
+    // finding for some other reason, and nothing says the resolution did it.
+    // Removing the `--argjson` binding is the smallest edit that disarms the
+    // filter without changing the jq program, so the mutant still parses.
+    const real = buildCarryScript();
+    const mutant = real.replace(` --argjson resolved "\${resolved_bodies}"`, ` --argjson resolved '[]'`);
+    expect(mutant, "the resolved binding was not found, so nothing was mutated").not.toBe(real);
+
+    const key = carryKey({ file: FILE, line: 1, summary: SUMMARY }, TEXT);
+    expect(key, "the fixture could not key a thread").not.toBeNull();
+    const pages = [[{ isResolved: true, body: threadBody({ severity: "high", summary: SUMMARY }, key) }]];
+
+    expect(
+      runCarry({ list: ledger(), files, threadPages: pages, script: mutant }).carried,
+      "the mutant dropped it too, so the resolved threads are not what row (b) measures",
+    ).toHaveLength(1);
+    expect(
+      runCarry({ list: ledger(), files, threadPages: pages }).carried,
+      "the real script stopped dropping it, so row (b) is measuring nothing",
+    ).toHaveLength(0);
+  });
+});
+
+/**
+ * AC-C9: the TWO NORMALISERS must fold case the same way.
+ *
+ * `carryKey` keys a thread body in TypeScript; the generated jq re-derives the
+ * same key from that body with its own `norm`. They are two implementations of
+ * one function, so the only thing that makes the pair correct is that they
+ * agree on every input — and nothing above this block feeds either of them a
+ * character the two could disagree about.
+ *
+ * jq's `norm` folds case with `ascii_downcase`. jq exposes no Unicode-aware
+ * downcase at all (`builtins` offers `ascii_downcase` and `ascii_upcase` and
+ * nothing else), so the agreement has to be bought on the TypeScript side:
+ * `normalise` folds `[A-Z]` only, which is exactly what `ascii_downcase` does.
+ *
+ * Measured while writing this: the whitespace half of the same expression does
+ * NOT diverge. Given `a b c　d`, jq's `[[:space:]]+` and JS's
+ * `\s+` both yield `a b c d`, so the population of divergences in `norm` is
+ * one, not two. The control below is what keeps this block honest if that ever
+ * stops being true.
+ */
+describe("AC-C9 (AC-2): the jq and TypeScript normalisers fold case identically", () => {
+  const TEXT = "const n = xs[i]";
+  const FILE = "lib/a.ts";
+  const files = { [FILE]: `${TEXT}\n` };
+
+  // The pair differs in ONE respect: whether the summary carries a non-ASCII
+  // uppercase letter. Everything else is held fixed, so a disagreement between
+  // the rows can only be the case fold.
+  const drops = (summary: string) => {
+    const ledger = [botComment(5, windowBody([round(5, [recorded(FILE, 1, summary, TEXT)])]))];
+    const key = carryKey({ file: FILE, line: 1, summary }, TEXT);
+    expect(key, `the fixture could not key a thread for ${JSON.stringify(summary)}`).not.toBeNull();
+    const pages = [[{ isResolved: true, body: threadBody({ severity: "high", summary }, key) }]];
+    return runCarry({ list: ledger, files, threadPages: pages }).carried;
+  };
+
+  test("AC-C9a: the ASCII control — a resolved thread drops its finding", () => {
+    // If this row ever goes red the next one proves nothing: both engines
+    // would be failing to match for a reason that is not the case fold.
+    expect(drops("UNCHECKED Index"), "the ASCII control did not drop").toHaveLength(0);
+  });
+
+  test("AC-C9b: a non-ASCII uppercase in the summary drops it too", () => {
+    // Red before the fix. `.toLowerCase()` folded "É" to "é" while jq's
+    // `ascii_downcase` left it alone, so the two engines keyed the same thread
+    // differently, the resolved thread never matched, and the finding was
+    // carried for ever — the reviewer re-raising a finding a human had already
+    // answered, which is the CRC-N4 failure this whole increment exists to end.
+    expect(
+      drops("UNCHECKED Índex"),
+      "a summary with a non-ASCII uppercase letter did not drop, so the TypeScript and jq " +
+        "normalisers disagree about case and a resolved thread cannot answer the finding",
+    ).toHaveLength(0);
+  });
+
+  test("AC-C9c: non-ASCII WHITESPACE folds the same way in both engines", () => {
+    // `norm` has two axes and only one of them had a row. The whitespace
+    // half was measured by hand — jq's `[[:space:]]+` and JS's `\s+` both
+    // collapse NBSP, U+2028 and U+3000 — and then written down in a comment
+    // instead of banked, which is the thing this repository keeps learning
+    // not to do: a docblock saying a property holds is the reason nobody
+    // tests it.
+    //
+    // It is green today, so this row is a REGRESSION control rather than a
+    // bug fix. POSIX `[:space:]` is classically locale- and build-dependent,
+    // so a future jq that narrowed it to ASCII while JS kept matching these
+    // codepoints would reopen exactly the AC-C9b failure on the other axis,
+    // silently, with nothing in the suite to catch it.
+    expect(drops("unchecked index"), "NBSP folded differently").toHaveLength(0);
+    expect(drops("unchecked index"), "U+2028 folded differently").toHaveLength(0);
+    expect(drops("unchecked　index"), "U+3000 folded differently").toHaveLength(0);
+  });
+});
+
+/**
+ * AC-C10 (AC-2): an EMPTY thread file is unreadable, not "nothing resolved".
+ *
+ * `[ -f ]` asks whether the file exists. It does not ask whether it has any
+ * bytes, and the two are different states: a job killed mid-write, a disk
+ * that filled, an upload that produced the path and nothing else all leave a
+ * present, zero-byte file.
+ *
+ * Measured: `jq -c '[...]' < /dev/null` exits **0** and prints **nothing** —
+ * empty input is zero iterations, not an error. So the `if !` branch does not
+ * fire, `resolved_bodies` becomes `""` instead of `'[]'`, and the later
+ * `--argjson resolved ""` is handed something that is not JSON. jq's own
+ * answer to that is `invalid JSON text passed to --argjson`, which kills the
+ * carry jq outright — the one invocation that decides what carries.
+ *
+ * The guard is therefore the wrong SHAPE, not merely too narrow: it tests the
+ * exit code of a command that succeeds in the failing case. The fix tests the
+ * output instead. A non-empty stdout from `jq -c` is jq's own serialisation
+ * and is valid JSON by construction, so emptiness is the whole check and no
+ * second parse is needed.
+ */
+describe("AC-C10 (AC-2): a zero-byte thread file carries, rather than breaking the carry", () => {
+  const TEXT = "const n = xs[i]";
+  const SUMMARY = "unchecked index";
+  const FILE = "lib/a.ts";
+  const ledger = () => [botComment(5, windowBody([round(5, [recorded(FILE, 1, SUMMARY, TEXT)])]))];
+  const files = { [FILE]: `${TEXT}\n` };
+
+  // The partial write, performed on the INPUT. `threads_fetch` is made to
+  // leave the file it always leaves, with no bytes in it — the shape an
+  // interrupted job produces. The block under test is not touched.
+  const truncatingWriter = () => {
+    const real = buildCarryScript();
+    const mutant = real.replace(
+      `printf '%s' "\${threads_acc}" > "\${${AI_REVIEW_THREADS_PATH_VAR}}"`,
+      `: > "\${${AI_REVIEW_THREADS_PATH_VAR}}"`,
+    );
+    expect(mutant, "the thread write was not found, so no empty file was produced").not.toBe(real);
+    return mutant;
+  };
+
+  test("AC-C10a: the control — a well-formed thread file leaves the carry working", () => {
+    const r = runCarry({ list: ledger(), files, threadPages: [[]] });
+    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
+    expect(r.carried, "the control did not carry, so row (b) proves nothing").toHaveLength(1);
+  });
+
+  test("AC-C10b: a present but EMPTY thread file still produces a reading", () => {
+    const r = runCarry({ list: ledger(), files, threadPages: [[]], script: truncatingWriter() });
+    expect(
+      r.stdout + r.stderr,
+      "jq was handed a non-JSON --argjson, so the one invocation that decides what carries died",
+    ).not.toContain("invalid JSON text");
+    expect(r.state, `${r.stdout}${r.stderr}`).toBe(AI_REVIEW_CARRY_READ);
+    expect(
+      r.carried,
+      "an unreadable thread list dropped a finding instead of carrying it — the direction " +
+        "that clears a live finding while the required check reports CLEAN",
+    ).toHaveLength(1);
+  });
+});
+
+/**
  * AC-T2 (AC-1): the malformed-repo guard tests for a MISSING SLASH.
  *
  * `threads_fetch` has to refuse a repository string it cannot address. The
