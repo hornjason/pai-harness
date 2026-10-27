@@ -326,19 +326,43 @@ both name their range**, and the two readings above this one do not.
 ```sh
 gh api graphql -f query='{repository(owner:"hornjason",name:"pai-harness"){pullRequests(first:45,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number merged comments(first:100){totalCount nodes{author{login} body}}}}}}' \
   --jq '[.data.repository.pullRequests.nodes[] | {number, passed: .merged, truncated: (.comments.totalCount > 100), body: ([.comments.nodes[] | select(.author.login=="github-actions") | .body | select(contains("<!-- rungate:ai-review-ledger:v1 -->"))] | last)}]' > /tmp/crc-prs.json
-jq -e 'map(select(.truncated)) | length == 0' /tmp/crc-prs.json   # or the page truncated and the ledger may be off the end
-bun evals/ai-review-control/run.ts rounds /tmp/crc-prs.json
+jq -e 'map(select(.body == null and .truncated)) | length == 0' /tmp/crc-prs.json \
+  && bun evals/ai-review-control/run.ts rounds /tmp/crc-prs.json
 ```
 
-**The middle line exists because the query reads one page and the fetch
-cannot tell a short page from a truncated one.** `comments(first:100)` covers
-*every* issue comment, not only ledgers, so on a busy pull request the ledger
-can sit past the hundredth and `last` returns `null` — which this pipeline
-would report as *no ledger* rather than as *not read*. The reviewer raised it
-on this very pull request and it is a real hazard that did not fire:
-`comments{totalCount}` across the window maxes at **9**, on #1597, so there
-is 11× headroom. The guard is added anyway, because the headroom is a
-property of today's window and the recipe is meant to outlive it.
+**The `&&` is load-bearing and the first draft of this block did not have
+it.** Three statements in a fence are three independent commands: a failing
+`jq -e` printed a signal and the read ran anyway, so the guard gated nothing.
+A check whose refusal nothing consumes is the defect
+`.claude/rules/checks-must-be-able-to-fail.md` is named for, and it arrived
+inside the pull request that re-measures a document about it. Chained, the
+refusal stops the read.
+
+**What the guard refuses is narrower than "the page was full", and the first
+draft got the mechanism wrong.** The ledger is **one upserted comment**
+(`AI_REVIEW_PERSIST_STEP_ID`, #1168) — every round edits it rather than
+adding one — so its position in GitHub's creation-ordered connection is fixed
+when round 1 writes it, and no later volume can push it past the hundredth.
+On #1597, twelve rounds and nine comments, the ledger is at **index 0**. The
+first draft said a pull request could become "busy" and lose its ledger off
+the end; that cannot happen. The only way the ledger sits past position 100
+is **100 other comments existing before the first review round ever ran**,
+and the only genuinely ambiguous reading is a pull request with a **full page
+and no ledger found** — absent and not-read are the same bytes there. A full
+page with a ledger found is fine, and a short page with no ledger is a real
+absence. The guard now asks exactly that question; the version this replaced
+refused the full-page case outright and would have fired on pull requests it
+had read correctly.
+
+**It is also not the only premise check in the recipe**, which is why the
+narrow form is safe. `run.ts rounds` opens with
+`rounds-to-pass: measured N, unmeasured M` over the same file and then names
+every unmeasured pull request individually, and a `body` of `null` lands
+there as `UNMEASURED LEDGER_ABSENT` rather than as a review that happened
+once (`roundsTaken`, `lib/rounds-to-pass.ts`). So the fetch's guard and the
+parser's refusal answer the same question from two sides: the guard refuses
+the case where absence is unresolvable, and the parser refuses to score the
+absence either way.
 
 **`author.login == "github-actions"` is correct here and wrong one API
 over.** GraphQL's `Actor.login` for the built-in Actions bot is
