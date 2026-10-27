@@ -4941,7 +4941,16 @@ threads_fetch() {
   graphql="\${${AI_REVIEW_GRAPHQL_VAR}:-https://api.github.com/graphql}"
   owner="\${${AI_REVIEW_LEDGER_REPO_VAR}%%/*}"
   name="\${${AI_REVIEW_LEDGER_REPO_VAR}#*/}"
-  if [ -z "\${owner}" ] || [ -z "\${name}" ] || [ "\${owner}" = "\${name}" ]; then
+  # Ask for the SLASH, not for the halves. \`owner = name\` was true of a
+  # slashless string only by accident of the expansions, and it is equally
+  # true of kubernetes/kubernetes — which silently disabled suppression for
+  # every repository whose owner and name agree. AC-T2.
+  case "\${${AI_REVIEW_LEDGER_REPO_VAR}}" in
+    */*/*) repo_addressable=no ;;
+    */*) repo_addressable=yes ;;
+    *) repo_addressable=no ;;
+  esac
+  if [ "\${repo_addressable}" != "yes" ] || [ -z "\${owner}" ] || [ -z "\${name}" ]; then
     threads_unmeasured "the repository name '\${${AI_REVIEW_LEDGER_REPO_VAR}}' is not owner/name, so the query could not be addressed."
     return 0
   fi

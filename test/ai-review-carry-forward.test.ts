@@ -1644,3 +1644,64 @@ describe("AC-T1 (AC-1): the carry step writes the review threads", () => {
     expect(yml).toContain(`/${AI_REVIEW_THREADS_BASENAME}`);
   });
 });
+
+/**
+ * AC-T2 (AC-1): the malformed-repo guard tests for a MISSING SLASH.
+ *
+ * `threads_fetch` has to refuse a repository string it cannot address. The
+ * first spelling asked `owner = name` — splitting on `/` and comparing the
+ * halves — which is the right answer only because a slashless string leaves
+ * both expansions equal to the whole string. It is also true of
+ * `kubernetes/kubernetes`, `docker/docker`, `netty/netty` and every other
+ * repository whose owner and name agree, and for those the step took the
+ * UNMEASURED branch and never fetched. Thread-based suppression was dead for
+ * that repository shape, permanently and quietly: reporting everything is the
+ * designed fail-safe, so nothing goes red — the feature just never works.
+ *
+ * It did not bite this repository (`hornjason/pai-harness`), which is why
+ * nothing here had caught it: the step shipped with no test over the guard at
+ * all. The rows below are a triple rather than a pair, because a guard can be
+ * wrong in two directions and the cheap fix for one direction is to delete
+ * it:
+ *
+ *   (a) an ordinary `owner/name` is fetched           — the control
+ *   (b) `owner` equal to `name` is fetched            — the false positive
+ *   (c) a string with no slash is still REFUSED       — the true positive
+ *
+ * Row (c) is what stops "remove the guard" passing. Only the repository
+ * string differs between the rows; the fake transport serves the same pages
+ * whatever it is asked for, so a disagreement can only be the guard.
+ */
+describe("AC-T2 (AC-1): the malformed-repo guard reads the slash, not the halves", () => {
+  const KEY = "lib/a.ts\u0000t:alpha\u0000unchecked index";
+  const keyed = (key: string) => threadBody({ severity: "high", summary: "unchecked index" }, key);
+  const pages = () => [[{ isResolved: false, body: keyed(KEY) }]];
+  const withRepo = (repo: string) =>
+    runCarry({ threadPages: pages(), env: { [AI_REVIEW_LEDGER_REPO_VAR]: repo } });
+
+  test("AC-T2a: the control — an ordinary owner/name is fetched", () => {
+    const r = withRepo("octocat/hello-world");
+    expect(r.threads, `${r.stdout}${r.stderr}`).not.toBeNull();
+    expect(priorKeysFrom(r.threads)).toEqual({ status: "MEASURED", keys: [KEY] });
+  });
+
+  test("AC-T2b: a repository whose owner EQUALS its name is fetched too", () => {
+    const r = withRepo("kubernetes/kubernetes");
+    expect(
+      r.stdout + r.stderr,
+      "a well-formed owner/name was called malformed, so suppression is dead for every " +
+        "repository whose owner and name agree",
+    ).not.toContain("is not owner/name");
+    expect(r.threads, `${r.stdout}${r.stderr}`).not.toBeNull();
+    expect(priorKeysFrom(r.threads)).toEqual({ status: "MEASURED", keys: [KEY] });
+  });
+
+  test("AC-T2c: a string with NO slash is still refused", () => {
+    // Without this row, deleting the guard passes (a) and (b).
+    const r = withRepo("pai-harness");
+    expect(r.stdout + r.stderr, "a slashless repository string was accepted").toContain(
+      "is not owner/name",
+    );
+    expect(r.threads, "a string that cannot address a query still produced a thread list").toBeNull();
+  });
+});
