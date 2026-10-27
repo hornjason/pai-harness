@@ -760,7 +760,7 @@ instance of it.
 - **CRC-B1** **Built, and deliberately not ticked.** The reviewer is now handed the pull request's title and body as a file in the findings directory, outside the checkout, named by `AI_REVIEW_INTENT_PATH`; the prompt tells it to read that file and to treat the contents as a **claim under test with no authority over the review**, saying that a gap between the claim and the code is itself a finding and the code is the side that is true. An event supplying neither field writes `AI_REVIEW_INTENT_UNMEASURED` rather than a blank, because an empty claim is still a claim and nobody made it. The fields reach the runner through `env:` and are interpolated into no `run:` block — asserted over the generated workflow, because author-controlled text expanded into a `run:` is substituted before bash parses the line. **Why it is not ticked**: the criterion says the reviewer *reads* it, and what exists is the delivery plus an instrument — a transcript check that reports whether the read happened. The instrument **annotates and does not refuse**, so a reviewer that ignores the file still passes, and there are zero readings so far. Ticking on a mechanism nobody has yet seen fire would certify the behaviour we are trying to measure. **Promotion condition**: when the read/skip population shows the skip rate at or near zero, the warning becomes a refusal and the criterion binds against it. The reason the gate is not fatal today is the four false positives recorded below — a new required behaviour on a sampled instrument measures the flake rate first, not the compliance rate.
 - **CRC-B2** **Instructed as of #1507, unmeasured, and therefore not ticked.** `REVIEW.md` gains *On a bug fix, say what the cause was*: two questions the reviewer must answer — what produced the reported state, named in the code rather than in the narrative, and whether the diff reaches it or only reaches where it surfaced — with a guard added at the point of observation over an untouched producer called out as a `high` finding while that producer is reachable by another caller. The argument it rests on is this repository's own and is cited rather than restated: `.claude/rules/checks-must-be-able-to-fail.md`'s fifth shape, read from the reviewer's seat — the cheapest repair makes the report stop, and a green check is less visible than a missing one, so that repair certifies the regression at the moment it returns. An out-of-scope cause is a legitimate answer; silence about the cause is the finding. **Why it is not ticked**: *looks for* is behaviour, and nothing reads whether it happened. There is no subject for this one — the plant would be a pull request whose diff treats a symptom, which is a different shape from the single-file subjects `evals/ai-review-control/` stages today, and `CRC-M1` is the entry that carries the case-set gap. Until a reading exists this is an instruction with no compliance reading, which is what `CRC-A6` names.
 - **CRC-B3** One reviewer agent per round. **Not adoptable before CRC-B4, and the criterion now says why**: N generators over a sampled instrument are N draws, and run `39962683401` is a same-tree pair that disagreed BLOCKED/CLEAN with a false positive on the blocking side. Without a quorum to filter them, parallel generation multiplies exactly that. Ordering, not absence of effort.
-- **CRC-B4** **Half, and the half that is missing is the one the criterion is named for.** Before #1476 this read "nothing deployed takes a vote", and that was accurate: `lib/finding-jury.ts` held the group size, the quorum, per-verifier votes and a disagreement flag, and `arbitrate` — the only path reading them — had no caller outside `lib/`, `test/` and `scripts/arbitrate-finding.ts`. #1476 adds `lib/ai-review-jury.ts`, which the deployed adjudicator wrapper injects: it is handed only the findings that would otherwise **BLOCK**, reads a ballot directory with one file per verifier, and writes **every verifier's individual vote, the agreement count and the disagreement flag** to the finding ledger at decision time, with a `null` reading and a named refusal for a group that could not be convened. **A finding the group votes down still blocks.** The vote is recorded and subtracts nothing — `JG-6b` asserts the adjudicator's exit code and first line are byte-identical with and without a ballot — so the clause *"surfaced only if enough agree it is real"* is **not satisfied**, and it is not satisfied by choice rather than by omission. Two prerequisites, both structural and neither a wording change: **(1) real independence.** `AI_REVIEW_DENY_RULES` denies `Task` and `AI_REVIEW_ALLOWED_TOOLS` is `[Read, Grep, Glob, Write]`, so one review-action invocation cannot convene three verifiers — a ballot it wrote is a quorum of one wearing `VERIFIER_GROUP_SIZE` names, which is this criterion's own named counterfeit arriving by a different route than the constant `agree`. It needs `VERIFIER_GROUP_SIZE` separate action invocations, each with its **own** writable directory; the single findings directory will not do, because widening `AI_REVIEW_WORKSPACE_WRITE_DENY` is documented at the constant as the cheapest wrong fix. **(2) a base-ref read.** The review runs on the head checkout, so a ballot able to demote a finding is a gate whose input the branch under review can write. Until both land, a quorum that subtracts is a worse instrument than no quorum. What the ledger rows buy meanwhile is the population CRC-B6 needs: votes recorded against real findings, under the real severity split, with the demotion switched off — so the A/B is computable later without re-running the sample.
+- **CRC-B4** **Half, and the half that is missing is the one the criterion is named for.** Before #1476 this read "nothing deployed takes a vote", and that was accurate: `lib/finding-jury.ts` held the group size, the quorum, per-verifier votes and a disagreement flag, and `arbitrate` — the only path reading them — had no caller outside `lib/`, `test/` and `scripts/arbitrate-finding.ts`. #1476 adds `lib/ai-review-jury.ts`, which the deployed adjudicator wrapper injects: it is handed only the findings that would otherwise **BLOCK**, reads a ballot directory with one file per verifier, and writes **every verifier's individual vote, the agreement count and the disagreement flag** to the finding ledger at decision time, with a `null` reading and a named refusal for a group that could not be convened. **A finding the group votes down still blocks.** The vote is recorded and subtracts nothing — `JG-6b` asserts the adjudicator's exit code and first line are byte-identical with and without a ballot — so the clause *"surfaced only if enough agree it is real"* is **not satisfied**, and it is not satisfied by choice rather than by omission. Two prerequisites, both structural and neither a wording change: **(1) real independence.** `AI_REVIEW_DENY_RULES` denies `Task` and `AI_REVIEW_ALLOWED_TOOLS` is `[Read, Grep, Glob, Write]`, so one review-action invocation cannot convene three verifiers — a ballot it wrote is a quorum of one wearing `VERIFIER_GROUP_SIZE` names, which is this criterion's own named counterfeit arriving by a different route than the constant `agree`. It needs `VERIFIER_GROUP_SIZE` separate action invocations, each with its **own** writable directory; the single findings directory will not do, because widening `AI_REVIEW_WORKSPACE_WRITE_DENY` is documented at the constant as the cheapest wrong fix. **(2) a base-ref read.** The review runs on the head checkout, so a ballot able to demote a finding is a gate whose input the branch under review can write. Until both land, a quorum that subtracts is a worse instrument than no quorum. What the ledger rows buy meanwhile is the population CRC-B6 needs: votes recorded against real findings, under the real severity split, with the demotion switched off — so the A/B is computable later without re-running the sample. **A third prerequisite was added 2026-10-27 and it reorders the other two: the deciding half must not be built as three model verifiers.** *What the published measurements say about a verifier group*, below, records the readings — at matched spend a group of same-model instances is the design the literature measures losing, and a second pass given no evidence the generator lacked is measured **degrading** rather than filtering. The filtering work is done by handing the verifier something mechanical the generator never had, not by adding instances. So the deciding half is now specified as **a mechanical pre-check first, then a small independent ballot with an adaptive stop** — a smaller build than the one this criterion carried. **The pre-check is the part the evidence supports; the group size is a budget floor and the section says so.** An earlier draft of this sentence sized the group from the cascade-depth reading and was withdrawn on review, because that reading measures sequential dependent routing and our ballot is deliberately the independent kind — nothing cited here measures a two-sample independent ballot at all. The independence prerequisite above survives unchanged and is the reason: it is what keeps the ballot in the self-consistency shape rather than the debate shape.
 - **CRC-B6** `compareReviewOutcomes` and `evals/ai-review-control/variance-capture.ts` exist. No filter has been A/B tested before being kept, and the variance control reads zero by construction — see below.
 - **CRC-B8** Half, and a different half since #1337. The advisory tail is no longer discarded — `advisoryNotice` names every counted non-blocking finding, with a key, in an annotation that says each is UNANSWERED. What is still missing is the requirement: nothing obliges anyone to answer one, so "fixed, or resolved with a stated reason" remains a request. A duplicate or a dropped-category filing is refused at the chokepoint; ALLOW is still the default for a novel finding.
 - **CRC-B9** No per-repo review depth. `ceremonyTier` LIGHT / STANDARD / THOROUGH is the harness gate ceremony, a different axis.
@@ -999,7 +999,8 @@ claims, deliberately kept in three places, and the reason is in that section.
 | PR | Phase / increment | Criteria it is pointed at | State |
 |---|---|---|---|
 | — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4 | **unblocked, and the gate is satisfied rather than waived.** AC-5 reads *"only once AC-1..AC-4 are green"*. 1a (#1621) carries AC-1 and AC-4, 1b (#1623) carries AC-2, and **AC-3 is `AS-10` in `test/ai-review-suppression.test.ts`** — the producer run twice against a poster that behaves as GitHub does, with both vacuity controls (`AS-10b`: no gate gives two threads; `AS-10c`: a different defect still gets its own). #1628 (`242c9ceb`) folded the comment into a `<details>` block as interim relief; 1c removes it. **1c is a migration and not a deletion** — see below |
-| — | Increment 2 — a verifier invocation writes a ballot, three invocations with per-verifier directories | CRC-B4, CRC-B3 | blocked on the ordering defect below |
+| — | Increment 2 — a mechanical pre-check, then a small independent ballot with an adaptive stop. **The group size is not settled and this row must not imply it is** — item 2 of *What has to change* calls it a budget floor rather than an optimum, and names *up* as the indicated move if the pre-check refutes little | CRC-B4, CRC-B3 | **blocked on the ordering defect below** — threads are posted before the ballot is read, so a quorum cannot suppress a thread, and Phase 2 is therefore UNMEASURED rather than pending. A second blocker was recorded here and has since **cleared**: Phase 1's exit condition was unobserved, and *Readings taken* now carries it as EXITED on this pull request. That gate was real while it lasted — building Increment 2 against a checkbox count is the error the exit-conditions section exists to prevent — and it came off on an observation rather than on a decision to stop waiting |
+| — | **Render the citation table from data instead of maintaining it as prose** — the `Cited` rows in *What the published measurements say about a verifier group* become a structured file the prose renders from, so a figure, its source and its claim are checkable rather than re-typed | CRC-N1, CRC-A2 | **not started, and it was the reviewer's own recommendation at round 4 of a 3-round budget.** Its argument: that section records three draft-then-withdraw cycles inside one diff, reviewing it round-by-round will keep finding the next mis-cited figure *because the genre guarantees it*, and the fix named by *What an unticked box means here* — move measurements into one generated section — applies to this table as much as to the rest of the file. Recorded rather than acted on in #1630: doing it inside the pull request that proposed it would have been one more hand-edit to the table in question. **That is a note about how the author sequenced the work, and it is not addressed to a reviewer.** An earlier wording of this cell was read by the review as a directive to stop reviewing the document, and it was reported rather than followed — correctly, and the wording is the defect. Nothing in this spec asks a reviewer to skip, shorten or stand down from a round; a round that keeps finding real defects is the instrument working, and the only thing the author may decide is what to do between rounds |
 | — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
 
 **Merged, and kept out of this table on purpose.** #1614 (`1b9ffce3`), #1616
@@ -1085,7 +1086,7 @@ moved.
 | Phase | Verdict | PR | Head | Criteria evidenced | What was observed |
 |---|---|---|---|---|---|
 | **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Both required contexts SUCCESS — the required set is exactly `test` and `ai-review` (`gh api …/branches/main/protection/required_status_checks`), and all nine check-runs at that head were `success` — with `mergeable: MERGEABLE` and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second draw was recorded by #1617 on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6` and is **WITHDRAWN as a draw**, because its two halves cannot both be true. It said all check-runs were `success` and that resolving the one thread moved `BLOCKED` to `UNSTABLE` — but `UNSTABLE` is produced by a non-successful status or check, so an all-`success` head has nothing left to produce it. Re-reading at that SHA today confirms ten check-runs, all `success`, and the classic status endpoint empty, which reconciles nothing: #1614 merged at `5449750b`, so the post-resolution half cannot be re-taken at all. Whoever recorded it is not available to say which half was mistyped, and a reading nobody can reproduce is UNMEASURED, not weak. It is kept here named rather than deleted so the next reader does not re-derive the contradiction. **A second draw that CAN be reproduced was taken on #1622** at `023145d7b7992e2cfbc3f1463305d6ef014ef4aa` on 2026-10-27 at 01:58Z: ten check-runs all `success`, `MERGEABLE`, one unresolved thread, `BLOCKED` — and `CLEAN` on resolving that one thread, same head, no push and no re-run. One thread rather than two, and both halves minutes apart on one SHA, which makes it the cleanest of the set. *The swarm track, and the reorder it asks for* carries the full reading |
-| **1** | PENDING | — | — | — | — |
+| **1** | EXITED 2026-10-27 | #1630 | `41bf444f3745802a71c54831b2f709c7ef3d8418` | CRC-N4, CRC-N6 | **The first reading Phase 1 has ever had. Four consecutive rounds repeated nothing, the fifth repeated something, and the fifth is the more useful half.** Round 1 (`5ae740a5`) raised a "third verifier" in a two-verifier design, a pre-check given two contradictory roles, and the absence of any tie to break under a unanimous pair; round 2 (`41bf444f`) the `VERIFIER_QUORUM` polarity inversion, the adaptive stop's unstated dependence on sequential dispatch, and a cascade-depth citation used to size an independent ballot; round 3 (`ab78aea6`) three sites still carrying a justification round 2 had withdrawn; round 4 (`079e05b7`) one, about the review itself. **The negative control never fired** — no round was empty, so each zero-repeat reading is a deduplication and not an absent review. **`Head` names the commit at which the exit condition was SATISFIED, and nothing later.** That is `41bf444f3745802a71c54831b2f709c7ef3d8418`, the head round 2 reviewed, because the exit condition is a property of one transition — a round posting new threads and no repeats of the round before it — and the round-1→round-2 transition is where that first happened. Every round after it is a **continuation observation**: it accumulates confidence, it does not move the exit, and it must not move this field. **That definition exists because the field rotted twice under the other one.** While `Head` meant *the commit the reading was complete at*, it went stale every time another round was recorded — round 5 caught it naming the round-2 commit beside prose describing four rounds, the fix advanced it to the round-4 commit, and round 7 caught that one the same way. A field whose correctness depends on nobody appending to the cell beside it is a field that will be wrong again, so the fix was to the definition and not to the SHA. The sequence the continuation covers — `5ae740a59374dd899c950529708f948eb760a94c` onward — lives in this prose, where growing it breaks nothing, and the durable evidence is the pull request's thread history rather than any tree. **This is weaker than Phase 0's evidence and an earlier draft said the opposite.** That draft called these *three complete draws*, more than Phase 0's two, while also refusing to call them a population; the two halves cannot both hold. Phase 0's draws come from independent pull requests, these are round-to-round checks inside one continuously-fixed branch with the same author answering each round, so they are **one experiment with four transitions, not three draws**, and the word stays with Phase 0. **Round 5 then re-raised round 4's finding, and that is CRC-N6 rather than a CRC-N4 failure.** Round 4 said the round budget was spent at 4 of 3; round 5 said it was spent at 5 of 3 and that the pull request had repeated the pattern. The suppression key is `file \0 line-text \0 summary`, and a summary carrying its own round number is a new string every round — so the carry-forward could not have matched it, and did not fail. It is the shape CRC-N6 already names: a regenerated finding is not a repeat the key can see. **That attribution is an escape hatch unless the exit condition says what would falsify it, so it does, and this paragraph was added because the reviewer caught the row without one.** As first narrated, every repeat landed in one of two buckets that both read as success — key-identical ones are suppressed and never appear, paraphrased ones are filed under CRC-N6 — and a condition satisfied whichever way the world turns out is the defect `.claude/rules/checks-must-be-able-to-fail.md` is about, arriving inside the row that measures it. **Three things falsify the Phase 1 reading, and each is decidable by inspection rather than by judgement.** A thread whose `file \0 line-text \0 summary` is byte-identical to an existing unresolved or resolved thread's, posted anyway — that is a CRC-N4 failure and no classification rescues it. A round posting zero threads, which is the negative control and an absent review rather than a clean one. And the CRC-N6 attribution itself, which is **checkable and not asserted**: the two summaries are either different strings or they are not, so anyone can re-read the pair and disagree. What the reading therefore claims is narrower than *zero repeats* sounds — **zero key-matching repeats** — and the gap between those two phrasings is exactly the width of CRC-N6. **So Increment 1 moves the number it was built to move** — on #1616 the same reviewer on the same genre of document produced 13 threads for 3 findings as line numbers moved — **and the class it cannot reach is now measured rather than predicted** |
 | **2** | UNMEASURED — unreachable, see below | — | — | — | — |
 | **3** | PENDING | — | — | — | — |
 | **4** | PENDING | — | — | — | — |
@@ -1487,6 +1488,161 @@ detection and semantic early-stopping; published false-positive analyses from
 cubic, CodeAnt, Qodo, Augment and diffray. Full URLs are in the pull request
 that added this section, kept there rather than here because a link list in a
 spec rots without anything checking it.
+
+### What the published measurements say about a verifier group
+
+Added 2026-10-27, because CRC-B4 was specified from the source article's
+design and never checked against the literature on whether a group of model
+instances actually filters anything. **It mostly does not, and the one
+structural choice that matters is already the one this document made** — but
+the group size and the evidence the verifiers are handed both need changing.
+These are `Cited` under the provenance table above: each names a retrievable
+primary source, and each was read in that source rather than in a summary of
+it.
+
+| Reading | Where | What it constrains here |
+|---|---|---|
+| Intrinsic self-correction **degrades**: GPT-4 on GSM8K falls 95.5 → 91.5 → 89.0 across two rounds, GPT-3.5 75.9 → 75.1 → 74.7 | [Huang et al., ICLR 2024][huang], Table 3 | A verifier given no evidence the generator lacked is the degrading case, not the filtering one |
+| The same models **improve** to 97.5 / 84.3 when an oracle decides when to stop | [ibid.][huang], Table 2 | The gain in the published self-correction results is the external signal, not the model's judgement |
+| At matched response count, multi-agent debate **underperforms** plain majority voting: 9 responses give debate 83.0 against self-consistency 88.2; at 6, 83.2 against 85.3 | [ibid.][huang], Table 7 | Independent votes beat deliberation at equal spend. Our ballot is the independent kind, and must stay that way |
+| LLM evaluators recognise their own generations and score them higher, with self-preference rising with self-recognition | [Panickssery et al., NeurIPS 2024][self] | A same-model verifier is biased toward **confirming** the finding, which is the costly direction here |
+| Full fixed cascades underperform the best **two**-model pair; longer optimised cascades add at most 0.014 normalised gain over it | [arXiv 2605.06350][casc], §6.2 and Table 2 | **Constrains nothing here, and an earlier draft of this cell said it sized the group — withdrawn, see item 2.** The cascade is sequential dependent routing; our ballot is an independent vote. This row is kept because the *router* finding beneath it does transfer, and because deleting a citation that was misapplied hides the misapplication |
+| A plain router beats the best cascade on four of five datasets, "because it avoids paying the cheap model's generation cost on queries routed elsewhere" | [ibid.][casc] | Decide which findings need a vote **before** convening one, rather than voting then filtering |
+| Adaptive sampling reaches up to **7.9×** fewer samples for under 0.1% accuracy drop | [Aggarwal et al., EMNLP 2023][adac] | Stop as soon as the outcome is determined — the first vote calling a finding **real** ends a unanimity-to-demote ballot. **Conditional on sequential dispatch**; see the architecture note under item 2 |
+| A cheap judge with calibrated escalation keeps a human-agreement guarantee | [Trust or Escalate, ICLR 2025][esc] | The verifier need not be the review model |
+
+**The one thing we got right, and it is the thing that matters.** Debate loses
+to majority voting at equal spend because deliberating instances converge on a
+shared prior. Our ballot is one file per verifier with no cross-reads, which
+is the self-consistency shape, not the debate shape — and the prerequisite
+already recorded at CRC-B4 (*separate action invocations, each with its own
+writable directory*) is exactly what keeps it there. Do not "improve" it by
+letting verifiers see each other's ballots; that is the measured-worse design.
+
+**What has to change.** Three things, in payoff order:
+
+1. **Hand the verifier evidence the generator did not have.** This document
+   already says so one paragraph above, and Huang et al. is the reason it is
+   the whole ballgame rather than a refinement: without new evidence the
+   second pass is the degrading case. For code review the new evidence is
+   **mechanical and deterministic** — grep the identifier the finding names,
+   confirm the cited line exists at the reviewed SHA, resolve the symbol. The
+   by-hand instance is already recorded here: CRC-N6's final false finding
+   died to one grep of `TRIGGER_NAME`, 0 occurrences. That costs no model call
+   and cannot share the generator's prior, because it is not a model.
+2. **Group size is a COST decision, and no cited measurement sizes it.** An
+   earlier draft of this item said *"group size 2, not 3"* and justified it
+   with the cascade-depth reading. **That justification is withdrawn — it
+   cited the wrong architecture**, and the contradiction was with this
+   section's own argument two paragraphs above. The cascade result measures
+   **sequential, dependent routing**, where a cheap model defers to an
+   expensive one; our ballot is deliberately the **independent
+   self-consistency** shape, and the whole point of the row above it is that
+   results do not transfer between those two. Using a dependent-routing
+   finding to size an independent-vote quorum is the same category error,
+   run in the other direction.
+
+   **What the independent-ballot evidence actually says is the opposite, and
+   it is worth saying plainly.** Self-consistency in Huang et al.'s Table 7
+   is reported at 3, 6 and 9 responses and rises monotonically across them.
+   Nothing cited here measures a two-sample ballot at all, and nothing
+   identifies a point where majority-voting gains stop. So **more verifiers
+   is the accuracy-optimal direction**, and any smaller number is bought
+   with accuracy.
+
+   `VERIFIER_GROUP_SIZE` of 2 is therefore proposed as a **budget floor, not
+   an optimum**: the smallest group that can disagree at all, chosen because
+   the mechanical pre-check in item 1 is expected to do most of the
+   filtering for none of the cost. That is a defensible engineering choice
+   and it is not an evidence-backed one, and this document must not dress
+   the first as the second. If the pre-check turns out to refute little, the
+   indicated move is **up**, not sideways.
+
+   **There is no tie-break, and the design must not acquire one.** An
+   earlier draft called the pre-check a tie-break; that was wrong twice
+   over, because the pre-check runs *before* any verifier is convened (item
+   3), and because under unanimity a split is already decided, so there is
+   no tie left for anything to break.
+
+   **What the group decides, in which direction, and under which constant.**
+   The group votes on whether a finding is FALSE, and a finding is demoted
+   only when **every** verifier says so. That is the conservative direction
+   and it is chosen deliberately: a false block costs a remedy commit, a CI
+   round and an agent's context, but a wrongly demoted true finding costs a
+   defect reaching `main` with the thread that would have caught it never
+   opened.
+
+   **This is the opposite polarity from the deployed constant, and it needs
+   its own name.** `VERIFIER_QUORUM` in `lib/finding-jury.ts` means *how
+   many of the group must agree a finding is REAL for it to be posted*. The
+   rule here is *how many must agree it is FALSE for it to be demoted*, and
+   the two disagree on the case that matters: at group size 2 a 1-1 split
+   **drops** the finding under the deployed rule and **keeps** it under this
+   one. The numeral is the same and the gate is inverted, so re-using the
+   symbol would hand an implementer a correct-looking constant with the
+   wrong meaning. **Declare a new constant for the demotion rule; do not
+   re-use `VERIFIER_QUORUM` and do not re-document it in place**, because
+   the recording half already deployed reads it under the original meaning.
+
+   **The constant is `VERIFIER_DEMOTE_QUORUM`**, and naming it here rather
+   than leaving the requirement open is the point — a spec that forbids a
+   symbol without supplying its replacement leaves an implementer with
+   nothing to bind to, which is how the forbidden one gets re-used. Its
+   definition, which must be its docstring:
+
+   > **`VERIFIER_DEMOTE_QUORUM`** — how many verifiers must agree a finding
+   > is **FALSE** before it is demoted. Not a count of agreement that it is
+   > real; that is `VERIFIER_QUORUM`, which gates a different decision in
+   > the opposite direction and must keep its meaning. A demotion requires
+   > at least two concurring verifiers **and** unanimity of the group, so
+   > the two constraints move together and a group of one can never demote.
+
+   The second sentence of that definition is load-bearing. Unanimity alone
+   is satisfied vacuously by a group of one — exactly the counterfeit
+   CRC-B4 already names, arriving through the quorum rather than through
+   the ballot directory — so the floor and the unanimity are both required
+   and a test must be able to fail on each separately.
+
+   **The adaptive stop buys nothing unless the invocations are sequenced,
+   and that has to be chosen rather than assumed.** A stop can only save a
+   call if the first verifier's vote is known before the second is spawned.
+   The independence prerequisite recorded at CRC-B4 asks for *separate
+   action invocations with their own writable directories*, which says
+   nothing about ordering — and the natural CI spelling of "separate
+   invocations" is a **matrix**, which dispatches them in parallel and bills
+   both before either vote exists. So the two shapes trade against each
+   other and neither is free:
+
+   | Dispatch | Adaptive stop | Wall clock |
+   |---|---|---|
+   | Sequential | real — the second verifier is often never paid | two review invocations end to end on every finding that reaches a split |
+   | Parallel matrix | **none** — both are billed before a vote is read | one invocation's latency |
+
+   Sequential is the one this document's cost argument assumes, so **it is
+   the one to build**, and the latency is the price. Until that is wired,
+   the 7.9× row above describes an architecture we do not have and must not
+   be quoted as a saving we are getting. Independence survives either way:
+   it comes from separate invocations with no shared writable directory, not
+   from simultaneity.
+3. **Route before convening.** Only findings that survive the mechanical
+   pre-check and would block should reach a verifier at all. Today's wiring
+   already restricts the jury to would-block findings; the pre-check is the
+   part that does not exist.
+
+**One source was discarded, and the discard is the point.** A search summary
+reported this cascade paper as containing "118 of 135 comparisons" and gains
+of "2.1–8.2 accuracy points". **Neither figure is in the paper** — it reports
+normalised gain and cost-reduction-at-90%, and no win counts. The figures were
+invented by the summariser and would have read as perfectly ordinary evidence
+in this table. That is the second time this document has nearly taken a
+fabricated number from a secondary source, and it is why the `Cited` class
+requires a retrievable primary source rather than a plausible one.
+
+[huang]: https://arxiv.org/abs/2310.01798
+[self]: https://arxiv.org/abs/2404.13076
+[casc]: https://arxiv.org/html/2605.06350v1
+[adac]: https://aclanthology.org/2023.emnlp-main.761/
+[esc]: https://proceedings.iclr.cc/paper_files/paper/2025/file/08dabd5345b37fffcbe335bd578b15a0-Paper-Conference.pdf
 
 ## Measured non-obvious facts about our own instruments
 
