@@ -36,6 +36,8 @@ THE LAST ROUND IS THE ONE THAT GENERALISES. Re-admitting 'a' and 'an' to the qua
 
 HOUSEKEEPING THAT WAS NOT HOUSEKEEPING: this file being stale turned test-shard 1 red on every pull request opened after #1625 merged, which is the guard doing exactly its job - it was written because eight commits and four merges once went by with the state file reporting success.
 
+WHAT IS LANDED AND WHAT IS NOT, because this file is the first thing the next session reads. Every number above except #1612 is a PULL REQUEST, not an issue - #1612 is the only issue this session opened and closed, which is why issues_created and issues_closed still read [1612] beside prose naming a dozen other numbers. MERGED: #1613, #1614, #1615, #1616, #1617, #1618, #1620, #1622, #1625. STILL OPEN: #1619, #1621, #1623 (all three blocked on a label only Jason applies) and #1624. DOC-DIST IS NOT IN THE TREE. It lives on #1624 and nothing in lib/, test/ or specs/ on main mentions it, so do not build on it or skip re-implementing it on the strength of the paragraph above - read #1624 first. Both of those corrections came from the review of #1626, which is this session's own mechanism catching this file describing in-flight work as landed state.
+
 Suite: No full local suite: other sessions were running suites and .claude/rules/parallel-sessions.md forbids a concurrent full run. Targeted instead — every test/ai-review-*.test.ts (1354 pass, 0 fail), the census set scripts/census-routing.ts derived for the diff (1682 pass, 0 fail), and typecheck at 0 errors matching baseline. The pre-push conformity gate ran 1419 tests on each push and passed.
 Issues opened: 1612
 Issues closed: 1612
