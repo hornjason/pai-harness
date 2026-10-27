@@ -129,8 +129,9 @@ events.** Why a `--name-only` router cannot tell them apart:
 |---|---|
 | added or renamed a file | `test/scaffold-conformity.test.ts` `test/package-closure.test.ts` |
 | added a doc, or edited one containing file:line citations | `test/line-citation-ratchet.test.ts` `test/agents-md-refs.test.ts` |
+| edited any markdown outside test/fixtures/ | `test/prose-self-distance.test.ts` |
 | added or edited CLAUDE.md, AGENTS.md or a .claude/rules/ doc | `test/rule-provenance.test.ts` `test/instruction-surface-budget.test.ts` `test/harness-fixed-point.test.ts` |
-| added a test file | `test/sc-id-namespace.test.ts` `test/scratch-paths-unique.test.ts` `test/scratch-cleanup.test.ts` `test/consumer-no-rebuild-delegation.test.ts` `test/ai-review-runner-shell-parity.test.ts` `test/unit/ambiguous-anchor.test.ts` |
+| added a test file | `test/sc-id-namespace.test.ts` `test/sc-fixture-namespace.test.ts` `test/scratch-paths-unique.test.ts` `test/scratch-cleanup.test.ts` `test/consumer-no-rebuild-delegation.test.ts` `test/ai-review-runner-shell-parity.test.ts` `test/unit/ambiguous-anchor.test.ts` |
 | touched specs/ | `test/agents-md-spec-listing.test.ts` `test/spec-requirements.test.ts` |
 | added a specs/ file | `test/audit-specs.test.ts` `test/scanner.test.ts` |
 | ticked or unticked an SC (ran sync-sc-status) | `test/sc-binding-split.test.ts` `test/ticked-sc-cover.test.ts` `test/behavioral-sc-ratchet.test.ts` `test/ticked-sc-absent-symbol.test.ts` |

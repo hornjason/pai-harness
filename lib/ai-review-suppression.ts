@@ -20,14 +20,18 @@
  * ## Why the prior state arrives as a file and not as a fetch
  *
  * Unchanged, and for a sharper reason than before. The generated job runs
- * `ai-review-carry` → the reviewer → `ai-review-run` (this gate) →
- * `ai-review-threads`, **which posts this round's threads**. Fetching here
- * would be safe only because of that ordering, and a gate whose correctness
- * depends on where in a YAML file somebody put a step is a gate one
- * reordering silently breaks: it would read its own threads as prior,
- * suppress the entire payload and report CLEAN forever. The carry step runs
- * before the reviewer, so a list taken there cannot contain this round's
- * work whatever the later order becomes.
+ * `ai-review-carry` → the reviewer → `ai-review-threads` (the poster, **which
+ * posts this round's threads**) → `ai-review-run` (this gate). So a fetch
+ * here would not be safe at all: by the time this gate runs, the poster has
+ * already opened this round's threads, and a live fetch would read them as
+ * prior, suppress the entire payload and report CLEAN forever.
+ *
+ * The file is what makes the gate correct, and it does not depend on where in
+ * a YAML file somebody put a step. The carry step runs before the reviewer,
+ * so the list it writes cannot contain this round's work whatever the later
+ * order becomes. `test/ai-review-suppression.test.ts` (AS-4) asserts the
+ * ordering that matters — `ai-review-carry` precedes both the poster and this
+ * gate — rather than the one this comment used to assert.
  *
  * ## Every refusal suppresses NOTHING
  *
@@ -143,14 +147,20 @@ export function readSnapshot(snapshot: string): { round: number | null; body: st
  * whole increment exists to prevent, aimed at the people who are doing the
  * work.
  *
- * ## Self-suppression is prevented by step order, not by a guard
+ * ## Self-suppression is prevented by WHERE THE LIST IS FETCHED, not by a guard
  *
  * The ledger reader needed a provenance header because the ledger is written
- * *during* the job, before the adjudicator reads it. Threads are posted by
- * `ai-review-threads`, which runs AFTER the adjudicator — so no thread this
- * round creates can be in this round's list, and there is nothing for a
- * header to compare against. That property lives in the workflow's step
- * order and is asserted there; see `test/ai-review-suppression.test.ts`.
+ * *during* the job, before the adjudicator reads it. Threads are no better on
+ * that count — `ai-review-threads` posts this round's threads BEFORE
+ * `ai-review-run` adjudicates, so a list fetched at adjudication time would
+ * contain them.
+ *
+ * What rules self-suppression out is that the list is not fetched here. It is
+ * fetched by `ai-review-carry`, which runs before the reviewer and therefore
+ * before anything this round could have posted, and handed to this gate as a
+ * file. That property lives in the workflow's step order and is asserted
+ * there; see `test/ai-review-suppression.test.ts` (AS-4), which pins
+ * `ai-review-carry` ahead of both the poster and the adjudicator.
  *
  * Exported and pure so the battery can drive every refusal without a
  * filesystem, and so there is one place to mutate.
