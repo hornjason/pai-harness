@@ -525,18 +525,37 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
     }
   });
 
-  test("the stated counts are the measured ones", () => {
-    // The prose says the split in words. A reader acts on that sentence and
-    // not on the sections below it, so it is the thing most worth holding to
-    // the tree — and the cheapest way for this whole audit to go quietly
-    // wrong is for someone to move a criterion and leave the summary.
-    const stated = /\*\*(\d+) bound\*\*/.exec(body!);
-    expect(stated, "the summary sentence no longer states a bound count").not.toBeNull();
-    const ticked = (body!.match(/^- \[[xX]\] CRC-/gm) ?? []).length;
+  test("the audit summary is a dated reading, not a live hand-tally", () => {
+    // This REPLACES an agreement between the summary sentence and the ticked
+    // count, and the replacement is the point.
+    //
+    // That comparison is *why* the sentence drifted. It held a present-tense
+    // claim about a document that moves underneath it, so every criterion
+    // that changed bucket silently falsified it, and the repair was always
+    // another hand-edit to one sentence. Three consecutive review rounds on
+    // #1627 each found a DIFFERENT miscount in it — the total, the
+    // unobservable count, and the deviations row — which is the signature of
+    // a class being patched one instance at a time rather than closed.
+    //
+    // The general property that replaces it: this spec may state bucket
+    // counts only as a reading taken on a named day. A dated reading cannot
+    // drift, because it describes that day rather than this tree. Live
+    // counts come from `bun bin/rungate.ts audit-specs`, which derives them
+    // instead of restating them.
+    const tally = /\*\*(\d+)\s+(bound|not done|contested)\*\*/i.exec(body!);
     expect(
-      Number(stated![1]),
-      `the summary says ${stated![1]} bound and ${ticked} boxes are ticked`,
-    ).toBe(ticked);
+      tally?.[0] ?? null,
+      "a bolded present-tense bucket count is back in the audit prose. Nothing " +
+        "derives it, so it will drift the next time a criterion changes bucket — " +
+        "it already has, four times. State the figures as a reading taken on a " +
+        "named day, or get them from `bun bin/rungate.ts audit-specs`.",
+    ).toBeNull();
+
+    expect(
+      /\bAs read on \d{4}-\d{2}-\d{2}\b/.test(body!),
+      "the audit summary lost its dated-reading marker, so its figures now read " +
+        "as a claim about the current tree — which is the shape that drifted.",
+    ).toBe(true);
   });
 
   /**

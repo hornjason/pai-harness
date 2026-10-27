@@ -322,10 +322,22 @@ Audited criterion by criterion on 2026-10-23, when **0 of 56 were ticked and
 0 carried a claiming test**. A spec nothing is bound to cannot drift, because
 there is nothing for it to drift from; the number below is what replaces that.
 
-Of the 56: **10 bound**, **8 where a mechanism exists that nothing in this
-repository can observe**, **4 that cannot be meaningful in this deployment**,
-**2 blocked on an owner decision**, **1 contested**, **2 declared
-deviations**, **29 not done**.
+**As read on 2026-10-23, and deliberately left as that day's reading:** of
+the 56 declared then — 10 bound, 8 where a mechanism exists that nothing in
+this repository can observe, 4 that cannot be meaningful in this deployment,
+2 blocked on an owner decision, 1 contested, 2 declared deviations, 29 not
+done.
+
+**Do not re-tally this sentence by hand.** It has now drifted four times,
+and three consecutive review rounds each found a fresh miscount in it — the
+total, the unobservable count, and the deviations row — because a
+*present-tense* summary of a document that changes underneath it is a claim
+nothing derives. Each repair was another hand-authored assertion about one
+sentence, which is the defect class this spec's own CRC-N3 section is about,
+committed here by its author. The fix is the one that closes the class
+rather than the instance: the figures above are a **dated reading**, which
+cannot drift because it describes a day rather than the file, and the live
+counts come from `bun bin/rungate.ts audit-specs`, which derives them.
 
 Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4, and
 again after #1448 bound CRC-M11; re-counted on 2026-10-24 after #1587 bound
@@ -458,6 +470,14 @@ standing one: the unreadable state is a refusal, not a pass.
 | `class:<name>`, resolved with no count | **refuse** | the gate fires at all |
 | `instance-only`, resolved with no count | **allow** | it is not just demanding a number on every thread |
 | **untagged**, resolved with no count | **refuse** | the trigger cannot be declined |
+| **both tags**, or a `class:` with no name | **refuse, naming the tag** | an unreadable tag is not a third policy |
+
+"Exactly one" in step 1 is an instruction to the reviewer, and an
+instruction is not an enforcement — the fourth row is what makes the
+vocabulary closed. Both tags together and a malformed `class:` are
+**UNMEASURED**, which refuses: a gate that silently picks one of two
+conflicting tags, or reads an unparseable one as `instance-only`, hands the
+tagger a way to choose the outcome by writing something ambiguous.
 
 Without row two the check cannot distinguish a swept class from an unswept
 one — it just requires a number everywhere, which every author learns to
@@ -903,7 +923,7 @@ claims, deliberately kept in three places, and the reason is in that section.
 
 | PR | Phase / increment | Criteria it is pointed at | State |
 |---|---|---|---|
-| — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4, CRC-B5 | **unblocked, and the gate is satisfied rather than waived.** AC-5 reads *"only once AC-1..AC-4 are green"*. 1a (#1621) carries AC-1 and AC-4, 1b (#1623) carries AC-2, and **AC-3 is `AS-10` in `test/ai-review-suppression.test.ts`** — the producer run twice against a poster that behaves as GitHub does, with both vacuity controls (`AS-10b`: no gate gives two threads; `AS-10c`: a different defect still gets its own). #1628 (`242c9ceb`) folded the comment into a `<details>` block as interim relief; 1c removes it. **1c is a migration and not a deletion** — see below |
+| — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4 | **unblocked, and the gate is satisfied rather than waived.** AC-5 reads *"only once AC-1..AC-4 are green"*. 1a (#1621) carries AC-1 and AC-4, 1b (#1623) carries AC-2, and **AC-3 is `AS-10` in `test/ai-review-suppression.test.ts`** — the producer run twice against a poster that behaves as GitHub does, with both vacuity controls (`AS-10b`: no gate gives two threads; `AS-10c`: a different defect still gets its own). #1628 (`242c9ceb`) folded the comment into a `<details>` block as interim relief; 1c removes it. **1c is a migration and not a deletion** — see below |
 | — | Increment 2 — a verifier invocation writes a ballot, three invocations with per-verifier directories | CRC-B4, CRC-B3 | blocked on the ordering defect below |
 | — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
 
