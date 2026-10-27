@@ -11076,11 +11076,7 @@ export function buildReviewRunStep(
     // Composed from the prepare step's output rather than spelled again, so
     // there is one declaration of where that directory is.
     `    ${AI_REVIEW_CARRY_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_CARRY_BASENAME}`,
-    // #1586. The same directory and the same composition rule. This step is
-    // the WRITER of the snapshot; the adjudicator step below names the same
-    // path from the same prepare-step output, so the two agree by
-    // construction rather than through an output this step might not reach.
-    // AC-1. The same directory and the same composition rule again. This step
+    // AC-1. The same directory and the same composition rule. This step
     // is the WRITER of the thread list and the adjudicator below is its only
     // reader; both compose the path from this one output, so they agree by
     // construction rather than through a spelling either could edit alone.

@@ -1349,8 +1349,16 @@ describe("AC-5 (Increment 1c): the ledger snapshot is gone, writer and wiring to
     // proves there is a consumer, by reading the consumer.
     const script = readFileSync(join(ROOT, "scripts", "ai-review-findings.ts"), "utf8");
     const read = [...script.matchAll(/process\.env\[([A-Z_]+)\]/g)].map(m => m[1]);
-    expect(read.length, "the adjudicator reads no environment at all — the extractor is broken")
-      .toBeGreaterThan(0);
+    // Named in full rather than counted. `read.length > 0` was the earlier
+    // form, and it could not fail for any of the three things this title
+    // promises: it held for one variable, for five, and for a pair that
+    // shared no name with these — so the title was the only place the
+    // property was stated, which is the defect the deleted nine had.
+    // These are the CONSTANT IDENTIFIERS as they are spelled in the
+    // adjudicator's source, not the env names they resolve to; the
+    // extractor reads source text, so that is what it can be wrong about.
+    expect(read, "the adjudicator no longer reads exactly these two AI_REVIEW_* variables")
+      .toEqual(["AI_REVIEW_BALLOT_DIR_ENV", "AI_REVIEW_THREADS_PATH_VAR"]);
     expect(script, "the adjudicator imports the snapshot variable it never reads")
       .not.toContain(AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR);
   });
