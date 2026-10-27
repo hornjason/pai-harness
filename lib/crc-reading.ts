@@ -83,10 +83,18 @@ export const CRC_PREMISE_UNRESOLVABLE_ABSENCE = "UNRESOLVABLE_ABSENCE";
 /** The page did not reach both ends of the range that was asked for. */
 export const CRC_PREMISE_RANGE_NOT_COVERED = "RANGE_NOT_COVERED";
 
+/** An entry is outside `[lo, hi]`, so the cohort is not the one named. */
+export const CRC_PREMISE_OUT_OF_RANGE = "ENTRY_OUT_OF_RANGE";
+
+/** The same pull request appears twice, which doubles its weight. */
+export const CRC_PREMISE_DUPLICATE = "DUPLICATE_ENTRY";
+
 export interface PremiseViolation {
   readonly kind:
     | typeof CRC_PREMISE_UNRESOLVABLE_ABSENCE
-    | typeof CRC_PREMISE_RANGE_NOT_COVERED;
+    | typeof CRC_PREMISE_RANGE_NOT_COVERED
+    | typeof CRC_PREMISE_OUT_OF_RANGE
+    | typeof CRC_PREMISE_DUPLICATE;
   readonly detail: string;
 }
 
@@ -107,6 +115,27 @@ export interface PremiseViolation {
  * PREFIX of the range and whose figures are internally consistent and about
  * the wrong cohort. An empty list fails it too: there is no `min` to equal
  * `lo`, and a reading over nothing must not pass a range check.
+ *
+ * **The third and fourth exist because a min and a max do not describe a
+ * set.** #1633 round 3: `fetchEntries` filters to `[lo, hi]` and the
+ * `--from` loader does not, so a stale or hand-edited entries file reaches
+ * the scorer unfiltered and inflates the pull-request count, the round
+ * total and both columns' denominators — which `--record --write-spec` then
+ * lands in the store and in the spec.
+ *
+ * **They are not equally severe and the difference is worth stating.** An
+ * out-of-range number cannot evade the min/max check; it necessarily moves
+ * one of them. What it could do was arrive MISDIAGNOSED, because the only
+ * message said the page spans the wrong thing and told the reader to *raise
+ * the page size* — the opposite of the fix, for a file carrying too many
+ * rows. A **duplicate** is the one that was genuinely invisible: it changes
+ * neither min nor max, and it weights one pull request twice in the round
+ * total and in both columns.
+ *
+ * Both are checked HERE rather than fixed in the loader, deliberately.
+ * Filtering the file down to `[lo, hi]` would silently trim a stale input,
+ * which is the same class of problem one layer along: a file that disagrees
+ * with the range it was handed is a file nobody should score.
  */
 export function premiseViolations(
   entries: readonly CrcEntry[],
@@ -136,6 +165,29 @@ export function premiseViolations(
         `the fetched page spans ${min === null ? "nothing" : `#${min}–#${max}`} and the range ` +
         `asked for is #${lo}–#${hi}. An under-sized page returns a PREFIX of the range, whose ` +
         `figures are internally consistent and about a different cohort — raise the page size.`,
+    });
+  }
+
+  const outside = numbers.filter(n => n < lo || n > hi);
+  if (outside.length > 0) {
+    out.push({
+      kind: CRC_PREMISE_OUT_OF_RANGE,
+      detail:
+        `${outside.length} entr(y|ies) fall outside #${lo}–#${hi}: ` +
+        `${outside.map(n => `#${n}`).join(", ")}. A min and a max that line up do not make the ` +
+        `set the range it is labelled with, and every one of these inflates a denominator.`,
+    });
+  }
+
+  const seen = new Set<number>();
+  const duplicates = [...new Set(numbers.filter(n => (seen.has(n) ? true : (seen.add(n), false))))];
+  if (duplicates.length > 0) {
+    out.push({
+      kind: CRC_PREMISE_DUPLICATE,
+      detail:
+        `${duplicates.length} pull request(s) appear more than once: ` +
+        `${duplicates.map(n => `#${n}`).join(", ")}. A repeated entry is counted twice in the ` +
+        `round total and in both columns, which is a weighting nobody chose.`,
     });
   }
   return out;

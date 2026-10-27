@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,8 @@ import {
   ledgerRawRounds,
 } from "../lib/ai-review-rounds.ts";
 import {
+  CRC_PREMISE_DUPLICATE,
+  CRC_PREMISE_OUT_OF_RANGE,
   CRC_PREMISE_RANGE_NOT_COVERED,
   CRC_PREMISE_UNRESOLVABLE_ABSENCE,
   CRC_ROUND_MEASURED,
@@ -105,6 +107,53 @@ describe("premise guards — the fetch's own two refusals", () => {
     expect(v.map(x => x.kind)).toEqual([CRC_PREMISE_RANGE_NOT_COVERED]);
     expect(v[0].detail).toContain("#15–#20");
     expect(v[0].detail).toContain("#10–#20");
+  });
+
+  test("an out-of-range entry is NAMED, not just reported as a short page", () => {
+    /**
+     * #1633 round 3, and the half of it that was already caught.
+     *
+     * `fetchEntries` filters to `[lo, hi]` and `--from` does not, so a stale
+     * entries file reaches the scorer unfiltered. An out-of-range number
+     * cannot slip past the min/max check — it necessarily moves one of them
+     * — so this was never undetected. What it WAS is misdiagnosed: the only
+     * message said the page spans the wrong thing and told the reader to
+     * **raise the page size**, which is the opposite of the fix and would
+     * have sent someone fetching more rows to cure a file with too many.
+     *
+     * So both fire, and the second one names the offender.
+     */
+    const v = premiseViolations(
+      [entry({ number: 10 }), entry({ number: 99 }), entry({ number: 20 })],
+      10,
+      20,
+    );
+    expect(v.map(x => x.kind)).toEqual([
+      CRC_PREMISE_RANGE_NOT_COVERED,
+      CRC_PREMISE_OUT_OF_RANGE,
+    ]);
+    expect(v[1].detail).toContain("#99");
+    // The control: the same count of entries, all inside the range, passes —
+    // so this is about membership and not about having three of them.
+    expect(
+      premiseViolations(
+        [entry({ number: 10 }), entry({ number: 15 }), entry({ number: 20 })],
+        10,
+        20,
+      ),
+    ).toEqual([]);
+  });
+
+  test("a duplicated pull request is refused — it is weighted twice", () => {
+    const v = premiseViolations(
+      [entry({ number: 10 }), entry({ number: 15 }), entry({ number: 15 }), entry({ number: 20 })],
+      10,
+      20,
+    );
+    expect(v.map(x => x.kind)).toEqual([CRC_PREMISE_DUPLICATE]);
+    expect(v[0].detail).toContain("#15");
+    // Named once however many times it repeats, so the message stays readable.
+    expect(v[0].detail).toContain("1 pull request(s)");
   });
 
   test("an EMPTY page is refused rather than scored over nothing", () => {
@@ -480,6 +529,35 @@ describe("the script refuses, and the refusal can be removed", () => {
       // message, exit 0. Without this the case cannot tell a guard that held
       // from a run that never reached it.
       expect(mutant.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a stale --from file does not reach the store or the spec", () => {
+    // Round 3's path, end to end: min and max line up, an extra pull request
+    // sits between them, and `--record --write-spec` is asked for. Nothing
+    // may be written.
+    const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+    try {
+      const entries = join(dir, "entries.json");
+      const body = ledgerBody([measured(1)]);
+      writeFileSync(
+        entries,
+        JSON.stringify([
+          { number: 10, passed: true, truncated: false, body },
+          { number: 99, passed: true, truncated: false, body },
+          { number: 20, passed: true, truncated: false, body },
+        ]),
+      );
+      const real = run(
+        SCRIPT,
+        ["--lo", "10", "--hi", "20", "--from", entries, "--store", "store.json", "--record"],
+        dir,
+      );
+      expect(real.status).toBe(1);
+      expect(real.stderr).toContain(CRC_PREMISE_OUT_OF_RANGE);
+      expect(existsSync(join(dir, "store.json"))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
