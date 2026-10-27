@@ -443,11 +443,24 @@ jq -r '
   [ .[] | select(.passed) | ( [ (.body // "") | split("```json") | select(length>1) | .[1] | split("```")[0] | fromjson | .rounds[] | select(.unmeasured == null) ] | length ) ] as $m
   | ($m | map(select(. > 0))) as $s
   | "merged \($m|length) | zero-measured, UNMEASURED here \($m|map(select(.==0))|length) | scored \($s|length)",
-    "  mean to pass        \((($s|add)/($s|length)*100|round)/100)",
-    "  passed after one    \($s|map(select(.==1))|length) of \($s|length)",
-    "  five or more        \($s|map(select(.>=5))|length) of \($s|length)"
+    (if ($s|length) == 0 then "  UNMEASURED — no merged pull request in this range has a measured round"
+     else
+       "  mean to pass        \((($s|add)/($s|length)*100|round)/100)",
+       "  passed after one    \($s|map(select(.==1))|length) of \($s|length)",
+       "  five or more        \($s|map(select(.>=5))|length) of \($s|length)"
+     end)
 ' /tmp/crc-prs.json
 ````
+
+**The `if` is not defensive padding — without it the all-refused case is a
+jq crash, and the reviewer found it in this recipe.** `[] | add` is `null`,
+and `null / 0` aborts with *"null (null) and number (0) cannot be divided"*
+at exit 5. So a range in which the review system refused **every** merged
+pull request — the end state this document is tracking toward, not a
+hypothetical — would have reported a stack trace where it should report
+`UNMEASURED`. That is the *Silent Default Substitution* failure in its
+loudest form: the one reading that most needs to be legible is the one the
+instrument could not print.
 
 **Those are the second set of figures this paragraph has carried, and the
 first set were wrong in a way that flattered every column.** It published
