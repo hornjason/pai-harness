@@ -93,6 +93,64 @@
  * scale. `UNCAUGHT` in the test file holds all four and asserts this returns
  * nothing for them, so the limit is a row that goes red when somebody widens
  * the rule rather than a paragraph that quietly stops being true.
+ *
+ * ## The vocabulary is a closed list over an open language
+ *
+ * Three rounds of the #1624 review each found the same shape — a word missing
+ * from, or wrongly admitted to, a hand-enumerated list. Round 2: the teens
+ * were missing and `on` was wrongly in `DIRECTION`. Round 3: bare `a`/`an`
+ * were wrongly in `QUANTITY`. Each was fixed as a one-off, and round 6 made
+ * the right objection: **the class is what keeps producing findings, not the
+ * words**, so fixing a word at a time predicts another round rather than a
+ * last one.
+ *
+ * Measured, so the shape is a reading rather than a worry — four ways in, each
+ * one word away from a sentence this DOES refuse:
+ *
+ * | uncaught | what stopped it |
+ * |---|---|
+ * | "couple lines above this section" | not in `QUANTITY` |
+ * | "two lines removed from this section" | not in `DIRECTION` |
+ * | "two short lines above this section" | `QUANTITY`→`UNIT` must be adjacent |
+ * | "two lines further above this section" | `UNIT`→`DIRECTION` must be adjacent |
+ *
+ * The reviewer offered the alternative of widening `GAP` so the three parts
+ * need not be contiguous, "closing a shape rather than a word". That is the
+ * right diagnosis and the wrong moment: it is a third widening of the same
+ * window, and this pull request's own history is that the first reintroduced
+ * the seventeen-false-positive class (round 3) and the second cost a round to
+ * undo (round 4). A widening whose false-positive cost nobody has measured is
+ * how both of those shipped.
+ *
+ * So the other half of the reviewer's own suggestion is taken instead: this is
+ * a **standing, named limitation**, with `UNCAUGHT_VOCABULARY` asserting each
+ * row above beside the control that differs from it by one word. Every row is
+ * therefore falsifiable in both directions — the uncaught sentence must stay
+ * uncaught, and the control must stay caught, or the limit is misattributed
+ * and the table above is wrong rather than merely incomplete.
+ *
+ * ## `a` and `an`: no setting of that switch is right
+ *
+ * Round 3 removed the articles from `QUANTITY` because
+ * *"Add a line above this heading explaining the exception"* is an instruction
+ * and was being refused. Round 6 pointed out the cost was never written down:
+ * *"A note sits a line above this heading, restating the same count"* is a
+ * genuine self-referential claim, with a real deictic, and it is now missed.
+ *
+ * Both are right, and the measurement says why the gap cannot be closed by
+ * choosing better. Re-admitting `a|an` to `QUANTITY` moves the violation count
+ * across all **205** tracked non-fixture markdown files by **zero**. So round
+ * 3's removal was decided by a sentence somebody constructed in a review
+ * comment and not by anything in this repository — and the two sentences are
+ * the same bytes to this detector, `a line above this heading` in both. What
+ * separates them is grammatical mood, which is the reading-comprehension
+ * problem this module refuses to pretend to solve.
+ *
+ * The articles stay out, because a false positive on an instruction is a
+ * sentence somebody must rewrite to satisfy a checker, and a false negative is
+ * a claim that goes unrefused — the direction this check is allowed to be
+ * wrong in. That is a choice, not an oversight, and `UNCAUGHT_VOCABULARY`
+ * holds the sentence it gives up.
  */
 
 /** A refused claim, with enough to find it without opening the file. */

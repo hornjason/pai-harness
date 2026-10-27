@@ -193,6 +193,60 @@ const UNCAUGHT_PERIOD = [
   "the note sits three lines above\nai-review.yml is what this section edits",
 ];
 
+/**
+ * A THIRD declared limit: the vocabulary is a closed list over an open
+ * language, and the three parts of the phrase must be adjacent.
+ *
+ * Round 6 of the #1624 review made the objection that rounds 2, 3 and its own
+ * re-check had each found the same shape — a word missing from or wrongly
+ * admitted to a hand-enumerated list — so patching a word predicts another
+ * round. It is right, and this is the half of its own suggestion that does not
+ * require widening the match window a third time in a pull request where the
+ * first two widenings each shipped a defect.
+ *
+ * **Every row is a PAIR.** `text` must stay uncaught and `control` must stay
+ * caught, and they differ by one word. Without the control a row is satisfied
+ * by a rule that refuses nothing, and `why` would be a guess — which is the
+ * mistake round 5 nearly made, attributing a decimal to the block markers when
+ * the period was what stopped it.
+ *
+ * The last row is the cost of round 3's own fix, which the module did not
+ * previously admit to: removing `a`/`an` spares the instruction reading and
+ * gives up the claim reading, and the two are the same bytes here.
+ */
+const UNCAUGHT_VOCABULARY: ReadonlyArray<{
+  readonly why: string;
+  readonly text: string;
+  readonly control: string;
+}> = [
+  {
+    why: "`couple` is not in QUANTITY",
+    text: "couple lines above this section",
+    control: "two lines above this section",
+  },
+  {
+    why: "`removed` is not in DIRECTION",
+    text: "two lines removed from this section",
+    control: "two lines above this section",
+  },
+  {
+    why: "QUANTITY and UNIT must be adjacent — an adjective separates them",
+    text: "two short lines above this section",
+    control: "two lines above this section",
+  },
+  {
+    why: "UNIT and DIRECTION must be adjacent — an adverb separates them",
+    text: "two lines further above this section",
+    control: "two lines above this section",
+  },
+  {
+    why: "the indefinite article was removed from QUANTITY at round 3, and this " +
+      "true claim went with the false positive it was removed for",
+    text: "A note sits a line above this heading, restating the same count.",
+    control: "A note sits one line above this heading, restating the same count.",
+  },
+];
+
 /** Every tracked markdown path, fixtures included — the population before the cut. */
 function trackedMarkdown(): string[] {
   const r = spawnSync(["git", "ls-files", "-z", "*.md"], { cwd: ROOT, stdout: "pipe" });
@@ -268,6 +322,59 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
       ]),
       "the period is not what stopped it, so this limit is misattributed",
     ).toHaveLength(1);
+  });
+
+  test("DOC-DIST-3g: the declared vocabulary limit, each row beside its control", () => {
+    for (const { why, text, control } of UNCAUGHT_VOCABULARY) {
+      expect(
+        proseSelfDistanceViolations([{ path: "f.md", text }]),
+        `now caught — good. Rewrite the row in UNCAUGHT_VOCABULARY and the ` +
+          `table in lib/prose-self-distance.ts, and re-measure the corpus ` +
+          `before calling the widening free: ${JSON.stringify(text)}`,
+      ).toHaveLength(0);
+      expect(
+        proseSelfDistanceViolations([{ path: "f.md", text: control }]),
+        `the control is no longer caught, so "${why}" is not what stopped ` +
+          `the row beside it and this limit is misattributed: ${JSON.stringify(control)}`,
+      ).toHaveLength(1);
+    }
+  });
+
+  test("DOC-DIST-3h: re-admitting `a`/`an` would change nothing in this tree", () => {
+    // The evidence that round 3's removal was decided by a CONSTRUCTED
+    // sentence rather than a live one — and so that keeping the articles out
+    // is a declared trade-off, not a measurement. If this ever goes red the
+    // tree has grown a sentence that can settle the question, and the
+    // docblock's "no setting of that switch is right" must be rewritten.
+    const withArticle = PROSE_SELF_DISTANCE_PATTERN.replace(
+      "(?:one|two|three",
+      "(?:an?|one|two|three",
+    );
+    expect(
+      withArticle,
+      "QUANTITY no longer opens with `(?:one|two|three`, so this mutation " +
+        "edited nothing and the reading below is vacuous",
+    ).not.toBe(PROSE_SELF_DISTANCE_PATTERN);
+    // …and it must admit the sentence it is supposed to admit, or the zero
+    // below is a mutation that changed the pattern without changing the rule.
+    expect(
+      "A note sits a line above this heading, restating the same count."
+        .match(new RegExp(withArticle, "gi")),
+      "the mutant does not catch the article claim, so a zero over the tree " +
+        "says nothing about whether the articles would refuse anything",
+    ).toHaveLength(1);
+
+    const hits: string[] = [];
+    for (const { path, text } of docs()) {
+      for (const m of text.matchAll(new RegExp(withArticle, "gi"))) {
+        hits.push(`${path}: ${m[0].replace(/\s*\n\s*/g, " ")}`);
+      }
+    }
+    expect(
+      hits,
+      "admitting the articles now refuses real sentences, so the trade-off " +
+        "the docblock declares has a measured cost and must be restated",
+    ).toEqual([]);
   });
 
   test("DOC-DIST-3c: UNCAUGHT is quoting the tree, not an invented list", () => {
