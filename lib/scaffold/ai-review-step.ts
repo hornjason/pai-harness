@@ -1809,9 +1809,10 @@ export const AI_REVIEW_LEDGER_SNAPSHOT_BASENAME = "ai-review-ledger-snapshot.txt
  * GraphQL thread on `databaseId` and would put a second reader of the same
  * question in the step. One query returns both halves, so there is one.
  *
- * ## Written on EVERY path, including the failures
+ * ## Written ONLY when the list was read — absence is the refusal
  *
- * Unlike the snapshot, which exists only when the ledger was read. The file
+ * The opposite of the snapshot's rule, and this heading used to state the
+ * snapshot's by mistake. The file
  * here is the reading, so its absence has to mean "the step did not get far
  * enough to write one" and nothing else — `THREADS_NOT_READ`. A fetch that
  * fails writes no file and the adjudicator says so by name (AC-4) rather
@@ -5001,6 +5002,19 @@ threads_fetch() {
       return 0
     fi
 
+    # Establish the field IS a boolean before reading it as one. The test
+    # below is \`if ! <cmd>\`, which takes ANY non-zero exit, so every way of
+    # failing to produce \`true\` was one observable: \`hasNextPage: false\`
+    # (exit 1), an ABSENT \`pageInfo\` (also 1 — the path yields null), and a
+    # MALFORMED one (5) all wrote whatever had accumulated and returned
+    # success. A truncated thread list was therefore reported as a complete
+    # read, which is the collapse this module refuses everywhere else.
+    # Distinguishing the exit codes would not help; the type is the question.
+    # AC-T3.
+    if ! printf '%s' "\${response}" | jq -e '(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage | type) == "boolean"' >/dev/null 2>&1; then
+      threads_unmeasured "the GraphQL response on page \${threads_page} carried no boolean pageInfo.hasNextPage, so the end of the list could not be established."
+      return 0
+    fi
     if ! printf '%s' "\${response}" | jq -e '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' >/dev/null 2>&1; then
       printf '%s' "\${threads_acc}" > "\${${AI_REVIEW_THREADS_PATH_VAR}}"
       return 0
