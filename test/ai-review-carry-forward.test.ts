@@ -1303,223 +1303,61 @@ describe("AC-C6 (#1568): a valid ledger is read, and an unreadable one still is 
  * rounds of #1569 to learn. The state stays in the carry file, written on
  * every path by the one `carry_state` site; the snapshot carries only bytes.
  */
-describe("AC-C7 (#1586): the ledger snapshot, written where the prior state is still prior", () => {
-  const body = () => windowBody([round(1, [recorded("lib/a.ts", 1, "unchecked index", "alpha")])]);
-
-  test("AC-C7: a READ ledger leaves its own bytes for the adjudicator, verbatim", () => {
-    const r = runCarry({ list: [botComment(5, body())], files: { "lib/a.ts": "alpha\n" } });
-    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
-    expect(r.snapshot, "no snapshot was written on a READ, so the adjudicator has no prior state").not.toBeNull();
-    // One provenance line, then the comment byte-identically — `jq -r` adds
-    // the trailing newline the shell redirect gives any line, and nothing
-    // else may differ. A snapshot that is a RENDERING of the ledger rather
-    // than the ledger is a second format for `readLedger` to disagree with.
-    const read = readSnapshot(r.snapshot!);
-    expect(read.body.replace(/\n$/, "")).toBe(body());
-  });
-
-  test("AC-C7: the snapshot says WHICH round it precedes, in a form the reader accepts", () => {
-    // Provenance, and it is not decoration. A snapshot taken at the PERSIST
-    // step is the same comment fetched the same way and is byte-shaped like
-    // a correct one; `ledgerPriorKeysFrom` tells them apart only by comparing the
-    // rounds inside the body against this number. Written by bash, parsed
-    // by the TypeScript that decides — so the agreement is a test, not a
-    // convention.
-    const r = runCarry({
-      list: [botComment(5, body())],
-      files: { "lib/a.ts": "alpha\n" },
-      env: { [AI_REVIEW_SNAPSHOT_ROUND_VAR]: "7" },
-    });
-    expect(r.snapshot!.split("\n")[0]).toBe(`${AI_REVIEW_SNAPSHOT_ROUND_KEY}=7`);
-    expect(readSnapshot(r.snapshot!).round).toBe(7);
-  });
-
-  test("AC-C7: the snapshot the step wrote is one `readLedger` can key, and the keys are not empty", () => {
-    // The join, asserted rather than assumed. A snapshot that round-trips
-    // through the shell into something `readLedger` refuses would leave the
-    // adjudicator with an empty prior set — which suppresses nothing and so
-    // looks exactly like a pull request with no earlier rounds.
-    const r = runCarry({ list: [botComment(5, body())], files: { "lib/a.ts": "alpha\n" } });
-    const prior = priorFindings(readLedger(readSnapshot(r.snapshot!).body));
-    expect(prior.status, `the step's own snapshot did not parse: ${JSON.stringify(prior)}`).toBe(
-      "AI_REVIEW_PRIOR_MEASURED",
-    );
-    const keys = (prior as unknown as { keys: string[] }).keys;
-    expect(keys, "the snapshot parsed and produced no keys, so a dedupe built on it never fires").toHaveLength(1);
-    // And the key is the TEXT rule, not the line-number fallback. A prior
-    // set keyed `n:<line>` can never match a fresh finding keyed `t:<text>`,
-    // which is the silent-never-fires half of #1586.
-    expect(keys[0]).toContain("t:alpha");
-  });
-
-  test("AC-C7: the WRITER and the READER agree end to end — the file the step wrote keys", () => {
-    // Both halves of #1586 in one assertion: bash writes the file, the
-    // gate's own reader consumes it, and the prior set is non-empty. Every
-    // other row in this describe measures one side.
-    const r = runCarry({ list: [botComment(5, body())], files: { "lib/a.ts": "alpha\n" } });
-    const prior = ledgerPriorKeysFrom(r.file, r.snapshot);
-    expect(prior.status, JSON.stringify(prior)).toBe("MEASURED");
-    if (prior.status !== "MEASURED") throw new Error("unreachable");
-    expect(prior.keys).toHaveLength(1);
-  });
-
-  test("AC-C7: a snapshot taken at PERSIST instead of carry is refused, not keyed", () => {
-    // The ordering mutant, as an INPUT rather than as a code change: the
-    // same ledger, but it already holds the round this snapshot claims to
-    // precede, which is exactly what fetching after `ai-review-persist`
-    // produces. Suppressing against it would drop this round's own
-    // findings and report CLEAN.
-    const afterPersist = windowBody([
-      round(1, [recorded("lib/a.ts", 1, "unchecked index", "alpha")]),
-      round(4, [recorded("lib/a.ts", 1, "unchecked index", "alpha")]),
-    ]);
-    const r = runCarry({ list: [botComment(5, afterPersist)], files: { "lib/a.ts": "alpha\n" } });
-    const prior = ledgerPriorKeysFrom(r.file, r.snapshot);
-    expect(prior.status).toBe("UNMEASURED");
-    if (prior.status !== "UNMEASURED") throw new Error("unreachable");
-    expect(prior.reason).toContain("AFTER this round was recorded");
-  });
-
-  test("AC-C7: the MUTANT — the provenance line removed — makes the snapshot unusable", () => {
-    // Without the header the two orderings are indistinguishable, so the
-    // reader refuses rather than keying a snapshot that might be this
-    // round's own. Performed: a copy of the step with the header `printf`
-    // deleted, run over the same ledger.
-    const real = buildCarryScript();
-    const header = real
-      .split("\n")
-      .find(l => l.includes(AI_REVIEW_SNAPSHOT_ROUND_KEY) && l.includes("printf"));
-    expect(header, "the provenance line was not found, so nothing was mutated").toBeDefined();
-    const mutant = real.replace(`${header}\n`, "");
-    expect(mutant).not.toBe(real);
-
-    const files = { "lib/a.ts": "alpha\n" };
-    const m = runCarry({ list: [botComment(5, body())], files, script: mutant });
-    expect(m.state, "the mutation moved more than the header").toBe(AI_REVIEW_CARRY_READ);
-    expect(m.snapshot, "the mutant wrote no snapshot at all").not.toBeNull();
-    expect(ledgerPriorKeysFrom(m.file, m.snapshot).status).toBe("UNMEASURED");
-    // And the real step, over the same bytes, keys it.
-    const real_run = runCarry({ list: [botComment(5, body())], files });
-    expect(ledgerPriorKeysFrom(real_run.file, real_run.snapshot).status).toBe("MEASURED");
-  });
-
-  test("AC-C7: an unset round leaves a header the reader refuses, and suppresses nothing", () => {
-    // A consumer whose rounds step does not publish an output. The header
-    // is written and EMPTY, which is a snapshot that cannot say which round
-    // it precedes — refused, so nothing is suppressed. The failure
-    // direction is one advisory printed twice.
-    const r = runCarry({
-      list: [botComment(5, body())],
-      files: { "lib/a.ts": "alpha\n" },
-      env: { [AI_REVIEW_SNAPSHOT_ROUND_VAR]: "" },
-    });
-    expect(readSnapshot(r.snapshot!).round).toBeNull();
-    expect(ledgerPriorKeysFrom(r.file, r.snapshot).status).toBe("UNMEASURED");
-  });
-
-  test("AC-C7: ABSENT and UNMEASURED write NO snapshot, and the carry file still says which", () => {
-    // Three readings, one of which has bytes. The other two must be
-    // distinguishable from each other at the adjudicator, and the file that
-    // distinguishes them is the carry file — not the absence of this one.
-    const absent = runCarry({ list: [] });
-    const unreadable = runCarry({ list: [botComment(5, body().replace('{"rounds"', '{{"rounds"'))] });
-
-    expect(absent.state).toBe(AI_REVIEW_CARRY_ABSENT);
-    expect(absent.snapshot, "an ABSENT reading left bytes for the adjudicator to key from").toBeNull();
-
-    expect(unreadable.state).toBe(AI_REVIEW_CARRY_UNMEASURED);
-    expect(unreadable.snapshot, "an UNMEASURED reading left bytes that parsed into a prior set").toBeNull();
-
-    // The whole point: two states, two absent snapshots, and still
-    // distinguishable. If this ever collapses, a round that could not read
-    // its history suppresses exactly like a round that had none.
-    expect(absent.state).not.toBe(unreadable.state);
-  });
-
-  test("AC-C7: an unset snapshot path writes nothing and does not disturb the carry", () => {
-    // The old workflow, and every consumer that has not re-scaffolded. The
-    // step must behave exactly as it did before #1586 rather than refusing:
-    // a reader that is not plumbed yet gets no prior set, suppresses
-    // nothing, and reports every finding — the direction this is allowed to
-    // be wrong in.
-    const r = runCarry({
-      list: [botComment(5, body())],
-      files: { "lib/a.ts": "alpha\n" },
-      noSnapshotPath: true,
-    });
-    expect(r.state, "an unplumbed snapshot path changed the carry's own reading").toBe(AI_REVIEW_CARRY_READ);
-    expect(r.snapshot).toBeNull();
-    expect(r.carried, "the carry itself stopped working when the snapshot was not plumbed").toHaveLength(1);
-  });
-
-  test("AC-C7: the MUTANT — the snapshot write removed — leaves the adjudicator with no prior set", () => {
-    // Performed, not described. Without this row every assertion above is
-    // satisfied by a step that happens to write the file for some other
-    // reason, and the one below is satisfied by a path nothing reaches.
-    const real = buildCarryScript();
-    const mutant = real.replace(
-      `if [ -n "\${${AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR}:-}" ]; then`,
-      "if false; then",
-    );
-    expect(mutant, "the snapshot write was not found, so nothing was mutated").not.toBe(real);
-    const files = { "lib/a.ts": "alpha\n" };
-    const m = runCarry({ list: [botComment(5, body())], files, script: mutant });
-    expect(m.state, "the mutation changed the carry's reading, so it mutated more than the write").toBe(
-      AI_REVIEW_CARRY_READ,
-    );
-    expect(m.snapshot, "removing the write changed nothing, so the write decides no input").toBeNull();
-    expect(runCarry({ list: [botComment(5, body())], files }).snapshot).not.toBeNull();
-  });
-
-  test("AC-C7: the committed workflow plumbs the snapshot to BOTH the writer and the adjudicator", () => {
-    // One path, two steps, composed from the same prepare-step output. A
-    // writer and a reader that compose it separately agree until someone
-    // edits one of them, and the failure is a dedupe that silently never
-    // fires because the file it reads is never the file that was written.
+/**
+ * Covers AC-5 (Increment 1c) — the ledger snapshot is gone, and so is its
+ * wiring.
+ *
+ * This block replaces the nine AC-C7 cases that proved the snapshot was
+ * written, keyed and plumbed to two steps. Every one of them passed right up
+ * to this commit, and together they protected a file nothing read: AC-1 moved
+ * the suppression gate onto the review THREADS, `SuppressionInputs` kept only
+ * `threads`, and `scripts/ai-review-findings.ts` never imported the snapshot
+ * variable. The cases could not see that, because each asked whether the
+ * WRITE happened and none asked whether anything consumed it.
+ *
+ * So the replacement is a reader census rather than another write assertion.
+ */
+describe("AC-5 (Increment 1c): the ledger snapshot is gone, writer and wiring together", () => {
+  test("AC-5: the generated workflow neither writes the snapshot nor declares its variable", () => {
     const yml = readFileSync(WORKFLOW, "utf8");
-    // The DECLARATION form specifically — `  VAR: <value>` at the head of a
-    // line. A bare `split(VAR + ":")` also counts the `${VAR:-}` guard
-    // inside the carry script, which is a use and not a declaration; the
-    // first draft of this row did exactly that and read 3 for 2.
-    const declarations = yml
-      .split("\n")
-      .filter(l => new RegExp(`^\\s+${AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR}: \\S`).test(l));
+    // Both halves, because deleting the write and leaving the `env:` lines is
+    // the quiet half-fix: a variable declared on two steps and read by none
+    // is indistinguishable from one in use.
     expect(
-      declarations,
-      `the snapshot path is not declared in exactly the two steps that use it — the carry step ` +
-        `writes it and the adjudicator step reads it, and a step's \`env:\` does not carry ` +
-        `forward:\n${declarations.join("\n")}`,
-    ).toHaveLength(2);
-    // Both declarations compose the SAME path. Two steps that each spell it
-    // separately agree until someone edits one, and the failure is a dedupe
-    // that never fires because the reader's file is not the writer's.
-    expect(new Set(declarations.map(l => l.trim())).size, "the two steps name different paths").toBe(1);
-    expect(yml, "the two steps name different basenames").toContain(
-      `/${AI_REVIEW_LEDGER_SNAPSHOT_BASENAME}`,
-    );
+      yml.split("\n").filter(l => l.includes(AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR)),
+      "the snapshot variable is still somewhere in the generated workflow",
+    ).toEqual([]);
+    expect(
+      yml.split("\n").filter(l => l.includes(AI_REVIEW_LEDGER_SNAPSHOT_BASENAME)),
+      "the snapshot basename is still composed into a path",
+    ).toEqual([]);
+  });
 
-    // The adjudicator step must carry the carry path too, or it can read the
-    // bytes and never learn which of the three readings produced them.
-    const at = yml.indexOf(`id: ${AI_REVIEW_RUN_STEP_ID}`);
-    expect(at, "the adjudicator step is not in the committed workflow").toBeGreaterThan(-1);
-    const block = yml.slice(at, yml.indexOf("      - name:", at));
-    expect(block, "the adjudicator reads the ledger bytes with no way to read the state").toContain(
-      AI_REVIEW_CARRY_PATH_VAR,
-    );
-    expect(block).toContain(AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR);
+  test("AC-5: the control — the carry still reads the ledger and still carries", () => {
+    // Without this row the case above is satisfied by a carry step that
+    // stopped working altogether, which is the same observable as a snapshot
+    // cleanly removed. The scope gates still need the ledger; only the
+    // snapshot went.
+    const r = runCarry({
+      list: [botComment(5, windowBody([round(1, [recorded("lib/a.ts", 1, "s", "alpha")])]))],
+      files: { "lib/a.ts": "alpha\n" },
+    });
+    expect(r.state, "deleting the snapshot changed the carry's own reading").toBe(AI_REVIEW_CARRY_READ);
+    expect(r.carried, "deleting the snapshot stopped findings being carried").toHaveLength(1);
+  });
+
+  test("AC-5: the adjudicator reads two AI_REVIEW_* variables, and the snapshot is not one", () => {
+    // The property the nine deleted cases lacked. They proved a producer; this
+    // proves there is a consumer, by reading the consumer.
+    const script = readFileSync(join(ROOT, "scripts", "ai-review-findings.ts"), "utf8");
+    const read = [...script.matchAll(/process\.env\[([A-Z_]+)\]/g)].map(m => m[1]);
+    expect(read.length, "the adjudicator reads no environment at all — the extractor is broken")
+      .toBeGreaterThan(0);
+    expect(script, "the adjudicator imports the snapshot variable it never reads")
+      .not.toContain(AI_REVIEW_LEDGER_SNAPSHOT_PATH_VAR);
   });
 });
 
-/**
- * AC-1's writer: the carry step fetches the pull request's review threads
- * and leaves them where the adjudicator and the thread poster both read
- * them.
- *
- * Every row below runs the REAL generated bash against a faked `curl`, and
- * every row ends by handing what bash wrote to the TypeScript that decides.
- * A writer asserted only on its own bytes is the #1586 shape: the file
- * round-tripped perfectly and keyed nothing, for seven months.
- */
 describe("AC-T1 (AC-1): the carry step writes the review threads", () => {
   const KEY = "lib/a.ts\u0000t:alpha\u0000unchecked index";
   const keyed = (key: string) => threadBody({ severity: "high", summary: "unchecked index" }, key);

@@ -1,4 +1,4 @@
-# generated-sha: e585c6dc1f77fa50
+# generated-sha: b8b64a722df9b927
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -928,7 +928,6 @@ jobs:
           AI_REVIEW_LEDGER_API: ${{ github.api_url }}
           AI_REVIEW_EVENT: ${{ github.event_name }}
           AI_REVIEW_CARRY_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-carried.txt
-          AI_REVIEW_LEDGER_SNAPSHOT_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-ledger-snapshot.txt
           AI_REVIEW_THREADS_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-threads.json
           AI_REVIEW_GRAPHQL_URL: ${{ github.graphql_url }}
           AI_REVIEW_SNAPSHOT_ROUND: ${{ steps.ai-review-rounds.outputs.round }}
@@ -1875,35 +1874,27 @@ jobs:
 
           carry_state 'AI_REVIEW_CARRY_READ'
 
-          # The ledger's own bytes, for the adjudicator to key in TypeScript (#1586).
+          # The ledger snapshot was written here for the adjudicator to key repeats
+          # from (#1586). IT IS GONE, because its reader is (AC-5, Increment 1c).
           #
-          # HERE and not at adjudication time: the persist step upserts THIS round into
-          # that same comment before the adjudicator runs, so a later fetch would read
-          # the payload it is deciding about as its own prior and suppress all of it.
+          # AC-1 moved the suppression gate onto the pull request's review THREADS:
+          # `SuppressionInputs` now carries `threads` and nothing else, and
+          # `scripts/ai-review-findings.ts` reads `AI_REVIEW_THREADS_PATH` and
+          # `AI_REVIEW_BALLOT_DIR` and no third variable. `ledgerPriorKeysFrom` and
+          # `readSnapshot` kept compiling because tests still import them, so nothing
+          # went red when the last production caller went away.
           #
-          # ON THE READ PATH ONLY, and after the parse above succeeded. The state the
-          # adjudicator gates on lives in the carry file, which `carry_state` writes on
-          # every path — so an absent snapshot is never read as "no earlier findings",
-          # it is read as whichever of the three states that one site recorded.
+          # What made this worth deleting rather than leaving: the failure path emitted
+          # `repeats will not be suppressed on this round`, and that sentence had
+          # become FALSE. Suppression comes from the thread list, which this step
+          # fetches separately and which is unaffected by whether these bytes land. A
+          # warning that names the wrong consequence is worse than no warning — it
+          # tells a reader to expect duplicate threads that will not appear, and it
+          # reads as evidence the snapshot is load-bearing.
           #
-          # A failed write is a WARNING and not a refusal: the carry itself succeeded
-          # and the reviewer's copy is already on disk. The adjudicator seeing no
-          # snapshot suppresses nothing, which is the direction this is allowed to be
-          # wrong in — a repeat gets posted twice, rather than a live finding dropped.
-          if [ -n "${AI_REVIEW_LEDGER_SNAPSHOT_PATH:-}" ]; then
-            # The provenance line FIRST, then the body verbatim. The reader refuses a
-            # snapshot holding a round at or past this number, which is the only thing
-            # that tells a snapshot taken here from one taken after the persist step —
-            # they are otherwise the same comment fetched by the same selector, and the
-            # later one suppresses the whole round it is deciding about.
-            if ! {
-              printf '%s=%s\n' 'taken_before_round' "${AI_REVIEW_SNAPSHOT_ROUND:-}"
-              printf '%s' "${selected}" | jq -r '.body // ""'
-            } > "${AI_REVIEW_LEDGER_SNAPSHOT_PATH}"; then
-              rm -f "${AI_REVIEW_LEDGER_SNAPSHOT_PATH}"
-              carry_note "the ledger's own text could not be written for the adjudicator, so repeats will not be suppressed on this round. Every finding this round raises is reported, including any an earlier round already raised."
-            fi
-          fi
+          # Deleting the write and leaving the `env:` declarations would have been the
+          # quieter half-fix: a variable declared on two steps and read by none looks
+          # exactly like one that is used. Both declarations go with it.
 
           {
             printf 'carried_count=%s\n' "${carried_count}"
@@ -3648,7 +3639,6 @@ jobs:
           AI_REVIEW_FINDINGS_PATH: ${{ steps.ai-review-prepare.outputs.path }}
           AI_REVIEW_CHANGED_FILES_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-changed-files.txt
           AI_REVIEW_CARRY_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-carried.txt
-          AI_REVIEW_LEDGER_SNAPSHOT_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-ledger-snapshot.txt
           AI_REVIEW_THREADS_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-threads.json
           AI_REVIEW_EXECUTION_FILE: ${{ steps.ai-review-action.outputs.execution_file }}
           AI_REVIEW_INTENT_PATH: ${{ steps.ai-review-prepare.outputs.dir }}/ai-review-intent.txt
