@@ -11,6 +11,13 @@
  * those would have been seventeen false positives bought to catch two real
  * ones, and the check would have been deleted by whoever hit it first.
  *
+ * That reading was taken over four directories. The scan now covers all
+ * **205** tracked non-fixture markdown files and the pattern admits
+ * `before`/`after` — both because the #1624 review found the first version's
+ * scope narrower than the census row advertising it. The wider reading
+ * carries **40** distance-claim lines and **none** self-referential, which is
+ * the same answer at four times the sample.
+ *
  * So `NOT_A_CLAIM` below is not padding. Every row in it but the last is a
  * real sentence from the tree — `grep -rF` before pasting, and `DOC-DIST-3c`
  * keeps the equivalent claim about `UNCAUGHT` honest over time — and together
@@ -26,8 +33,9 @@
  * right.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { spawnSync } from "bun";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   PROSE_SELF_DISTANCE_FIX,
   proseSelfDistanceViolations,
@@ -35,7 +43,32 @@ import {
 import { remedyMessage } from "../lib/check-remedy.ts";
 
 const ROOT = join(import.meta.dir, "..");
-const SCANNED = ["specs", ".claude/rules", "docs", "reference"];
+
+/**
+ * EVERY tracked markdown file, minus fixtures.
+ *
+ * The first version walked four directories — `specs`, `.claude/rules`,
+ * `docs`, `reference` — and the review of #1624 caught what that makes the
+ * census row say. The router event this PR adds is literally *"edited any
+ * markdown at all"*, and `.claude/rules/self-referential-tests.md` is the
+ * documented place an agent looks to find out what to run. So somebody
+ * editing `CLAUDE.md` or `AGENTS.md`, following the table, would run this
+ * suite and be told nothing — a detector narrower than the claim routing
+ * people to it, which is the second shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * `git ls-files` rather than a directory walk, because *tracked* is the
+ * population the router's predicate is about: an untracked scratch file is
+ * not something a reviewer can be held to.
+ *
+ * **`test/fixtures/` is excluded, and that exclusion is asserted by
+ * DOC-DIST-7 rather than left to this comment.** A fixture is an INPUT to
+ * some other test — a planted document whose exact bytes that test asserts
+ * on. Refusing a sentence inside one makes this check an opinion about
+ * another suite's data, and the repo already has a name for the mistake:
+ * markdown bound for a consumer of it is a payload, not a doc.
+ */
+const FIXTURES = "test/fixtures/";
 
 /**
  * What the rule MUST refuse. The first two are the tree's live instances,
@@ -53,6 +86,10 @@ const IS_A_CLAIM = [
   "the table three rows below this row says the opposite",
   "a heading some 40 lines above this paragraph",
   "one section below this section, the count is restated",
+  // the gap the #1624 review found: a POSITION, not a direction
+  "appears three lines before this section and nowhere else",
+  "the compliance factors are listed four paragraphs after this heading",
+  "sixty lines after this bullet the same number is written differently",
 ];
 
 /**
@@ -104,17 +141,17 @@ const UNCAUGHT = [
   "was breaking, two paragraphs above the code that breaks it.",
 ];
 
+/** Every tracked markdown path, fixtures included — the population before the cut. */
+function trackedMarkdown(): string[] {
+  const r = spawnSync(["git", "ls-files", "-z", "*.md"], { cwd: ROOT, stdout: "pipe" });
+  if (r.exitCode !== 0) throw new Error("git ls-files failed, so this scan has no population");
+  return r.stdout.toString().split("\0").filter(Boolean);
+}
+
 function docs(): Array<{ path: string; text: string }> {
-  const out: Array<{ path: string; text: string }> = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) walk(full);
-      else if (entry.endsWith(".md")) out.push({ path: relative(ROOT, full), text: readFileSync(full, "utf8") });
-    }
-  };
-  for (const d of SCANNED) walk(join(ROOT, d));
-  return out;
+  return trackedMarkdown()
+    .filter(p => !p.startsWith(FIXTURES))
+    .map(path => ({ path, text: readFileSync(join(ROOT, path), "utf8") }));
 }
 
 describe("DOC-DIST: a prose distance to the document's own parts", () => {
@@ -190,9 +227,41 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
     // against a tree full of violations — the shape this repo calls an
     // assertion that holds vacuously.
     const all = docs();
-    expect(all.length).toBeGreaterThan(40);
-    expect(all.some(d => d.path === "specs/INSTRUCTION-COMPLIANCE-SPEC.md")).toBe(true);
+    expect(all.length).toBeGreaterThan(150);
     expect(all.every(d => d.text.length > 0)).toBe(true);
+    // Named individually, because the census row says "edited any markdown at
+    // all" and these are the files a four-directory walk missed. A count
+    // alone would stay green if the walk came back.
+    for (const p of [
+      "CLAUDE.md",
+      "AGENTS.md",
+      "REVIEW.md",
+      "SUCCESS.md",
+      ".claude/agents/marcus.md",
+      "prompts/rook.md",
+      "templates/agent-briefs/quinn.md",
+      "specs/INSTRUCTION-COMPLIANCE-SPEC.md",
+    ]) {
+      expect(all.some(d => d.path === p), `outside the scan: ${p}`).toBe(true);
+    }
+  });
+
+  test("DOC-DIST-7: fixtures are excluded, and there are fixtures to exclude", () => {
+    // Both halves. Without the second, the exclusion is satisfied by a tree
+    // that happens to contain no fixture markdown, and the day somebody adds
+    // one this check starts having opinions about another suite's input data
+    // with nothing having gone red.
+    const tracked = trackedMarkdown();
+    const fixtures = tracked.filter(p => p.startsWith(FIXTURES));
+    expect(fixtures.length, "no fixture markdown exists, so the cut cuts nothing").toBeGreaterThan(
+      10,
+    );
+    const scanned = docs().map(d => d.path);
+    expect(scanned.filter(p => p.startsWith(FIXTURES)), "a fixture was scanned").toEqual([]);
+    expect(
+      scanned.length,
+      "the cut removed nothing, so `docs()` is not applying it",
+    ).toBe(tracked.length - fixtures.length);
   });
 
   test("DOC-DIST-6: the MUTANT — the referent requirement dropped — refuses the tree", () => {
@@ -200,7 +269,7 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
     // exact wrong version that was written first, so this row both proves the
     // check can fail AND pins the decision that separates it from the ban.
     const widened = (text: string) =>
-      /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|a|several|[0-9][0-9,]*)(?:[ -](?:hundred|thousand))?\s+(?:lines?|rows?|sections?|paragraphs?|bullets?|columns?|pages?)\s+(?:above|below|away|apart|earlier|later|up|down)\b/i.test(
+      /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|sixty|hundred|dozen|a|several|[0-9][0-9,]*)(?:[ -](?:hundred|thousand))?\s+(?:lines?|rows?|sections?|paragraphs?|bullets?|columns?|pages?)\s+(?:above|below|away|apart|earlier|later|up|down|before|after)\b/i.test(
         text,
       );
     const all = docs();

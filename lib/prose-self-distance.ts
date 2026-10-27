@@ -7,8 +7,14 @@
  * "the comment recording #174 sits four lines above it" is about a source
  * file this document is describing. That distance is a fact about another
  * artefact, it is as checkable as any other quoted fact, and nothing here
- * touches it. Measured on 2026-10-27 the tree held **19** distance claims and
- * **17** were of that kind.
+ * touches it.
+ *
+ * The deciding measurement, 2026-10-27, over `specs/`, `.claude/rules/`,
+ * `docs/` and `reference/`: **19** distance claims, **17** of that kind.
+ * After the #1624 review widened both the pattern and the scanned set, the
+ * population is **40** distance-claim lines across **205** tracked
+ * non-fixture markdown files, and the ratio did not move in the direction
+ * that would matter — none of the 40 is self-referential.
  *
  * The two that were not are a different animal: *"roughly two hundred lines
  * above this bullet"*. The referent is the document itself, so the claim is
@@ -92,10 +98,23 @@ const REFERENTS =
  * not a widening of that one.
  */
 const QUANTITY =
-  "(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|a|an|several|many|[0-9][0-9,]*)" +
+  "(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty" +
+  "|sixty|seventy|eighty|ninety|hundred|dozen|a|an|several|many|[0-9][0-9,]*)" +
   "(?:[ -](?:hundred|thousand))?";
 
-const DIRECTION = "above|below|away|apart|earlier|later|up|down|back|on";
+/**
+ * `before` and `after` are here because a position is as natural a way to
+ * spell a self-referential distance as a direction — *"three lines before
+ * this section"* — and the first draft of this module omitted both, which the
+ * review of #1624 caught. Measured over all 205 tracked non-fixture markdown
+ * files on 2026-10-27, admitting them adds **zero** violations, so this is a
+ * gap closed at no cost rather than a widening traded against false
+ * positives. The same measurement admitted `sixty`…`ninety`, `dozen` and a
+ * standalone `hundred` to `QUANTITY`: three lines in the tree spell a
+ * distance that way, none carries a deictic.
+ */
+const DIRECTION =
+  "above|below|away|apart|earlier|later|up|down|back|on|before|after";
 
 /**
  * The unit the distance is counted in. `lines` is where both live instances
