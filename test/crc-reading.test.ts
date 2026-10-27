@@ -143,10 +143,9 @@ describe("the fence rule, against the payload that broke the recipe", () => {
   });
 
   test("the scorer reads all three rounds, which is what the recipe could not", () => {
-    expect(measuredRoundsFor(entry({ number: 1, body: quoting }))).toEqual({
-      rounds: 3,
-      evicted: 0,
-    });
+    const read = measuredRoundsFor(entry({ number: 1, body: quoting }));
+    expect("refusal" in read).toBe(false);
+    expect((read as { rounds: number }).rounds).toBe(3);
   });
 });
 
@@ -205,7 +204,10 @@ describe("`findings != null`, never `unmeasured == null`", () => {
 
   test("a round the recorder never reached is NOT measured", () => {
     const body = ledgerBody([unrecorded, measured(2)]);
-    expect(measuredRoundsFor(entry({ number: 1, body }))).toEqual({ rounds: 1, evicted: 0 });
+    expect(measuredRoundsFor(entry({ number: 1, body }))).toEqual({
+      rounds: 1,
+      truncation: { status: "AI_REVIEW_TRUNCATION_STATED", dropped: 0 },
+    });
 
     // Name what the other predicate would have said, rather than assert the
     // two agree — the agreement on live data is what made the wrong one look
@@ -217,7 +219,7 @@ describe("`findings != null`, never `unmeasured == null`", () => {
   test("`findings: []` with no `unmeasured` key IS measured — a clean round", () => {
     expect(measuredRoundsFor(entry({ number: 1, body: ledgerBody([measured(1)]) }))).toEqual({
       rounds: 1,
-      evicted: 0,
+      truncation: { status: "AI_REVIEW_TRUNCATION_STATED", dropped: 0 },
     });
   });
 });
@@ -344,10 +346,53 @@ describe("the split, and the eviction bound", () => {
       "2026-10-27",
     );
     expect(row.measuredOnlyEvicted).toBe(5);
+    expect(row.measuredOnlyEvictionUnknown).toEqual([]);
     expect(renderCrcReading(row).join("\n")).toContain("LOWER BOUND");
     // The all-rounds column adds them, because a round's EXISTENCE survives
     // eviction even though its kind does not.
     expect(row.allRounds.passedRounds).toBe(7);
+  });
+
+  test("a ledger that CANNOT say what it evicted still raises the bound banner", () => {
+    /**
+     * #1633 round 2, and the reviewer proved it with this module's own test.
+     *
+     * A legacy bare array at the cap: `allRoundsFor` refuses it as
+     * `ROUNDS_TRUNCATION_UNKNOWN`, and `measuredRoundsFor` used to answer
+     * `evicted: 0` on the same bytes — "verified nothing was evicted",
+     * indistinguishable from the real thing. Summed, that suppressed the
+     * LOWER BOUND line entirely for a range of open pull requests still on
+     * the legacy format, which the reader would have read as exact.
+     */
+    const legacy = [
+      AI_REVIEW_LEDGER_COMMENT_MARKER,
+      "",
+      "```json",
+      JSON.stringify(Array.from({ length: 12 }, (_, i) => measured(i + 1))),
+      "```",
+    ].join("\n");
+    const row = takeCrcReading([entry({ number: 7, body: legacy })], 7, 7, "2026-10-27");
+
+    expect(row.measuredOnlyEvicted).toBe(0);
+    expect(row.measuredOnlyEvictionUnknown).toEqual([7]);
+
+    const rendered = renderCrcReading(row).join("\n");
+    expect(rendered).toContain("LOWER BOUND");
+    expect(rendered).toContain("#7");
+    // The banner must say WHICH of the two it is. A single number could not.
+    expect(rendered).toContain("not even a number");
+
+    // The control: a ledger that STATES zero evictions raises no banner at
+    // all, so the assertion above is about the unknown reading and not about
+    // the banner firing on everything.
+    const stated = takeCrcReading(
+      [entry({ number: 7, body: ledgerBody([measured(1)]) })],
+      7,
+      7,
+      "2026-10-27",
+    );
+    expect(stated.measuredOnlyEvictionUnknown).toEqual([]);
+    expect(renderCrcReading(stated).join("\n")).not.toContain("LOWER BOUND");
   });
 });
 
@@ -502,7 +547,13 @@ describe("allRoundsFor delegates rather than restating", () => {
     const taken = allRoundsFor(entry({ number: 1, body }));
     expect("refusal" in taken && taken.refusal).toBe("ROUNDS_TRUNCATION_UNKNOWN");
     // And the measured-only column still reads it, because an evicted round's
-    // existence is what is unknown there, not its kind.
-    expect(measuredRoundsFor(entry({ number: 1, body }))).toEqual({ rounds: 12, evicted: 0 });
+    // existence is what is unknown there, not its kind — but it carries the
+    // truncation reading WHOLE rather than flattening it to a zero that
+    // would read as "verified nothing was evicted" (round 2).
+    const only = measuredRoundsFor(entry({ number: 1, body }));
+    expect(only).toMatchObject({ rounds: 12 });
+    expect((only as { truncation: { status: string } }).truncation.status).toBe(
+      "AI_REVIEW_TRUNCATION_UNKNOWN",
+    );
   });
 });

@@ -54,6 +54,7 @@ import {
   AI_REVIEW_TRUNCATION_STATED,
   ledgerRawRounds,
   readLedger,
+  type LedgerTruncation,
 } from "./ai-review-rounds";
 import {
   AI_REVIEW_UNMEASURED_NOT_RECORDED,
@@ -184,11 +185,21 @@ export function allRoundsFor(entry: CrcEntry): CrcRoundCount {
  * measured or not — so a ledger that evicted rounds yields a **lower bound**
  * on its measured count. Refusing it would drop the longest histories, which
  * is the direction this metric is already biased in; the bound is reported
- * instead, by `evicted`.
+ * instead.
+ *
+ * **The reading is returned whole, as `LedgerTruncation`, not flattened to a
+ * number.** #1633 round 2: it used to return `evicted: 0` for both a ledger
+ * STATING zero evictions and a legacy bare-array ledger whose eviction count
+ * is unknowable — and the module's own test demonstrated it, with
+ * `allRoundsFor` refusing that input as `ROUNDS_TRUNCATION_UNKNOWN` while
+ * this one answered `evicted: 0` on the same bytes. A range of open pull
+ * requests on the legacy format would then have suppressed the LOWER BOUND
+ * banner entirely. `LedgerTruncation` has no number to reach for without
+ * narrowing the status first, which is why it is that type upstream.
  */
 export function measuredRoundsFor(
   entry: CrcEntry,
-): ({ readonly rounds: number; readonly evicted: number } | CrcRefusal) {
+): ({ readonly rounds: number; readonly truncation: LedgerTruncation } | CrcRefusal) {
   const reading = readLedger(entry.body);
   if (reading.status !== AI_REVIEW_LEDGER_READ) {
     const taken = roundsTaken({ number: entry.number, passed: entry.passed, ledger: reading });
@@ -210,9 +221,7 @@ export function measuredRoundsFor(
         `request the review system refused.`,
     };
   }
-  const evicted =
-    reading.truncation.status === AI_REVIEW_TRUNCATION_STATED ? reading.truncation.dropped : 0;
-  return { rounds: measured, evicted };
+  return { rounds: measured, truncation: reading.truncation };
 }
 
 /** One scored column — the three figures, each with its own numerator. */
@@ -322,10 +331,16 @@ export interface CrcReadingRow {
   readonly allRounds: CrcColumn;
   readonly measuredOnly: CrcColumn;
   /**
-   * Rounds evicted from the ledgers that scored in the measured-only column.
-   * Above zero means that column's figures are a LOWER BOUND.
+   * Rounds the scored ledgers STATED they evicted. Above zero means the
+   * measured-only figures are a LOWER BOUND by at least this much.
    */
   readonly measuredOnlyEvicted: number;
+  /**
+   * Scored pull requests whose eviction count could not be established at
+   * all — a different fact from zero, and the one a single number hid.
+   * Non-empty also means LOWER BOUND, by an amount nobody can state.
+   */
+  readonly measuredOnlyEvictionUnknown: readonly number[];
   readonly split: CrcSplit;
   /** Pull requests whose every round was refused by the review system. */
   readonly zeroMeasured: readonly number[];
@@ -343,6 +358,7 @@ export function takeCrcReading(
   const measuredScored: Scored[] = [];
   const measuredRefusals: CrcRefusal[] = [];
   const zeroMeasured: number[] = [];
+  const measuredOnlyEvictionUnknown: number[] = [];
   let measuredOnlyEvicted = 0;
 
   for (const entry of entries) {
@@ -356,7 +372,13 @@ export function takeCrcReading(
       if (only.refusal === "ZERO_MEASURED_ROUNDS") zeroMeasured.push(entry.number);
     } else {
       measuredScored.push({ passed: entry.passed, rounds: only.rounds });
-      measuredOnlyEvicted += only.evicted;
+      // Narrowed, not defaulted. An unknown eviction count has no number to
+      // add and is recorded as its own fact instead of folded into zero.
+      if (only.truncation.status === AI_REVIEW_TRUNCATION_STATED) {
+        measuredOnlyEvicted += only.truncation.dropped;
+      } else {
+        measuredOnlyEvictionUnknown.push(entry.number);
+      }
     }
   }
 
@@ -368,6 +390,7 @@ export function takeCrcReading(
     allRounds: scoreColumn(allScored, allRefusals),
     measuredOnly: scoreColumn(measuredScored, measuredRefusals),
     measuredOnlyEvicted,
+    measuredOnlyEvictionUnknown: measuredOnlyEvictionUnknown.sort((a, b) => a - b),
     split: splitRoundKinds(entries),
     zeroMeasured: zeroMeasured.sort((a, b) => a - b),
   };
@@ -415,10 +438,23 @@ export function renderCrcReading(row: CrcReadingRow): string[] {
     lines.push(`| \`${kind}\` | ${n} | ${pct(n, row.split.total)} |`);
   }
   lines.push("");
-  if (row.measuredOnlyEvicted > 0) {
+  const unknown = row.measuredOnlyEvictionUnknown;
+  if (row.measuredOnlyEvicted > 0 || unknown.length > 0) {
+    const stated =
+      row.measuredOnlyEvicted > 0
+        ? `${row.measuredOnlyEvicted} round(s) were evicted from ledgers that scored in it, and ` +
+          "an evicted round's kind is unrecoverable"
+        : null;
+    const unknowable =
+      unknown.length > 0
+        ? `${unknown.length} scored pull request(s) cannot say how many rounds they evicted ` +
+          `(${unknown.map(n => `#${n}`).join(", ")}), so the shortfall there is not even a ` +
+          "number — which is a different fact from zero and is why this line exists"
+        : null;
     lines.push(
-      `**The measured-only column is a LOWER BOUND.** ${row.measuredOnlyEvicted} round(s) were ` +
-        "evicted from ledgers that scored in it, and an evicted round's kind is unrecoverable.",
+      `**The measured-only column is a LOWER BOUND.** ${[stated, unknowable]
+        .filter(Boolean)
+        .join(". ")}.`,
       "",
     );
   }
