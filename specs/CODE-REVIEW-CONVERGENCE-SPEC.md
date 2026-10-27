@@ -771,7 +771,7 @@ moved.
 
 | Phase | Verdict | PR | Head | Criteria evidenced | What was observed |
 |---|---|---|---|---|---|
-| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Both required contexts SUCCESS — the required set is exactly `test` and `ai-review` (`gh api …/branches/main/protection/required_status_checks`), and all nine check-runs at that head were `success` — with `mergeable: MERGEABLE` and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second draw was recorded by #1617 on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6` and is **WITHDRAWN as a draw**, because its two halves cannot both be true. It said all check-runs were `success` and that resolving the one thread moved `BLOCKED` to `UNSTABLE` — but `UNSTABLE` is produced by a non-successful status or check, so an all-`success` head has nothing left to produce it. Re-reading at that SHA today confirms ten check-runs, all `success`, and the classic status endpoint empty, which reconciles nothing: #1614 merged at `5449750b`, so the post-resolution half cannot be re-taken at all. Whoever recorded it is not available to say which half was mistyped, and a reading nobody can reproduce is UNMEASURED, not weak. It is kept here named rather than deleted so the next reader does not re-derive the contradiction |
+| **0** | EXITED 2026-10-26 | #1616 | `7ea82e5075e958ba6739d1f428c0dc195da2812c` | CRC-C2, CRC-C3, CRC-B8, CRC-N4 | Both required contexts SUCCESS — the required set is exactly `test` and `ai-review` (`gh api …/branches/main/protection/required_status_checks`), and all nine check-runs at that head were `success` — with `mergeable: MERGEABLE` and `mergeStateStatus: BLOCKED` on two unresolved review threads. Resolving only those two threads — same head, no push, no re-run — flipped it to `CLEAN`. The block is therefore attributable to the threads and to nothing else. A second draw was recorded by #1617 on #1614 at `471a5b507e3d7d15bf4cd8de760d855b3652f7f6` and is **WITHDRAWN as a draw**, because its two halves cannot both be true. It said all check-runs were `success` and that resolving the one thread moved `BLOCKED` to `UNSTABLE` — but `UNSTABLE` is produced by a non-successful status or check, so an all-`success` head has nothing left to produce it. Re-reading at that SHA today confirms ten check-runs, all `success`, and the classic status endpoint empty, which reconciles nothing: #1614 merged at `5449750b`, so the post-resolution half cannot be re-taken at all. Whoever recorded it is not available to say which half was mistyped, and a reading nobody can reproduce is UNMEASURED, not weak. It is kept here named rather than deleted so the next reader does not re-derive the contradiction. **A second draw that CAN be reproduced was taken on #1622** at `023145d7b7992e2cfbc3f1463305d6ef014ef4aa` on 2026-10-27 at 01:58Z: ten check-runs all `success`, `MERGEABLE`, one unresolved thread, `BLOCKED` — and `CLEAN` on resolving that one thread, same head, no push and no re-run. One thread rather than two, and both halves minutes apart on one SHA, which makes it the cleanest of the set. *The swarm track, and the reorder it asks for* carries the full reading |
 | **1** | PENDING | — | — | — | — |
 | **2** | UNMEASURED — unreachable, see below | — | — | — | — |
 | **3** | PENDING | — | — | — | — |
@@ -782,8 +782,10 @@ moved.
 **Four criteria named, none of them ticked, and that is the point.** CRC-C2
 (*a pull request cannot merge while a finding is open*), CRC-C3 (*a false
 positive clears by closing the thread with a reason*) and CRC-B8 (*every
-finding gets answered*) were each exercised twice on 2026-10-26 — and twice is
-two draws, not a population. CRC-N4's reading is the 13-threads-for-3-findings
+finding gets answered*) were each exercised twice on 2026-10-26 and a third
+time on #1622 on 2026-10-27, whose round 5 finding was stale rather than wrong
+about the code and cleared by closing the thread with that reason — and three
+is three draws, not a population. CRC-N4's reading is the 13-threads-for-3-findings
 count below. Ticking any of them on this evidence is the error CRC-A4's own
 promotion condition exists to prevent, so the column records what the reading
 feeds and the boxes stay open.
@@ -910,13 +912,43 @@ edited rather than deleted.** Read **2026-10-26 at 23:16Z** on **#1619**, head
 One check was red — `review`, the local plugin's advisory job — and it is
 **not** in the required set, which is the fact that makes the reading
 unconfounded and is why the contexts are read from the API beside it rather
-than remembered. So the population is **one complete draw and one half**:
-#1616 resolved to `CLEAN`, and #1619 was read before any thread was
-resolved, so it shows `BLOCKED` attributable to one thread and shows
-nothing about what resolving it would do. This paragraph claimed three
-draws in an earlier round and the count did not survive reading them; the
-boxes above stay open, and now by a wider margin than when they were first
-left open.
+than remembered. #1619 was read before any thread was resolved, so it shows
+`BLOCKED` attributable to one thread and shows nothing about what resolving
+it would do — half a draw, and recorded as a half.
+
+**A third reading, and the cleanest of the set, was taken on #1622 itself.**
+Read **2026-10-27 at 01:58Z** on head
+`023145d7b7992e2cfbc3f1463305d6ef014ef4aa`, four minutes before that pull
+request merged at `f0a9d973`:
+
+| Reading | Before | After |
+|---|---|---|
+| required contexts (`test`, `ai-review`) | both `success` | unchanged |
+| all ten check-runs | all `success` | unchanged |
+| `mergeable` | `MERGEABLE` | `MERGEABLE` |
+| unresolved review threads | **1** | **0** |
+| `mergeStateStatus` | **`BLOCKED`** | **`CLEAN`** |
+
+**Same head. No push, no re-run, no check re-evaluated.** Resolving one
+thread and nothing else moved `BLOCKED` to `CLEAN` with every other context
+already green, so the block is attributable to the thread and to nothing
+else. It is the cleanest draw because the preceding round created the
+thread and the preceding fix cleared it: both halves were read minutes
+apart, by one observer, on one SHA, with one thread in play rather than two.
+
+It was recorded on #1622 as a comment and deliberately NOT written into this
+file by that pull request — five rounds, four of them correcting prose about
+readings, and a sixth reading added there would have been one more instance
+in place of the mechanism round 4 asked for. This paragraph is the
+follow-up it was held for.
+
+So the population is **two complete draws and one half**: #1616 and #1622
+both read `BLOCKED` with every required context green and both flipped to
+`CLEAN` on resolution alone, and #1619 was read before any resolution. This
+paragraph claimed three draws in an earlier round, the count did not survive
+reading them, and it is now back to three readings by a different route —
+two that were taken rather than three that were asserted. Two is still two
+draws. The boxes above stay open.
 
 **The defect worth keeping is that no elapsed time was required.** The first
 draft of this correction said the two halves disagreed "for two days", a
