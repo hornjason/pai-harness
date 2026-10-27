@@ -1671,7 +1671,15 @@ describe("AC-C8 (AC-2): a RESOLVED thread answers a carried finding", () => {
   const TEXT = "const n = xs[i]";
   const SUMMARY = "unchecked index";
   const FILE = "lib/a.ts";
-  const liveKey = () => carryKey({ file: FILE, line: 1, summary: SUMMARY }, TEXT);
+  // `carryKey` is nullable, and a null here would spell "no key in the body",
+  // which every row below would read as "no thread matched" — row (b) would
+  // fail for a reason that has nothing to do with resolution. Refuse it at
+  // the fixture rather than diagnosing it at the assertion.
+  const liveKey = (): string => {
+    const k = carryKey({ file: FILE, line: 1, summary: SUMMARY }, TEXT);
+    if (k === null) throw new Error("carryKey returned null, so this fixture cannot key a thread");
+    return k;
+  };
   const ledger = () => [botComment(5, windowBody([round(5, [recorded(FILE, 1, SUMMARY, TEXT)])]))];
   const files = { [FILE]: `${TEXT}\n` };
   const thread = (isResolved: boolean, key: string = liveKey()) => ({
@@ -1719,5 +1727,36 @@ describe("AC-C8 (AC-2): a RESOLVED thread answers a carried finding", () => {
       r.carried,
       "an unreadable thread list was treated as every finding having been answered",
     ).toHaveLength(1);
+  });
+});
+
+describe("AC-C8 (AC-2): the drop, performed", () => {
+  const TEXT = "const n = xs[i]";
+  const SUMMARY = "unchecked index";
+  const FILE = "lib/a.ts";
+  const ledger = () => [botComment(5, windowBody([round(5, [recorded(FILE, 1, SUMMARY, TEXT)])]))];
+  const files = { [FILE]: `${TEXT}\n` };
+
+  test("AC-C8e: the MUTANT — the resolved filter removed — carries the answered finding", () => {
+    // Without this row, AC-C8b is satisfied by any step that drops the
+    // finding for some other reason, and nothing says the resolution did it.
+    // Removing the `--argjson` binding is the smallest edit that disarms the
+    // filter without changing the jq program, so the mutant still parses.
+    const real = buildCarryScript();
+    const mutant = real.replace(` --argjson resolved "\${resolved_bodies}"`, ` --argjson resolved '[]'`);
+    expect(mutant, "the resolved binding was not found, so nothing was mutated").not.toBe(real);
+
+    const key = carryKey({ file: FILE, line: 1, summary: SUMMARY }, TEXT);
+    expect(key, "the fixture could not key a thread").not.toBeNull();
+    const pages = [[{ isResolved: true, body: threadBody({ severity: "high", summary: SUMMARY }, key) }]];
+
+    expect(
+      runCarry({ list: ledger(), files, threadPages: pages, script: mutant }).carried,
+      "the mutant dropped it too, so the resolved threads are not what row (b) measures",
+    ).toHaveLength(1);
+    expect(
+      runCarry({ list: ledger(), files, threadPages: pages }).carried,
+      "the real script stopped dropping it, so row (b) is measuring nothing",
+    ).toHaveLength(0);
   });
 });

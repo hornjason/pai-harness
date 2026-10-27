@@ -5271,6 +5271,28 @@ printf '%s' "\${flat}" | jq -c '.[]' | while IFS= read -r row; do
   esac
 done > "\${texts}"
 
+# AC-2. The bodies of the RESOLVED threads, raw, exactly as GitHub returned
+# them. Nothing is decoded here and no identity rule is restated: the filter
+# below takes the key it has ALREADY computed, encodes it the one way
+# \`threadBody\` encodes it, and asks whether a resolved body carries that
+# marker. Going the other way — decoding each body back to a key in jq —
+# would be a third reader of the key format after \`carryKey\` and
+# \`threadKeyFrom\`, which is #1568's shape: two readers of the same bytes
+# differing on a case neither author thought to name.
+#
+# AN UNREADABLE OR ABSENT LIST YIELDS \`[]\`, AND THAT IS NOT A SHRUG. Empty
+# means "no finding was shown to be answered", so every finding carries —
+# the direction in which a wrong answer is cheap. The inverse, reading an
+# unreadable list as "everything was answered", drops a live finding while
+# the required check reports CLEAN, which is exactly what #1597 cost.
+resolved_bodies='[]'
+if [ -n "\${${AI_REVIEW_THREADS_PATH_VAR}:-}" ] && [ -f "\${${AI_REVIEW_THREADS_PATH_VAR}}" ]; then
+  if ! resolved_bodies=\$(jq -c '[ .[]? | select(.isResolved == true) | .body | select(type == "string") ]' "\${${AI_REVIEW_THREADS_PATH_VAR}}" 2>/dev/null); then
+    resolved_bodies='[]'
+    carry_note "the resolved review threads could not be read, so a finding a human already answered is carried forward and the reviewer may raise it again."
+  fi
+fi
+
 # The carry rule, and the DROP is the half that makes the rest mean anything:
 # without it this step carries everything unconditionally and a suite asserting
 # only that a finding gets carried is green against it.
@@ -5315,7 +5337,7 @@ done > "\${texts}"
 # and never keyed: keying under the wrong rule does not fail, it silently
 # compares two different things. The EARLIEST round wins, so a finding that
 # has survived three rounds says round 1 and not round 3.
-if ! carried=\$(jq -sc --argjson base "\${flat}" '
+if ! carried=\$(jq -sc --argjson base "\${flat}" --argjson resolved "\${resolved_bodies}" '
     ${AI_REVIEW_JQ_NORM}
     [ range(0; (\$base | length)) as \$i | (\$base[\$i] + (.[\$i] // {})) ]
     | map(select(
@@ -5332,6 +5354,11 @@ if ! carried=\$(jq -sc --argjson base "\${flat}" '
                   + "\\u0000" + (.${AI_REVIEW_FINDING_FIELDS.summary} | norm))
             else null end)
       })
+    | map(select(
+        .k == null
+        or ((.k | @base64) as \$enc
+            | ([ \$resolved[] | select(contains("${AI_REVIEW_THREAD_KEY_MARKER} " + \$enc + " -->")) ] | length) == 0)
+      ))
     | (map(select(.k == null)) + (map(select(.k != null)) | group_by(.k) | map(sort_by(.round // 0) | .[0])))
     | sort_by([(.round // 0), (.${AI_REVIEW_FINDING_FIELDS.file} | norm), (.${AI_REVIEW_FINDING_FIELDS.summary} | norm)])
   ' "\${texts}" 2>/dev/null); then
