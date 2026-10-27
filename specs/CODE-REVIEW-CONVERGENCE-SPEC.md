@@ -431,8 +431,9 @@ the class this document keeps hitting.
 Small, and it reuses the thread reader Increments **1a and 1b already
 shipped** — the suppression gate's `pulls/{n}/comments` plus GraphQL
 `isResolved` read (#1621) and carry-forward's read of the same (#1623).
-That reader exists in the tree today; what remains gated is 1c, the
-removal of the ledger comment:
+That reader exists in the tree today, and so does the two-push evidence
+that it does not duplicate (`AS-10`). What remains is 1c, the removal of
+the ledger comment:
 
 1. The reviewer tags every finding with **exactly one** of `class:<name>` or
    `instance-only`, and a `class:` tag names the search that finds the siblings.
@@ -902,7 +903,7 @@ claims, deliberately kept in three places, and the reason is in that section.
 
 | PR | Phase / increment | Criteria it is pointed at | State |
 |---|---|---|---|
-| — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4, CRC-B5 | **gated, and not merely unstarted.** 1a (#1621) and 1b (#1623) are merged, so AC-1, AC-2 and AC-4 are green. AC-5 reads *"only once AC-1..AC-4 are green"* and **AC-3 has no coverage at all** — it is an *executed* observation (push a second round with the defect still present, count threads) that nobody has taken. #1628 folds the comment into a `<details>` block in the meantime, which reduces what a human reads and changes nothing the carry step reads |
+| — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4, CRC-B5 | **unblocked, and the gate is satisfied rather than waived.** AC-5 reads *"only once AC-1..AC-4 are green"*. 1a (#1621) carries AC-1 and AC-4, 1b (#1623) carries AC-2, and **AC-3 is `AS-10` in `test/ai-review-suppression.test.ts`** — the producer run twice against a poster that behaves as GitHub does, with both vacuity controls (`AS-10b`: no gate gives two threads; `AS-10c`: a different defect still gets its own). #1628 (`242c9ceb`) folded the comment into a `<details>` block as interim relief; 1c removes it |
 | — | Increment 2 — a verifier invocation writes a ballot, three invocations with per-verifier directories | CRC-B4, CRC-B3 | blocked on the ordering defect below |
 | — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
 
