@@ -369,6 +369,29 @@ a piece of work rather than a review round. The guards that exist bind the
 regions where a restatement has actually been found, and that is stated as
 a floor, not as coverage.
 
+**The next instrument is a section census, and it is specified here rather
+than built here.** It asserts that every heading is either read by a guard
+in `test/code-review-convergence-spec.test.ts` or carries a written reason
+for not being — so adding a section turns the suite red until someone
+decides which. It does not close the class; it converts a silent hole into
+a loud one, which is the only move the measurements above leave open. Two
+readings justify it and both were taken on 2026-10-27, by writing the
+census, running it once, and removing it again:
+
+```sh
+grep -cE '^#{2,3} ' specs/CODE-REVIEW-CONVERGENCE-SPEC.md
+```
+
+At `##` granularity the census leaves most sections unaccounted on its first
+run, including the one holding the prior-art bullets this round found wrong.
+And `##` is the wrong granularity: `untickedBoxSection` and
+`remainderSection` both read sub-sections of *the same* `##`, whose bulk is
+read by neither, so a census at that level would report coverage the guards
+do not have. The honest unit is the `###`, which the command above counts.
+That scale — not the principle — is why this is separate work: introducing
+a new instrument at round 8 of a three-round budget, in the document that
+criticises exactly that, would be the behaviour rather than the fix.
+
 Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4, and
 again after #1448 bound CRC-M11; re-counted on 2026-10-24 after #1587 bound
 CRC-B7, which moved one criterion out of *not done* and no other category. The audit above was taken the same day, at 0
@@ -434,20 +457,36 @@ population* — is the half nothing in this document requires.
 The name is **variant analysis**: given one confirmed defect, find every
 sibling. It is a mature practice and this repository has adopted none of it.
 
-- **CodeQL** is the reference implementation — GitHub Security Lab credits it
-  with 400+ CVEs found by taking one bug and querying for its shape. It is
-  free for public repositories and **has never been enabled here**: the
-  code-scanning alerts API answers `no analysis found` for this repository,
-  read on 2026-10-27.
+- **CodeQL** is the reference implementation. GitHub Security Lab passed
+  **500 CVEs disclosed in open-source projects** and credits CodeQL for the
+  pace ([GitHub blog, 2023][gh500]) — that figure covers all of the Lab's
+  disclosures, and **no published figure isolates variant analysis alone**,
+  so do not cite one. An earlier draft of this bullet claimed "400+ CVEs
+  found by variant analysis"; it traced to a secondary blog post and was
+  removed when the reviewer asked where it came from. CodeQL is free for
+  public repositories and **has never been enabled here**: the code-scanning
+  alerts API answers `no analysis found` for this repository, read on
+  2026-10-27.
+
+[gh500]: https://github.blog/security/vulnerability-research/the-github-security-labs-journey-to-disclosing-500-cves-in-open-source-projects/
 - **Semgrep** covers the same move at lower cost for syntactic classes.
 - **Trail of Bits' variant-analysis methodology** names *narrow scope —
   searching only the original module* as the first failure mode, which is
   exactly #1614's rounds 10 through 12.
-- **Tricorder** (Google, ICSE 2015) is the closest prior art to CRC-A8: review
-  findings become executable analyzers, most contributed by the developer who
-  hit the bug, with a **<5% effective false-positive contract** — exceed it and
-  the analyzer is disabled. That contract is the part worth copying; an
-  analyzer nobody can switch off becomes an analyzer everybody clicks past.
+- **Tricorder** (Sadowski et al., ICSE 2015, [paper][tri]) is the closest
+  prior art to CRC-A8: review findings become executable analyzers, most
+  contributed by the developer who hit the bug, governed by an **effective
+  false-positive** budget — a report the user took no action on. Above
+  **10%** the analyzer goes on probation and its author must show progress;
+  above **25%** the Tricorder team may switch it off immediately. An earlier
+  draft of this bullet said "<5% … and the analyzer is disabled", which is
+  wrong in both the threshold and the consequence. The graduated contract is
+  the part worth copying, and the probation tier is the half the wrong
+  version lost: an analyzer nobody can switch off becomes an analyzer
+  everybody clicks past, but one switched off at the first bad week never
+  gets fixed.
+
+[tri]: https://research.google/pubs/tricorder-building-a-program-analysis-ecosystem/
 
 #### Build or adopt — the answer is mostly adopt, and the honest caveat
 
@@ -626,9 +665,9 @@ carry dropped, and under `scope=diff` a dropped finding in an untouched file
 is seen by nothing at all. **That second chance has since been measured and
 it is rare** — the drop corpus, the re-raises and how clean they were are
 recorded once, in *Measured non-obvious facts*, and deliberately not restated
-here. The ordering was right, and the quantity behind it is far smaller than
-this paragraph reads, which is worth knowing before anyone cites it as though
-the cost were large. So the condition for adopting CRC-N2 is not *the
+here. The ordering was right, and the measurement is worth reading before
+anyone cites this paragraph as though the cost were large. So the condition
+for adopting CRC-N2 is not *the
 carry emits findings* but *the carry does not silently drop them*, and the
 first was being read as the second. **#1600 therefore ships the content-
 addressed anchor first and the narrowing on top of it**, in that order, and
@@ -672,13 +711,15 @@ hand-types dozens of other tallies — *272 (finding, later round) pairs*,
 *147 parseable ledgers*, *161 distinct rounds*, *31 review threads of which
 12 were one note* — none of them bound by anything, and offered two ways out:
 machine-verify them, or declare them exempt. **Machine-verifying them is not
-possible and would be wrong if it were.** The numbers fall into two classes
-and only one of them is a property of this document:
+possible and would be wrong if it were.** The classes below are sorted by
+where the authority for a number lives, and only the first is a property of
+this document:
 
 | Class | Example | Can a test recompute it? | Rule |
 |---|---|---|---|
 | **Document-derived** | the bullet count, the id set, which criteria sit in which bucket | Yes — it is in the file | **Must be computed.** A hand-typed one is a defect |
 | **World-derived** | `15 ai-review runs`, `147 parseable ledgers`, `12 entries and truncated 5` | No | **Must carry its date and the command that took it** |
+| **Cited** | Tricorder's 10% probation threshold, GitHub Security Lab's 500 CVEs | No — nothing here can take the reading | **Must name a retrievable primary source.** A figure whose only trace is a secondary summary is not citable and must be dropped, not softened |
 
 A world-derived number re-measured gives a **different** answer, because the
 world moved — that is what makes it a measurement rather than a tally. Re-

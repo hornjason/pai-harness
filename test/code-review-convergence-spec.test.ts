@@ -552,10 +552,13 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
     // That comparison is *why* the sentence drifted. It held a present-tense
     // claim about a document that moves underneath it, so every criterion
     // that changed bucket silently falsified it, and the repair was always
-    // another hand-edit to one sentence. Three consecutive review rounds on
-    // #1627 each found a DIFFERENT miscount in it — the total, the
-    // unobservable count, and the deviations row — which is the signature of
-    // a class being patched one instance at a time rather than closed.
+    // another hand-edit to one sentence. Successive review rounds on #1627
+    // each found a DIFFERENT miscount in it — the signature of a class being
+    // patched one instance at a time rather than closed. The running count of
+    // those rounds is NOT repeated here: an earlier draft of this comment said
+    // "three", the spec's own prose later said "five", and the two disagreed
+    // for four rounds. A comment restating a number the spec already carries
+    // is the same defect this guard exists to catch, in a file no guard reads.
     //
     // The general property that replaces it: this spec may state bucket
     // counts only as a reading taken on a named day. A dated reading cannot
