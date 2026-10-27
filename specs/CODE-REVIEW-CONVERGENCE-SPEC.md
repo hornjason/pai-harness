@@ -999,7 +999,7 @@ claims, deliberately kept in three places, and the reason is in that section.
 | PR | Phase / increment | Criteria it is pointed at | State |
 |---|---|---|---|
 | — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4 | **unblocked, and the gate is satisfied rather than waived.** AC-5 reads *"only once AC-1..AC-4 are green"*. 1a (#1621) carries AC-1 and AC-4, 1b (#1623) carries AC-2, and **AC-3 is `AS-10` in `test/ai-review-suppression.test.ts`** — the producer run twice against a poster that behaves as GitHub does, with both vacuity controls (`AS-10b`: no gate gives two threads; `AS-10c`: a different defect still gets its own). #1628 (`242c9ceb`) folded the comment into a `<details>` block as interim relief; 1c removes it. **1c is a migration and not a deletion** — see below |
-| — | Increment 2 — a mechanical pre-check, then a ballot from a group of **two** with an adaptive stop | CRC-B4, CRC-B3 | **blocked twice over, and the second one is the binding constraint.** (a) the ordering defect below — threads are posted before the ballot is read, so a quorum cannot suppress a thread. (b) **Phase 1's exit condition has never been observed.** Increment 1 is fully built and merged, and *Readings taken* records Phase 1 as `PENDING`: no pull request has yet shown round two posting a new thread and zero repeats. Building Increment 2 now would be this document's own named error — a phase called done on a checkbox count rather than on an observation — committed in the section that exists to prevent it. The shape of the build also changed; see CRC-B4 |
+| — | Increment 2 — a mechanical pre-check, then a small independent ballot with an adaptive stop. **The group size is not settled and this row must not imply it is** — item 2 of *What has to change* calls it a budget floor rather than an optimum, and names *up* as the indicated move if the pre-check refutes little | CRC-B4, CRC-B3 | **blocked on the ordering defect below** — threads are posted before the ballot is read, so a quorum cannot suppress a thread, and Phase 2 is therefore UNMEASURED rather than pending. A second blocker was recorded here and has since **cleared**: Phase 1's exit condition was unobserved, and *Readings taken* now carries it as EXITED on this pull request. That gate was real while it lasted — building Increment 2 against a checkbox count is the error the exit-conditions section exists to prevent — and it came off on an observation rather than on a decision to stop waiting |
 | — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
 
 **Merged, and kept out of this table on purpose.** #1614 (`1b9ffce3`), #1616
@@ -1495,7 +1495,7 @@ it.
 | The same models **improve** to 97.5 / 84.3 when an oracle decides when to stop | [ibid.][huang], Table 2 | The gain in the published self-correction results is the external signal, not the model's judgement |
 | At matched response count, multi-agent debate **underperforms** plain majority voting: 9 responses give debate 83.0 against self-consistency 88.2; at 6, 83.2 against 85.3 | [ibid.][huang], Table 7 | Independent votes beat deliberation at equal spend. Our ballot is the independent kind, and must stay that way |
 | LLM evaluators recognise their own generations and score them higher, with self-preference rising with self-recognition | [Panickssery et al., NeurIPS 2024][self] | A same-model verifier is biased toward **confirming** the finding, which is the costly direction here |
-| Full fixed cascades underperform the best **two**-model pair; longer optimised cascades add at most 0.014 normalised gain over it | [arXiv 2605.06350][casc], §6.2 and Table 2 | `VERIFIER_GROUP_SIZE` of 3 is buying the part the field says does not pay |
+| Full fixed cascades underperform the best **two**-model pair; longer optimised cascades add at most 0.014 normalised gain over it | [arXiv 2605.06350][casc], §6.2 and Table 2 | **Constrains nothing here, and an earlier draft of this cell said it sized the group — withdrawn, see item 2.** The cascade is sequential dependent routing; our ballot is an independent vote. This row is kept because the *router* finding beneath it does transfer, and because deleting a citation that was misapplied hides the misapplication |
 | A plain router beats the best cascade on four of five datasets, "because it avoids paying the cheap model's generation cost on queries routed elsewhere" | [ibid.][casc] | Decide which findings need a vote **before** convening one, rather than voting then filtering |
 | Adaptive sampling reaches up to **7.9×** fewer samples for under 0.1% accuracy drop | [Aggarwal et al., EMNLP 2023][adac] | Stop as soon as the outcome is determined — the first vote calling a finding **real** ends a unanimity-to-demote ballot. **Conditional on sequential dispatch**; see the architecture note under item 2 |
 | A cheap judge with calibrated escalation keeps a human-agreement guarantee | [Trust or Escalate, ICLR 2025][esc] | The verifier need not be the review model |
@@ -1572,6 +1572,25 @@ letting verifiers see each other's ballots; that is the measured-worse design.
    wrong meaning. **Declare a new constant for the demotion rule; do not
    re-use `VERIFIER_QUORUM` and do not re-document it in place**, because
    the recording half already deployed reads it under the original meaning.
+
+   **The constant is `VERIFIER_DEMOTE_QUORUM`**, and naming it here rather
+   than leaving the requirement open is the point — a spec that forbids a
+   symbol without supplying its replacement leaves an implementer with
+   nothing to bind to, which is how the forbidden one gets re-used. Its
+   definition, which must be its docstring:
+
+   > **`VERIFIER_DEMOTE_QUORUM`** — how many verifiers must agree a finding
+   > is **FALSE** before it is demoted. Not a count of agreement that it is
+   > real; that is `VERIFIER_QUORUM`, which gates a different decision in
+   > the opposite direction and must keep its meaning. A demotion requires
+   > at least two concurring verifiers **and** unanimity of the group, so
+   > the two constraints move together and a group of one can never demote.
+
+   The second sentence of that definition is load-bearing. Unanimity alone
+   is satisfied vacuously by a group of one — exactly the counterfeit
+   CRC-B4 already names, arriving through the quorum rather than through
+   the ballot directory — so the floor and the unanimity are both required
+   and a test must be able to fail on each separately.
    **The adaptive stop buys nothing unless the invocations are sequenced,
    and that has to be chosen rather than assumed.** A stop can only save a
    call if the first verifier's vote is known before the second is spawned.
