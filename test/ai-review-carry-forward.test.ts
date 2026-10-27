@@ -1644,3 +1644,80 @@ describe("AC-T1 (AC-1): the carry step writes the review threads", () => {
     expect(yml).toContain(`/${AI_REVIEW_THREADS_BASENAME}`);
   });
 });
+
+/**
+ * AC-2 (Increment 1b): carry-forward decides "still unanswered" from an OPEN
+ * thread, and treats a RESOLVED one as answered.
+ *
+ * ## The gate and this reader deliberately disagree, and that is the point
+ *
+ * `aiReviewSuppressionGate` asks "has this already been RAISED?", so a
+ * resolved thread counts as raised and the finding is not posted twice. This
+ * reader asks "is this still UNANSWERED?", so a resolved thread counts as
+ * answered and the finding is dropped. Same input, two questions, two
+ * answers. A single shared helper returning one boolean would have to pick
+ * one of them and silently break the other — which is why the resolution flag
+ * is read here rather than folded away in `priorKeysFrom`.
+ *
+ * ## Why this is not the anchor rule in different clothes
+ *
+ * The anchor rule asks the CODE whether a finding is fixed. It cannot see an
+ * answer that is not a code change — a false positive closed with a reason,
+ * which CRC-C3 exists for. Before this, answering such a thread left the
+ * finding carried forever and the reviewer re-raised it every round. That is
+ * CRC-N4 measured on #1616: eleven threads for three distinct findings.
+ */
+describe("AC-C8 (AC-2): a RESOLVED thread answers a carried finding", () => {
+  const TEXT = "const n = xs[i]";
+  const SUMMARY = "unchecked index";
+  const FILE = "lib/a.ts";
+  const liveKey = () => carryKey({ file: FILE, line: 1, summary: SUMMARY }, TEXT);
+  const ledger = () => [botComment(5, windowBody([round(5, [recorded(FILE, 1, SUMMARY, TEXT)])]))];
+  const files = { [FILE]: `${TEXT}\n` };
+  const thread = (isResolved: boolean, key: string = liveKey()) => ({
+    isResolved,
+    body: threadBody({ severity: "high", summary: SUMMARY }, key),
+  });
+
+  test("AC-C8a: the control — an OPEN thread leaves the finding carried", () => {
+    // Without this row the next one is satisfied by a step that drops
+    // everything the moment any thread exists.
+    const r = runCarry({ list: ledger(), files, threadPages: [[thread(false)]] });
+    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
+    expect(r.carried, "an open thread stopped the finding being carried").toHaveLength(1);
+  });
+
+  test("AC-C8b: a RESOLVED thread drops it, with the code UNCHANGED", () => {
+    // The anchor still matches — `files` is identical to row (a) — so the
+    // anchor rule carries. Only the resolution can drop it, which is the
+    // whole criterion.
+    const r = runCarry({ list: ledger(), files, threadPages: [[thread(true)]] });
+    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
+    expect(
+      r.carried,
+      "a thread answered and resolved by a human still carried, so the reviewer re-raises it next round",
+    ).toHaveLength(0);
+  });
+
+  test("AC-C8c: a resolved thread for a DIFFERENT finding drops nothing", () => {
+    // The drop is keyed, not blanket. Without this, a reader that dropped
+    // every finding whenever ANY resolved thread existed passes row (b).
+    const r = runCarry({
+      list: ledger(),
+      files,
+      threadPages: [[thread(true, `${FILE}\u0000t:something else\u0000a different summary`)]],
+    });
+    expect(r.carried, "an unrelated resolved thread answered this finding").toHaveLength(1);
+  });
+
+  test("AC-C8d: threads that could not be read carry, rather than resolving", () => {
+    // The direction this must fail in. An unreadable thread list is not
+    // evidence that anything was answered, and the costly error is the silent
+    // drop — a live finding that vanishes with the check reporting CLEAN.
+    const r = runCarry({ list: ledger(), files, threadPages: null });
+    expect(
+      r.carried,
+      "an unreadable thread list was treated as every finding having been answered",
+    ).toHaveLength(1);
+  });
+});
