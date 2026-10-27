@@ -224,6 +224,20 @@ export function allRoundsFor(entry: CrcEntry): CrcRoundCount {
 }
 
 /**
+ * The ONLY refusal the measured-only column is allowed to score through.
+ *
+ * Every other refusal `roundsTaken` can make is a fact about the ledger —
+ * absent, unreadable, an eviction count that is not a number, no rounds at
+ * all — and a fact about the ledger is true in both columns or neither. This
+ * set is the closed statement of where the two columns may disagree, in one
+ * direction; `ZERO_MEASURED_ROUNDS` is the disagreement in the other, and
+ * there is no third. `test/crc-reading.test.ts` runs the pair over every
+ * ledger shape in this file and fails on any divergence not named here, so a
+ * refusal added to `rounds-to-pass.ts` later cannot quietly join this set.
+ */
+const MEASURED_ONLY_SCORES_ANYWAY: ReadonlySet<string> = new Set(["ROUNDS_TRUNCATION_UNKNOWN"]);
+
+/**
  * How many of this pull request's rounds produced a review.
  *
  * A pull request whose every round was refused by the review system has no
@@ -253,12 +267,22 @@ export function measuredRoundsFor(
   entry: CrcEntry,
 ): ({ readonly rounds: number; readonly truncation: LedgerTruncation } | CrcRefusal) {
   const reading = readLedger(entry.body);
+
+  // Both columns ask `roundsTaken` FIRST, so every refusal that is a fact
+  // about the LEDGER — absent, unreadable, no rounds at all — is decided in
+  // one place and the two columns cannot disagree about it. Only
+  // `MEASURED_ONLY_SCORES_ANYWAY` is allowed to differ, and it is listed
+  // rather than implied. #1633 round 4 found the divergence this closes: an
+  // empty ledger was ROUNDS_EMPTY through `allRoundsFor` and
+  // ZERO_MEASURED_ROUNDS here, so a pull request the reviewer never ran on
+  // was listed beside ones it ran on and produced nothing — and a ledger
+  // whose eviction count is not a number reached the eviction SUM.
+  const taken = roundsTaken({ number: entry.number, passed: entry.passed, ledger: reading });
+  if ("refusal" in taken && !MEASURED_ONLY_SCORES_ANYWAY.has(taken.refusal)) {
+    return { number: entry.number, refusal: taken.refusal, detail: taken.detail };
+  }
   if (reading.status !== AI_REVIEW_LEDGER_READ) {
-    const taken = roundsTaken({ number: entry.number, passed: entry.passed, ledger: reading });
-    if ("refusal" in taken) {
-      return { number: entry.number, refusal: taken.refusal, detail: taken.detail };
-    }
-    /* c8 ignore next */
+    /* c8 ignore next 2 — unreachable: a non-READ reading always refuses above. */
     return { number: entry.number, refusal: "LEDGER_UNREADABLE", detail: "unreachable" };
   }
   const measured = reading.rounds.filter(r => r.measured).length;

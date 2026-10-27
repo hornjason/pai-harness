@@ -534,6 +534,58 @@ describe("the script refuses, and the refusal can be removed", () => {
     }
   });
 
+  test("a --repo that is not owner/name refuses before anything is fetched", () => {
+    // `--repo` is interpolated into the GraphQL document as two string
+    // literals while every other argument is passed. It was the one argument
+    // `parseArgs` did not look at: a `"` closes the literal and the server
+    // rejects a document nobody wrote, and a value with no `/` becomes
+    // `name:"undefined"` — a GraphQL error about a repository rather than a
+    // message about the flag.
+    const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+    try {
+      for (const bad of ['owner"/name', "no-slash", "a/b/c", ""]) {
+        const args = ["--lo", "10", "--hi", "20", "--repo", bad];
+        const real = run(SCRIPT, args, dir);
+        expect(real.status, `--repo ${JSON.stringify(bad)} was accepted`).toBe(1);
+        expect(real.stderr).toContain("is not owner/name");
+        // And it refused in `parseArgs`, before `gh` ran — otherwise the
+        // check is a second message on a failure the network already made.
+        expect(real.stderr).not.toContain("gh api graphql");
+      }
+
+      const mutant = run(mutantPath(dir), ["--lo", "10", "--hi", "20", "--repo", "no-slash"], dir);
+      expect(mutant.stderr).toContain("is not owner/name");
+      expect(mutant.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a well-formed --repo passes the check — it is not refusing everything", () => {
+    // The control. A pattern that rejected its own default would make every
+    // assertion above green for the wrong reason.
+    const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+    try {
+      const entries = join(dir, "entries.json");
+      writeFileSync(
+        entries,
+        JSON.stringify([
+          { number: 10, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+        ]),
+      );
+      const real = run(
+        SCRIPT,
+        ["--lo", "10", "--hi", "10", "--repo", "hornjason/pai-harness", "--from", entries,
+          "--store", "none.json"],
+        dir,
+      );
+      expect(real.stderr).not.toContain("is not owner/name");
+      expect(real.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a stale --from file does not reach the store or the spec", () => {
     // Round 3's path, end to end: min and max line up, an extra pull request
     // sits between them, and `--record --write-spec` is asked for. Nothing
@@ -608,6 +660,111 @@ describe("the script refuses, and the refusal can be removed", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the two columns may disagree in exactly two ways, and they are named", () => {
+  /**
+   * The closed invariant round 4 asked for, as a property rather than one
+   * more fixture.
+   *
+   * Rounds 1 through 4 each found a shape where this module answered two
+   * questions about one ledger and the answers did not line up — the kind
+   * decided twice, a zero standing in for an unknown, a range check that
+   * only looked at the ends, and an empty ledger excluded from one column
+   * while being listed by the other. Four instances of one defect is not
+   * four defects, and a fifth fixture would not have found the fifth.
+   *
+   * So: run both columns over every ledger shape this file knows how to
+   * build, and refuse any pair the table below does not name. A new refusal
+   * in `rounds-to-pass.ts`, or a new early return here, fails this before it
+   * can reach a reading.
+   */
+  const verdict = (r: { rounds: number } | { refusal: string }): string =>
+    "refusal" in r ? r.refusal : "SCORED";
+
+  /** `allRoundsFor` verdict → the ONLY `measuredRoundsFor` verdict allowed. */
+  const ALLOWED: Readonly<Record<string, readonly string[]>> = {
+    // Facts about the LEDGER. True in both columns or neither.
+    LEDGER_ABSENT: ["LEDGER_ABSENT"],
+    LEDGER_UNREADABLE: ["LEDGER_UNREADABLE"],
+    ROUNDS_EMPTY: ["ROUNDS_EMPTY"],
+    // Divergence one: an unknown eviction count is a refusal for a COUNT and
+    // a lower bound for this column, which reports the bound and flags it.
+    ROUNDS_TRUNCATION_UNKNOWN: ["SCORED"],
+    // Divergence two: rounds happened, none produced a review.
+    SCORED: ["SCORED", "ZERO_MEASURED_ROUNDS"],
+  };
+
+  const SHAPES: Readonly<Record<string, string | null>> = {
+    "no ledger comment at all": null,
+    "a ledger whose JSON does not parse": [
+      AI_REVIEW_LEDGER_COMMENT_MARKER,
+      "",
+      "```json",
+      "{not json",
+      "```",
+      "",
+    ].join("\n"),
+    "a ledger that parsed and holds NO rounds": ledgerBody([], 0),
+    "a legacy bare array at the eviction cap": [
+      AI_REVIEW_LEDGER_COMMENT_MARKER,
+      "",
+      "```json",
+      JSON.stringify(Array.from({ length: 12 }, (_, i) => measured(i + 1))),
+      "```",
+    ].join("\n"),
+    "an eviction count that is not a number": ledgerBody(
+      [measured(1)],
+      "seven" as unknown as number,
+    ),
+    "rounds that all declined": ledgerBody([unmeasured(1, "declined"), unmeasured(2, "declined")]),
+    "an ordinary two-round history": ledgerBody([unmeasured(1, "declined"), measured(2)]),
+    "a stated eviction above zero": ledgerBody([measured(1)], 3),
+  };
+
+  test("every ledger shape lands on a pair the table names", () => {
+    const seen = new Set<string>();
+    for (const [name, body] of Object.entries(SHAPES)) {
+      const e = entry({ number: 1, body });
+      const all = verdict(allRoundsFor(e));
+      const only = verdict(measuredRoundsFor(e));
+      expect(
+        ALLOWED[all] ?? [],
+        `${name}: all-rounds said ${all} and measured-only said ${only}, a pair ` +
+          "the table does not name. Add the row deliberately, or make the two " +
+          "columns agree — see MEASURED_ONLY_SCORES_ANYWAY in lib/crc-reading.ts.",
+      ).toContain(only);
+      seen.add(`${all}->${only}`);
+    }
+    // The table is not allowed to be wider than the battery. A row nothing
+    // reaches is a divergence nobody has looked at, written down as if it
+    // had been — `.claude/rules/checks-must-be-able-to-fail.md`.
+    const named = Object.entries(ALLOWED).flatMap(([a, os]) => os.map(o => `${a}->${o}`));
+    expect([...seen].sort()).toEqual(named.sort());
+  });
+
+  test("an EMPTY ledger is excluded from BOTH columns, not listed as zero-measured", () => {
+    // Round 4's input, verbatim. Before the fix this was ROUNDS_EMPTY in the
+    // all-rounds column and ZERO_MEASURED_ROUNDS in the other, so a pull
+    // request the reviewer was never even asked about appeared in the
+    // rendered `zeroMeasured` list beside ones it was asked about and
+    // refused. Those are different facts and the list meant only one.
+    const row = takeCrcReading(
+      [
+        entry({ number: 1, body: ledgerBody([], 0) }),
+        entry({ number: 2, body: ledgerBody([unmeasured(1, "declined")]) }),
+      ],
+      1,
+      2,
+      "2026-10-27",
+    );
+    expect(row.zeroMeasured).toEqual([2]);
+    expect(row.measuredOnly.measured).toBe(0);
+    expect(row.measuredOnly.refusals.map(r => [r.number, r.refusal])).toEqual([
+      [1, "ROUNDS_EMPTY"],
+      [2, "ZERO_MEASURED_ROUNDS"],
+    ]);
   });
 });
 

@@ -62,6 +62,16 @@ import { localCalendarDay } from "../lib/local-calendar-day.ts";
 export const CRC_READING_REFUSED = 1;
 
 const DEFAULT_REPO = "hornjason/pai-harness";
+
+/**
+ * GitHub's own owner and repository character set, and nothing wider.
+ *
+ * Deliberately NOT `[^/"]+/[^/"]+` — excluding the two characters that break
+ * THIS interpolation leaves every other one that would too (a backslash, a
+ * newline, `${`), and a pattern written against one consumer's syntax stops
+ * being right the moment the query is rewritten as a REST path.
+ */
+const REPO_FORMAT = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const DEFAULT_STORE = "specs/crc-readings.json";
 const DEFAULT_PAGE = 100;
 
@@ -128,6 +138,16 @@ function parseArgs(argv: readonly string[]): Args | { error: string } {
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(out.date)) {
     return { error: `--date ${out.date} is not an ISO day` };
+  }
+  // `--repo` is the one argument that is INTERPOLATED, not passed — it goes
+  // into the GraphQL document as two string literals. Every other argument
+  // was validated and this one was not at all, which is two failures and
+  // only one of them loud: a value containing `"` closes the literal and the
+  // server rejects a document nobody wrote, and a value with no `/` makes
+  // `name:"undefined"` — a repository that does not exist, a GraphQL error,
+  // and a message about the query rather than about the flag.
+  if (!REPO_FORMAT.test(out.repo)) {
+    return { error: `--repo ${JSON.stringify(out.repo)} is not owner/name` };
   }
   return out;
 }
