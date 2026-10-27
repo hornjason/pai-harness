@@ -316,15 +316,37 @@ reportable, and a reading of this kind should not be published without it.
 
 #### The re-take, 2026-10-27 — both halves grew, and the decline half doubled
 
-Read over the 45 most recent pull requests, **#1573–#1631, 45 ledgers found,
-0 unmeasured, 178 rounds**. Two commands, so the reading is re-takeable
-rather than described:
+Read over **#1573–#1631 — a pull-request RANGE, not "the 45 most recent"**,
+with 45 ledgers found, 0 unmeasured and 178 rounds. The window rolls: re-run
+this an hour later and `first:45` has dropped #1573 and taken in whatever
+opened since, which moves every figure for reasons that have nothing to do
+with the work. **A reading of this table is only comparable to another one if
+both name their range**, and the two readings above this one do not.
 
 ```sh
-gh api graphql -f query='{repository(owner:"hornjason",name:"pai-harness"){pullRequests(first:45,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number merged comments(first:100){nodes{author{login} body}}}}}}' \
-  --jq '[.data.repository.pullRequests.nodes[] | {number, passed: .merged, body: ([.comments.nodes[] | select(.author.login=="github-actions") | .body | select(contains("<!-- rungate:ai-review-ledger:v1 -->"))] | last)}]' > /tmp/crc-prs.json
+gh api graphql -f query='{repository(owner:"hornjason",name:"pai-harness"){pullRequests(first:45,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number merged comments(first:100){totalCount nodes{author{login} body}}}}}}' \
+  --jq '[.data.repository.pullRequests.nodes[] | {number, passed: .merged, truncated: (.comments.totalCount > 100), body: ([.comments.nodes[] | select(.author.login=="github-actions") | .body | select(contains("<!-- rungate:ai-review-ledger:v1 -->"))] | last)}]' > /tmp/crc-prs.json
+jq -e 'map(select(.truncated)) | length == 0' /tmp/crc-prs.json   # or the page truncated and the ledger may be off the end
 bun evals/ai-review-control/run.ts rounds /tmp/crc-prs.json
 ```
+
+**The middle line exists because the query reads one page and the fetch
+cannot tell a short page from a truncated one.** `comments(first:100)` covers
+*every* issue comment, not only ledgers, so on a busy pull request the ledger
+can sit past the hundredth and `last` returns `null` — which this pipeline
+would report as *no ledger* rather than as *not read*. The reviewer raised it
+on this very pull request and it is a real hazard that did not fire:
+`comments{totalCount}` across the window maxes at **9**, on #1597, so there
+is 11× headroom. The guard is added anyway, because the headroom is a
+property of today's window and the recipe is meant to outlive it.
+
+**`author.login == "github-actions"` is correct here and wrong one API
+over.** GraphQL's `Actor.login` for the built-in Actions bot is
+`github-actions`; REST's `user.login` for the same comment is
+`github-actions[bot]`. Both were read on #1630 to settle it. Transcribing
+this filter to a REST call silently matches nothing and returns 45 empty
+bodies, which is the same shape as the truncation above: a reading of zero
+that looks like data.
 
 | | their before | their after | 10-23 | 10-24 | **10-27** |
 |---|---|---|---|---|---|
@@ -343,10 +365,23 @@ and the split is the reading.** Of the 178 rounds:
 | `log_unreadable` | 1 | 0.6% |
 
 Scoring the 43 merged pull requests on **measured rounds only** gives
-**2.19 mean, 62.8% after one, 18.6% at five or more**. So review convergence
-sits roughly where their *before* did (2.08, 65%, 8.9%) and the gap to 1.32 is
-real but ordinary. **UNMEASURED is 46.1% and it is the whole difference
-between 2.19 and 4.19.**
+**2.19 mean, 27 of 43 after one round (62.8%), 8 of 43 at five or more
+(18.6%)**. So review convergence sits roughly where their *before* did (2.08,
+65%, 8.9%) and the gap to 1.32 is real but ordinary. **UNMEASURED is 46.1%
+and it is the whole difference between 2.19 and 4.19.**
+
+**The numerators are printed because 62.8% is byte-identical to the
+2026-10-24 measured-only figure beside it, and that is exactly what a
+copy-pasted number looks like.** The reviewer flagged it on this pull
+request: the companions both moved a long way — mean 1.58→2.19, five-or-more
+4.4%→18.6% — over two cohorts this document itself says barely overlap, so
+one figure holding still is a smell rather than a reassurance. It is a
+coincidence: 27 of 43 is 62.79%, computed here twice by different parsers.
+**What makes that checkable rather than asserted is the fraction, and the
+2026-10-24 row does not carry one**, so the question cannot be settled for
+that row from this document at all. Percentages in this section now print
+their numerator; a bare percentage is a figure whose freshness nobody can
+test, which is the genre this file keeps being wrong in.
 
 **The decline is attributable to workflow-editing diffs, and the control is
 counted rather than asserted:**
