@@ -446,7 +446,7 @@ not reviews — so the measured-only reading has its own command over the same
 
 ````sh
 jq -r '
-  [ .[] | select(.passed) | ( [ (.body // "") | split("```json") | select(length>1) | .[1] | split("```")[0] | fromjson | .rounds[] | select(.unmeasured == null) ] | length ) ] as $m
+  [ .[] | select(.passed) | ( [ (.body // "") | split("```json") | select(length>1) | .[1] | split("```")[0] | fromjson | .rounds[] | select(.findings != null) ] | length ) ] as $m
   | ($m | map(select(. > 0))) as $s
   | "merged \($m|length) | zero-measured, UNMEASURED here \($m|map(select(.==0))|length) | scored \($s|length)",
     (if ($s|length) == 0 then "  UNMEASURED — no merged pull request in this range has a measured round"
@@ -467,6 +467,32 @@ hypothetical — would have reported a stack trace where it should report
 `UNMEASURED`. That is the *Silent Default Substitution* failure in its
 loudest form: the one reading that most needs to be legible is the one the
 instrument could not print.
+
+**`select(.findings != null)` replaced `select(.unmeasured == null)`, and
+the reason is which writer each one trusts.** A ledger round is written
+twice. `lib/scaffold/ai-review-step.ts` emits
+`{at, sha, merge, run, attempt, identity, round, turns, verdict, findings}`
+and **no `unmeasured` key at all**; `lib/ai-review-unmeasured.ts` then adds
+one in a second pass — `{ ...round, [AI_REVIEW_LEDGER_UNMEASURED_KEY]: state }`,
+declared there as *"additive beside `findings`, never instead of it"*. So
+`.unmeasured == null` is a question about whether the **second** pass ran,
+and `.findings != null` is a question about the round itself. A round the
+recorder never reached would carry neither key and be scored as measured.
+
+Measured over all 178 rounds in the range, the ledger has exactly two
+shapes — **96 with no `unmeasured` key and `findings` an array, 82 with the
+key and `findings: null`** — so the two predicates are complementary here and
+**zero rounds are mis-scored by either**. The swap changes no published
+figure. It removes a dependency on a workflow that is not the one being
+measured.
+
+**An earlier round of this pull request raised this and the reason given for
+declining it was wrong.** The reviewer proposed `.findings != null`; the
+answer was that the two predicates provably agree, so swapping one for the
+other buys nothing but a second decider. The agreement was real and the
+inference from it was not: the right question was never which predicate is
+*correct today*, it was **how many writers each one depends on**. That is a
+property no amount of agreement on current data can show.
 
 **Those are the second set of figures this paragraph has carried, and the
 first set were wrong in a way that flattered every column.** It published
