@@ -1,4 +1,4 @@
-# generated-sha: b154218e54eb1d29
+# generated-sha: e585c6dc1f77fa50
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -3270,7 +3270,8 @@ jobs:
           esac
           {
             printf '%s\n' '<!-- rungate:ai-review-ledger:v1 -->'
-            printf '%s\n\n' '### AI review findings ledger'
+            printf '%s\n' '<details>'
+            printf '%s\n\n' '<summary>AI review findings ledger — machine state, carried to the next round. Nothing here needs a human.</summary>'
             printf '%s\n\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168).'
             printf '%s\n\n' 'A `findings` of null means the round was NOT measured — the payload was absent or unparseable. An empty array means the round was read and found nothing. They are different facts.'
             printf '%s\n\n' 'THIS IS A WINDOW, NOT A HISTORY. At most 12 rounds are retained, and fewer when they would not fit — a comment body has a hard 65536 character limit, so the body is rendered and measured before it is written. `truncated` is how many rounds have fallen off the front of it, by either route. A dropped round is gone rather than empty, so a finding only that round recorded can no longer be carried forward; without the count, nothing downstream could tell that from a finding nobody ever raised. An ABSENT `truncated` means the depth is unknown, which is not the same as zero.'
@@ -3279,6 +3280,7 @@ jobs:
             printf '%s\n' '```json'
             printf '%s\n' "${doc}"
             printf '%s\n' '```'
+            printf '%s\n' '</details>'
           } > "${body_file}"
 
           # The RENDERED body, in bytes. `wc -c` counts bytes and GitHub's limit is in
