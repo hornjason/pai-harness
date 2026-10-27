@@ -475,6 +475,21 @@ jq -r '
 ' /tmp/crc-prs.json
 ````
 
+> **KNOWN GAP, UNFIXED: this command aborts on a malformed ledger instead of
+> refusing it.** A fenced block whose JSON is truncated dies on *"Unfinished
+> JSON term at EOF"*, and a ledger object with no `rounds` key on *"Cannot
+> iterate over null"* — and in both cases **the whole range is lost**, not
+> the one pull request. Both were reproduced against a well-formed control.
+> That is the exact failure this same pipeline was hardened against two
+> paragraphs up for the all-refused case, and it is still here. The fix is
+> not another `try` in this fence: jq cannot refuse one element and keep
+> scoring the rest without restructuring the filter, which is one of the
+> reasons the replacement below is a script. Until then, **a reader
+> copy-pasting this is one bad ledger away from a stack trace rather than an
+> `UNMEASURED` line**, and this paragraph exists because that limitation was
+> first recorded only in a commit message, where nobody running the command
+> would see it.
+
 **The `if` is not defensive padding — without it the all-refused case is a
 jq crash, and the reviewer found it in this recipe.** `[] | add` is `null`,
 and `null / 0` aborts with *"null (null) and number (0) cannot be divided"*
