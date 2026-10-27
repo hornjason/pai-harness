@@ -1815,6 +1815,24 @@ describe("AC-C9 (AC-2): the jq and TypeScript normalisers fold case identically"
         "normalisers disagree about case and a resolved thread cannot answer the finding",
     ).toHaveLength(0);
   });
+
+  test("AC-C9c: non-ASCII WHITESPACE folds the same way in both engines", () => {
+    // `norm` has two axes and only one of them had a row. The whitespace
+    // half was measured by hand — jq's `[[:space:]]+` and JS's `\s+` both
+    // collapse NBSP, U+2028 and U+3000 — and then written down in a comment
+    // instead of banked, which is the thing this repository keeps learning
+    // not to do: a docblock saying a property holds is the reason nobody
+    // tests it.
+    //
+    // It is green today, so this row is a REGRESSION control rather than a
+    // bug fix. POSIX `[:space:]` is classically locale- and build-dependent,
+    // so a future jq that narrowed it to ASCII while JS kept matching these
+    // codepoints would reopen exactly the AC-C9b failure on the other axis,
+    // silently, with nothing in the suite to catch it.
+    expect(drops("unchecked index"), "NBSP folded differently").toHaveLength(0);
+    expect(drops("unchecked index"), "U+2028 folded differently").toHaveLength(0);
+    expect(drops("unchecked　index"), "U+3000 folded differently").toHaveLength(0);
+  });
 });
 
 /**
