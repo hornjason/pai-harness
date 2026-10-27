@@ -77,9 +77,7 @@ import {
 // agreeing — the writer is bash and the reader is TypeScript, which is the
 // arrangement #1568 was.
 import {
-  ledgerPriorKeysFrom,
   priorKeysFrom,
-  readSnapshot,
 } from "../lib/ai-review-suppression.ts";
 import { threadBody } from "../lib/scaffold/ai-review-findings.ts";
 import {
