@@ -50,6 +50,7 @@ import {
   type CrcReadingRow,
 } from "../lib/crc-reading.ts";
 import { AI_REVIEW_LEDGER_COMMENT_MARKER } from "../lib/ai-review-rounds.ts";
+import { localCalendarDay } from "../lib/local-calendar-day.ts";
 
 /**
  * THE ONE EXIT CODE every refusal routes through.
@@ -97,7 +98,10 @@ function parseArgs(argv: readonly string[]): Args | { error: string } {
     save: null,
     record: false,
     store: DEFAULT_STORE,
-    date: new Date().toISOString().slice(0, 10),
+    // `localCalendarDay`, not `toISOString().slice(0, 10)`: a reading taken
+    // in the evening on this machine would otherwise be dated tomorrow, and
+    // the store is ordered by that field.
+    date: localCalendarDay(),
     writeSpec: null,
   };
   for (let i = 0; i < argv.length; i++) {
