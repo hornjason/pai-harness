@@ -85,7 +85,7 @@ Both agnix and RepoRails support batch mode — pass multiple files in one call.
 
 **Implementation:** `lib/compliance.ts → runBehavioralCompliance(root)` (to be built)
 
-**Tracked by SC-242 of `specs/bootstrap-data-flow/success-criteria.md`, and only there** (#1161). This spec tracked the same criterion a second time as SC-453 and had it ticked, 167 lines below this line — so the spec asserted both that the function was unwritten and that the criterion was met. SC-453 is now a pointer; the live criterion is SC-242 and it is unticked. Whether layer 3 should exist at all is a separate design question, deliberately left open here.
+**Tracked by SC-242 of `specs/bootstrap-data-flow/success-criteria.md`, and only there** (#1161). This spec tracked the same criterion a second time as SC-453 and had it ticked, in its own *Success Criteria* list below — so the spec asserted both that the function was unwritten and that the criterion was met. SC-453 is now a pointer; the live criterion is SC-242 and it is unticked. Whether layer 3 should exist at all is a separate design question, deliberately left open here.
 
 **Standard task:** Defined in `test/compliance-tests.json`:
 ```
@@ -252,7 +252,7 @@ All design decisions in this spec are backed by research in `docs/research/`:
 
 - [x] SC-451: runTemplateCompliance uses agnix + RepoRails via Bun.spawnSync
 - [x] SC-452: runGeneratedCompliance compares against baseline
-- [x] SC-453: SUPERSEDED by SC-242 of `specs/bootstrap-data-flow/success-criteria.md` (#1161) — was "runBehavioralCompliance spawns fresh agent + auditor", ticked while no declaration, export, caller or test for that function existed anywhere in the tree, and 167 lines below this spec's own "(to be built)". The two were one criterion recorded twice and they disagreed; the unticked one was right.
+- [x] SC-453: SUPERSEDED by SC-242 of `specs/bootstrap-data-flow/success-criteria.md` (#1161) — was "runBehavioralCompliance spawns fresh agent + auditor", ticked while no declaration, export, caller or test for that function existed anywhere in the tree, and while the *Layer 3 — Behavioral Compliance* section above marked the same function "(to be built)". The two were one criterion recorded twice and they disagreed; the unticked one was right.
 - [x] SC-454: Hill climb loop with max 5 iterations
 - [x] SC-455: 7 compliance factors applied during rewrites
 - [x] SC-456: Compliance surface = 4 file types only

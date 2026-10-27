@@ -196,6 +196,18 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
       (c.isNew || [...c.added, ...c.removed].some(l => LINE_CITATION_LINE.test(l))),
   },
   {
+    // Deliberately NOT folded into the `doc` row above, whose predicate
+    // fires only on a NEW markdown file or a changed line carrying a
+    // `path:NNN` citation. DOC-DIST's subject is a sentence that spells its
+    // distance in words — "167 lines below this line" — which carries no
+    // citation and arrives in an ordinary edit to an existing file, so the
+    // `doc` row would route it exactly never.
+    id: "prose-distance",
+    event: "edited any markdown at all",
+    tests: ["test/prose-self-distance.test.ts"],
+    fires: c => isMarkdown(c.path),
+  },
+  {
     // Not in the prose list before #990, and the rule file's own closing
     // section records this check catching that file on its first run. The
     // list has been missing the test that caught the list's author.
