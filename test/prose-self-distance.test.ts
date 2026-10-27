@@ -364,16 +364,34 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
         "says nothing about whether the articles would refuse anything",
     ).toHaveLength(1);
 
+    // The corpus became self-referential while this was being written, which
+    // is the hazard this whole module lives inside. #1626 landed a session
+    // entry that QUOTES both worked examples — the instruction reading and
+    // the claim reading — so `PROJECT-STATE.md` now contains the string the
+    // mutant is looking for, as a MENTION rather than a use. The real rule
+    // still refuses nothing (DOC-DIST-4), and this row went red on the merge
+    // rather than on a defect.
+    //
+    // So the assertion is over the DISTINCT matched phrases and not over a
+    // count. A count would be wrong twice: PROJECT-STATE.md renders only the
+    // newest three sessions, so the quotations leave on their own schedule,
+    // and any number banked here would be a property of that window. A new
+    // phrase, or this phrase used rather than quoted elsewhere, still goes
+    // red — which is the only thing this row is for.
+    const QUOTED_WORKED_EXAMPLE = "a line above this heading";
     const hits: string[] = [];
     for (const { path, text } of docs()) {
       for (const m of text.matchAll(new RegExp(withArticle, "gi"))) {
-        hits.push(`${path}: ${m[0].replace(/\s*\n\s*/g, " ")}`);
+        const phrase = m[0].replace(/\s*\n\s*/g, " ");
+        if (phrase.toLowerCase() === QUOTED_WORKED_EXAMPLE) continue;
+        hits.push(`${path}: ${phrase}`);
       }
     }
     expect(
       hits,
-      "admitting the articles now refuses real sentences, so the trade-off " +
-        "the docblock declares has a measured cost and must be restated",
+      "admitting the articles now matches a phrase that is NOT the worked " +
+        "example this module quotes, so the trade-off the docblock declares " +
+        "has a measured cost in real prose and must be restated",
     ).toEqual([]);
   });
 

@@ -138,8 +138,15 @@
  * genuine self-referential claim, with a real deictic, and it is now missed.
  *
  * Both are right, and the measurement says why the gap cannot be closed by
- * choosing better. Re-admitting `a|an` to `QUANTITY` moves the violation count
- * across all **205** tracked non-fixture markdown files by **zero**. So round
+ * choosing better. Re-admitting `a|an` to `QUANTITY` moves the count of real
+ * claims across all **205** tracked non-fixture markdown files by **zero**.
+ *
+ * It now matches twice, and both are this argument quoting itself: #1626
+ * landed a session entry reproducing the two worked examples below, so the
+ * tree contains the phrase as a MENTION. `DOC-DIST-3h` therefore asserts over
+ * the distinct phrases rather than a count — the quotations are named and
+ * skipped, anything else is red. The row went red on that merge, which is the
+ * check behaving correctly about a corpus that had genuinely changed. So round
  * 3's removal was decided by a sentence somebody constructed in a review
  * comment and not by anything in this repository — and the two sentences are
  * the same bytes to this detector, `a line above this heading` in both. What
