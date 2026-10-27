@@ -15,8 +15,10 @@
  * **205** tracked non-fixture markdown files and the pattern admits
  * `before`/`after` — both because the #1624 review found the first version's
  * scope narrower than the census row advertising it. The wider reading
- * carries **40** distance-claim lines and **none** self-referential, which is
- * the same answer at four times the sample.
+ * carries **38** distance-claim lines and **none** self-referential, which is
+ * the same answer at four times the sample. (38 rather than 40: round 2 of
+ * the review added the teens to `QUANTITY` and removed `on` from
+ * `DIRECTION`.)
  *
  * So `NOT_A_CLAIM` below is not padding. Every row in it but the last is a
  * real sentence from the tree — `grep -rF` before pasting, and `DOC-DIST-3c`
@@ -37,7 +39,9 @@ import { spawnSync } from "bun";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  PROSE_SELF_DISTANCE_DEICTIC,
   PROSE_SELF_DISTANCE_FIX,
+  PROSE_SELF_DISTANCE_PATTERN,
   proseSelfDistanceViolations,
 } from "../lib/prose-self-distance.ts";
 import { remedyMessage } from "../lib/check-remedy.ts";
@@ -90,6 +94,10 @@ const IS_A_CLAIM = [
   "appears three lines before this section and nowhere else",
   "the compliance factors are listed four paragraphs after this heading",
   "sixty lines after this bullet the same number is written differently",
+  // the teens, which the first two drafts skipped entirely — the reviewer's
+  // own example, verbatim
+  "SC-900 is ticked, fourteen lines above this heading, confirming the criterion.",
+  "nineteen rows below this table the same id appears again",
 ];
 
 /**
@@ -117,6 +125,11 @@ const NOT_A_CLAIM = [
   // but not one claim: the sentence boundary separates them. Without a row
   // for it the 60-character window is an untested number.
   "the helper sits four lines above the call. This section explains why.",
+  // WRITTEN HERE. The reviewer's #1624 counter-example, verbatim: `on` is a
+  // preposition, not a direction, and admitting it refused this. It is kept
+  // as a row rather than deleted with the word, because the cheapest way to
+  // bring `on` back is not to notice it was ever a problem.
+  "This file lists two pages on this document that still need review.",
 ];
 
 /**
@@ -264,14 +277,26 @@ describe("DOC-DIST: a prose distance to the document's own parts", () => {
     ).toBe(tracked.length - fixtures.length);
   });
 
-  test("DOC-DIST-6: the MUTANT — the referent requirement dropped — refuses the tree", () => {
-    // Performed, not argued. Widening the rule to any distance at all is the
-    // exact wrong version that was written first, so this row both proves the
-    // check can fail AND pins the decision that separates it from the ban.
-    const widened = (text: string) =>
-      /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|sixty|hundred|dozen|a|several|[0-9][0-9,]*)(?:[ -](?:hundred|thousand))?\s+(?:lines?|rows?|sections?|paragraphs?|bullets?|columns?|pages?)\s+(?:above|below|away|apart|earlier|later|up|down|before|after)\b/i.test(
-        text,
-      );
+  test("DOC-DIST-6: the MUTANT — the deictic clause deleted from the REAL pattern", () => {
+    // Performed on the artefact, not approximated beside it.
+    //
+    // The first version of this row hand-wrote a widened regex. The review of
+    // #1624 found it had already drifted from production — missing `eleven`,
+    // `twenty`, `many`, `back` — so it was comparing two vocabularies while
+    // claiming to isolate the deictic requirement. Two deciders that agree,
+    // inside the test written to show they must not be. The mutant is now
+    // the exported pattern with the exported deictic clause cut out of it,
+    // so there is no second vocabulary that CAN drift.
+    expect(
+      PROSE_SELF_DISTANCE_PATTERN.split(PROSE_SELF_DISTANCE_DEICTIC).length - 1,
+      "the deictic clause does not appear exactly once in the pattern, so cutting " +
+        "it is not a single well-defined mutation",
+    ).toBe(1);
+    const mutant = new RegExp(
+      PROSE_SELF_DISTANCE_PATTERN.replace(PROSE_SELF_DISTANCE_DEICTIC, ""),
+      "i",
+    );
+    const widened = (text: string) => mutant.test(text);
     const all = docs();
     const wouldRefuse = all
       .flatMap(d => d.text.split("\n").map((l, i) => ({ at: `${d.path}:${i + 1}`, l })))

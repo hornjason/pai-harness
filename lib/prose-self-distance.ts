@@ -11,10 +11,12 @@
  *
  * The deciding measurement, 2026-10-27, over `specs/`, `.claude/rules/`,
  * `docs/` and `reference/`: **19** distance claims, **17** of that kind.
- * After the #1624 review widened both the pattern and the scanned set, the
- * population is **40** distance-claim lines across **205** tracked
+ * After two rounds of #1624 review moved the pattern and the scanned set, the
+ * population is **38** distance-claim lines across **205** tracked
  * non-fixture markdown files, and the ratio did not move in the direction
- * that would matter — none of the 40 is self-referential.
+ * that would matter — **none** of the 38 is self-referential. The figure is
+ * the count under the CURRENT vocabulary: round 2 added the teens and removed
+ * `on`, which is why it is 38 rather than the 40 the first round measured.
  *
  * The two that were not are a different animal: *"roughly two hundred lines
  * above this bullet"*. The referent is the document itself, so the claim is
@@ -98,8 +100,10 @@ const REFERENTS =
  * not a widening of that one.
  */
 const QUANTITY =
-  "(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty" +
-  "|sixty|seventy|eighty|ninety|hundred|dozen|a|an|several|many|[0-9][0-9,]*)" +
+  "(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve" +
+  "|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen" +
+  "|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety" +
+  "|hundred|dozen|a|an|several|many|[0-9][0-9,]*)" +
   "(?:[ -](?:hundred|thousand))?";
 
 /**
@@ -112,9 +116,16 @@ const QUANTITY =
  * positives. The same measurement admitted `sixty`…`ninety`, `dozen` and a
  * standalone `hundred` to `QUANTITY`: three lines in the tree spell a
  * distance that way, none carries a deictic.
+ *
+ * `on` was here in the first two drafts and is **removed**: it is not a
+ * direction, it is the commonest preposition in English, and the review of
+ * #1624 produced the sentence that breaks it — *"This file lists two pages
+ * on this document that still need review"* is not a distance claim at all
+ * and was refused. Nothing in the tree needed it; every direction left is a
+ * word that can only mean displacement.
  */
 const DIRECTION =
-  "above|below|away|apart|earlier|later|up|down|back|on|before|after";
+  "above|below|away|apart|earlier|later|up|down|back|before|after";
 
 /**
  * The unit the distance is counted in. `lines` is where both live instances
@@ -126,23 +137,41 @@ const DIRECTION =
 const UNIT = "lines?|rows?|sections?|paragraphs?|bullets?|columns?|pages?";
 
 /**
- * ONE binding, so there is one site for a mutation to remove. A second
- * predicate deciding the same question would leave this one dead with the
- * suite still green — `.claude/rules/checks-must-be-able-to-fail.md`, *two
- * deciders that agree*.
+ * The deictic half of the pattern, as its own exported substring.
+ *
+ * This exists so the mutation can be PERFORMED on the real pattern rather
+ * than approximated. The first version of `DOC-DIST-6` hand-wrote a widened
+ * regex beside the real one and called it the mutant; the review of #1624
+ * pointed out it had already drifted — it was missing `eleven`, `twenty`,
+ * `many`, `back` and more — so the row was comparing two independent
+ * vocabularies and reporting it as the deictic requirement being removed.
+ * Two deciders that agree, in the test written to demonstrate they must not
+ * be.
+ *
+ * `PROSE_SELF_DISTANCE_PATTERN` contains this string **exactly once**, which
+ * the test asserts before it mutates, so deleting it is the whole and only
+ * difference between the real rule and the banned one.
  *
  * The distance and the referent are allowed up to 60 characters apart so that
  * "167 lines below this spec's own …" matches, and no more, because the wider
  * the window the more likely two unrelated clauses are joined into a claim
  * nobody made.
  */
+export const PROSE_SELF_DISTANCE_DEICTIC = `[^.!?\\n]{0,60}?\\bthis\\s+(?:${REFERENTS})\\b`;
+
+/**
+ * ONE binding, so there is one site for a mutation to remove. A second
+ * predicate deciding the same question would leave this one dead with the
+ * suite still green — `.claude/rules/checks-must-be-able-to-fail.md`, *two
+ * deciders that agree*.
+ */
+export const PROSE_SELF_DISTANCE_PATTERN =
+  `\\b${QUANTITY}\\s+(?:${UNIT})\\s+(?:${DIRECTION})\\b` + PROSE_SELF_DISTANCE_DEICTIC;
+
 export function proseSelfDistanceViolations(
   files: ReadonlyArray<{ readonly path: string; readonly text: string }>,
 ): ProseSelfDistance[] {
-  const pattern = new RegExp(
-    `\\b${QUANTITY}\\s+(?:${UNIT})\\s+(?:${DIRECTION})\\b[^.!?\\n]{0,60}?\\bthis\\s+(?:${REFERENTS})\\b`,
-    "i",
-  );
+  const pattern = new RegExp(PROSE_SELF_DISTANCE_PATTERN, "i");
   const out: ProseSelfDistance[] = [];
   for (const { path, text } of files) {
     text.split("\n").forEach((raw, i) => {
