@@ -173,7 +173,7 @@ export function premiseViolations(
     out.push({
       kind: CRC_PREMISE_OUT_OF_RANGE,
       detail:
-        `${outside.length} entr(y|ies) fall outside #${lo}–#${hi}: ` +
+        `${outside.length} pull request(s) fall outside #${lo}–#${hi}: ` +
         `${outside.map(n => `#${n}`).join(", ")}. A min and a max that line up do not make the ` +
         `set the range it is labelled with, and every one of these inflates a denominator.`,
     });

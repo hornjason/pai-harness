@@ -133,6 +133,11 @@ describe("premise guards — the fetch's own two refusals", () => {
       CRC_PREMISE_OUT_OF_RANGE,
     ]);
     expect(v[1].detail).toContain("#99");
+    // The whole opening phrase, not just the number in it. Round 5 found
+    // `entr(y|ies)` sitting in this template string, printing verbatim —
+    // a case asserting only `toContain("#99")` could not see it, and no
+    // other case read a `detail` at all.
+    expect(v[1].detail).toStartWith("1 pull request(s) fall outside #10–#20: #99.");
     // The control: the same count of entries, all inside the range, passes —
     // so this is about membership and not about having three of them.
     expect(
@@ -162,6 +167,22 @@ describe("premise guards — the fetch's own two refusals", () => {
     expect(premiseViolations([], 10, 20).map(v => v.kind)).toEqual([
       CRC_PREMISE_RANGE_NOT_COVERED,
     ]);
+  });
+
+  test("no message in this module carries an unexpanded alternation", () => {
+    // Round 5's finding as a sweep rather than a repair of the one site it
+    // named. `entr(y|ies)` is a regex fragment that reached a template
+    // string: it has no runtime behaviour at all, so every path through it
+    // is green and only a reader sees it. This module writes to a human on
+    // every refusal and holds no regexes, so the shape is unambiguous here.
+    //
+    // Remedy: use the `X(s)` form the rest of these messages use.
+    const source = readFileSync(join(ROOT, "lib/crc-reading.ts"), "utf-8");
+    const offenders = source
+      .split("\n")
+      .map((line, i) => [i + 1, line] as const)
+      .filter(([, line]) => /\([a-z]+\|[a-z]+\)/.test(line));
+    expect(offenders.map(([n, line]) => `${n}: ${line.trim()}`)).toEqual([]);
   });
 });
 
