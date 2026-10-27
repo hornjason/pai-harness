@@ -1,4 +1,4 @@
-# generated-sha: 2dc96a12d3f94e2a
+# generated-sha: b154218e54eb1d29
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1434,6 +1434,19 @@ jobs:
                 return 0
               fi
 
+              # Establish the field IS a boolean before reading it as one. The test
+              # below is `if ! <cmd>`, which takes ANY non-zero exit, so every way of
+              # failing to produce `true` was one observable: `hasNextPage: false`
+              # (exit 1), an ABSENT `pageInfo` (also 1 — the path yields null), and a
+              # MALFORMED one (5) all wrote whatever had accumulated and returned
+              # success. A truncated thread list was therefore reported as a complete
+              # read, which is the collapse this module refuses everywhere else.
+              # Distinguishing the exit codes would not help; the type is the question.
+              # AC-T3.
+              if ! printf '%s' "${response}" | jq -e '(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage | type) == "boolean"' >/dev/null 2>&1; then
+                threads_unmeasured "the GraphQL response on page ${threads_page} carried no boolean pageInfo.hasNextPage, so the end of the list could not be established."
+                return 0
+              fi
               if ! printf '%s' "${response}" | jq -e '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' >/dev/null 2>&1; then
                 printf '%s' "${threads_acc}" > "${AI_REVIEW_THREADS_PATH}"
                 return 0

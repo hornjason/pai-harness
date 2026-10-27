@@ -1957,3 +1957,74 @@ describe("AC-T2 (AC-1): the malformed-repo guard reads the slash, not the halves
     expect(r.threads, "a string that cannot address a query still produced a thread list").toBeNull();
   });
 });
+
+/**
+ * AC-T3 (AC-4): an unreadable `pageInfo` is UNMEASURED, not "the last page".
+ *
+ * Every other reshape failure in `threads_fetch` goes through
+ * `threads_unmeasured`. The end-of-pagination test did not, because it asked
+ * `jq -e` for the value and treated any non-zero exit as "no more pages".
+ * Measured on this jq:
+ *
+ * | response                  | `jq -e …pageInfo.hasNextPage` |
+ * |---|---|
+ * | `hasNextPage: true`       | 0 |
+ * | `hasNextPage: false`      | 1 |
+ * | `pageInfo` ABSENT         | 1 — the path yields null, and -e reports 1 for null |
+ * | `pageInfo` a STRING       | 5 |
+ *
+ * The exit codes differ, and it makes no difference: the test was
+ * `if ! <cmd>`, which takes ANY non-zero. All three lower rows were one
+ * observable. A response that passed the `nodes | type == "array"` check and
+ * then had no usable `pageInfo` wrote whatever had accumulated and returned
+ * SUCCESS — a silently truncated thread list presented as a complete read.
+ * Downstream that is the worst direction available: a short prior-key list
+ * means a finding already raised is not recognised, so it is posted again,
+ * which is the duplicate-per-round failure (#1616) this increment exists to
+ * end.
+ *
+ * Row (c) is here because I first reasoned that a malformed `pageInfo` was
+ * already safe, since jq distinguishes it with exit 5. It was not: the
+ * branch never looked at which non-zero it got. Row (c) was red alongside
+ * (b), and that is why the fix establishes the TYPE instead of refining the
+ * exit-code reading.
+ */
+describe("AC-T3 (AC-4): the end of pagination is read as a value, not an exit code", () => {
+  const page = (nodes: Array<{ isResolved: unknown; body: unknown }>, pageInfo: unknown) => ({
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            ...(pageInfo === undefined ? {} : { pageInfo }),
+            nodes: nodes.map(n => ({ isResolved: n.isResolved, comments: { nodes: [{ body: n.body }] } })),
+          },
+        },
+      },
+    },
+  });
+  const one = [{ isResolved: false, body: "k" }];
+
+  test("AC-T3a: the control — hasNextPage false ends the walk and WRITES", () => {
+    const r = runCarry({ threadsRaw: JSON.stringify(page(one, { hasNextPage: false, endCursor: null })) });
+    expect(r.threads, `${r.stdout}${r.stderr}`).not.toBeNull();
+    expect(JSON.parse(r.threads!)).toEqual([{ isResolved: false, body: "k" }]);
+  });
+
+  test("AC-T3b: an ABSENT pageInfo is UNMEASURED, not a complete read", () => {
+    const r = runCarry({ threadsRaw: JSON.stringify(page(one, undefined)) });
+    expect(
+      r.threads,
+      "a response with no pageInfo wrote a thread list, so a truncated read is indistinguishable " +
+        "from a complete one and every prior finding gets posted again",
+    ).toBeNull();
+    expect(r.stdout + r.stderr).toContain("pageInfo.hasNextPage");
+  });
+
+  test("AC-T3c: a MALFORMED pageInfo is UNMEASURED too", () => {
+    // Red before the fix, alongside (b) — not, as I first assumed, already
+    // refused because jq exits 5 here rather than 1. `if ! <cmd>` never
+    // read the code.
+    const r = runCarry({ threadsRaw: JSON.stringify(page(one, "not-an-object")) });
+    expect(r.threads, "a malformed pageInfo produced a thread list").toBeNull();
+  });
+});
