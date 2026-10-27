@@ -362,8 +362,12 @@ Do not tick these, and do not count them as remaining work either.
 
 ### The author-side half of CRC-N3 is unowned
 
-CRC-N3 puts the duty on the **reviewer**: flag the class. CRC-A8 fires on
-**cross-PR** recurrence: a repeated finding becomes a rule or a lint. Between
+CRC-N3 puts the duty on the **reviewer**: flag the class. CRC-A8 *would*
+cover **cross-PR** recurrence — a repeated finding becoming a rule or a
+lint — but **it is unticked and nothing implements it**: no path routes a
+review finding into a skill, a lint rule or an instruction file, and
+`lib/rule-promotion.ts` promotes from compliance failures rather than from
+findings. So the cross-PR half is a plan, not a mechanism. Between
 them sits the case that actually costs rounds here — **the author fixing one
 instance of a class inside a single pull request, while the siblings sit
 untouched in the same file** — and no criterion owns it.
@@ -424,7 +428,11 @@ the class this document keeps hitting.
 
 #### The gate worth building, and the control that stops it being vacuous
 
-Small, and it reuses the thread reader Increment 1 already builds:
+Small, and it reuses the thread reader Increments **1a and 1b already
+shipped** — the suppression gate's `pulls/{n}/comments` plus GraphQL
+`isResolved` read (#1621) and carry-forward's read of the same (#1623).
+That reader exists in the tree today; what remains gated is 1c, the
+removal of the ledger comment:
 
 1. The reviewer tags a finding `class:<name>` and names the search that finds
    the siblings.
@@ -877,16 +885,24 @@ claims, deliberately kept in three places, and the reason is in that section.
 
 | PR | Phase / increment | Criteria it is pointed at | State |
 |---|---|---|---|
-| — | Increment 1b — carry-forward decides "still unanswered" from an OPEN thread and treats a RESOLVED one as answered | CRC-N4, CRC-B5 | next. **1a merged in #1618**: a posted thread now carries the key it was raised under, base64 in an HTML comment, which is what makes a thread re-keyable at all |
-| — | Increment 1c — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4 | gated on 1b. Not before: the producer posts the repeat-SUPPRESSED set and the gate that suppresses reads the ledger, so removing it first opens a duplicate thread per finding per round |
+| — | Increment **1c** — stop posting the ledger comment, and remove the steps that wrote it | CRC-N4, CRC-B5 | **gated, and not merely unstarted.** 1a (#1621) and 1b (#1623) are merged, so AC-1, AC-2 and AC-4 are green. AC-5 reads *"only once AC-1..AC-4 are green"* and **AC-3 has no coverage at all** — it is an *executed* observation (push a second round with the defect still present, count threads) that nobody has taken. #1628 folds the comment into a `<details>` block in the meantime, which reduces what a human reads and changes nothing the carry step reads |
 | — | Increment 2 — a verifier invocation writes a ballot, three invocations with per-verifier directories | CRC-B4, CRC-B3 | blocked on the ordering defect below |
 | — | an instrument for the self-inflicted ratio — what share of a round's findings concern code written in response to an earlier round | CRC-N1, CRC-N6 | not started. The measurement is mechanical (blame the lines each fix repaired) and was done by hand on #1614; see *Measured non-obvious facts* |
 
 **Merged, and kept out of this table on purpose.** #1614 (`1b9ffce3`), #1616
 (`1804ae9d`), #1617 (`aed22884`) and #1618 (`fe1f9292`) all landed on
-2026-10-26. A merged branch is not work in flight, and its record lives in
+2026-10-26; #1621 (`cc658f6e`), #1623 (`a8fd0311`) and #1619 (`da7b49a6`) on
+2026-10-27. A merged branch is not work in flight, and its record lives in
 *Readings taken* and in git rather than in a row that would otherwise
 accumulate for ever.
+
+**Two things carry the name "1a" and they are different changes.** #1618 made
+a posted thread carry the key it was raised under, which is what makes a
+thread re-keyable at all; #1621 made the suppression gate read those threads
+instead of the ledger. The AC list at #1614 is the authority — AC-1 is the
+suppression gate — so **#1621 is 1a and #1618 is its prerequisite**. An
+earlier revision of this table called #1618 "1a", which is why the two
+numberings appear in the history.
 
 **A row with no pull request is work this spec says is next and nobody has
 claimed.** That is the state worth seeing, and it is the one a tracker of
