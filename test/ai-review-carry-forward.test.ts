@@ -1816,3 +1816,65 @@ describe("AC-C9 (AC-2): the jq and TypeScript normalisers fold case identically"
     ).toHaveLength(0);
   });
 });
+
+/**
+ * AC-C10 (AC-2): an EMPTY thread file is unreadable, not "nothing resolved".
+ *
+ * `[ -f ]` asks whether the file exists. It does not ask whether it has any
+ * bytes, and the two are different states: a job killed mid-write, a disk
+ * that filled, an upload that produced the path and nothing else all leave a
+ * present, zero-byte file.
+ *
+ * Measured: `jq -c '[...]' < /dev/null` exits **0** and prints **nothing** —
+ * empty input is zero iterations, not an error. So the `if !` branch does not
+ * fire, `resolved_bodies` becomes `""` instead of `'[]'`, and the later
+ * `--argjson resolved ""` is handed something that is not JSON. jq's own
+ * answer to that is `invalid JSON text passed to --argjson`, which kills the
+ * carry jq outright — the one invocation that decides what carries.
+ *
+ * The guard is therefore the wrong SHAPE, not merely too narrow: it tests the
+ * exit code of a command that succeeds in the failing case. The fix tests the
+ * output instead. A non-empty stdout from `jq -c` is jq's own serialisation
+ * and is valid JSON by construction, so emptiness is the whole check and no
+ * second parse is needed.
+ */
+describe("AC-C10 (AC-2): a zero-byte thread file carries, rather than breaking the carry", () => {
+  const TEXT = "const n = xs[i]";
+  const SUMMARY = "unchecked index";
+  const FILE = "lib/a.ts";
+  const ledger = () => [botComment(5, windowBody([round(5, [recorded(FILE, 1, SUMMARY, TEXT)])]))];
+  const files = { [FILE]: `${TEXT}\n` };
+
+  // The partial write, performed on the INPUT. `threads_fetch` is made to
+  // leave the file it always leaves, with no bytes in it — the shape an
+  // interrupted job produces. The block under test is not touched.
+  const truncatingWriter = () => {
+    const real = buildCarryScript();
+    const mutant = real.replace(
+      `printf '%s' "\${threads_acc}" > "\${${AI_REVIEW_THREADS_PATH_VAR}}"`,
+      `: > "\${${AI_REVIEW_THREADS_PATH_VAR}}"`,
+    );
+    expect(mutant, "the thread write was not found, so no empty file was produced").not.toBe(real);
+    return mutant;
+  };
+
+  test("AC-C10a: the control — a well-formed thread file leaves the carry working", () => {
+    const r = runCarry({ list: ledger(), files, threadPages: [[]] });
+    expect(r.state).toBe(AI_REVIEW_CARRY_READ);
+    expect(r.carried, "the control did not carry, so row (b) proves nothing").toHaveLength(1);
+  });
+
+  test("AC-C10b: a present but EMPTY thread file still produces a reading", () => {
+    const r = runCarry({ list: ledger(), files, threadPages: [[]], script: truncatingWriter() });
+    expect(
+      r.stdout + r.stderr,
+      "jq was handed a non-JSON --argjson, so the one invocation that decides what carries died",
+    ).not.toContain("invalid JSON text");
+    expect(r.state, `${r.stdout}${r.stderr}`).toBe(AI_REVIEW_CARRY_READ);
+    expect(
+      r.carried,
+      "an unreadable thread list dropped a finding instead of carrying it — the direction " +
+        "that clears a live finding while the required check reports CLEAN",
+    ).toHaveLength(1);
+  });
+});

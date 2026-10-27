@@ -5287,7 +5287,12 @@ done > "\${texts}"
 # the required check reports CLEAN, which is exactly what #1597 cost.
 resolved_bodies='[]'
 if [ -n "\${${AI_REVIEW_THREADS_PATH_VAR}:-}" ] && [ -f "\${${AI_REVIEW_THREADS_PATH_VAR}}" ]; then
-  if ! resolved_bodies=\$(jq -c '[ .[]? | select(.isResolved == true) | .body | select(type == "string") ]' "\${${AI_REVIEW_THREADS_PATH_VAR}}" 2>/dev/null); then
+  # The emptiness test is NOT belt-and-braces. \`jq -c\` over a zero-byte file
+  # exits 0 and prints nothing — empty input is zero iterations, not an error —
+  # so the exit code alone leaves \`resolved_bodies\` as "", and \`--argjson\` is
+  # then handed something that is not JSON and kills the carry. A present
+  # zero-byte file is what an interrupted write leaves. AC-C10.
+  if ! resolved_bodies=\$(jq -c '[ .[]? | select(.isResolved == true) | .body | select(type == "string") ]' "\${${AI_REVIEW_THREADS_PATH_VAR}}" 2>/dev/null) || [ -z "\${resolved_bodies}" ]; then
     resolved_bodies='[]'
     carry_note "the resolved review threads could not be read, so a finding a human already answered is carried forward and the reviewer may raise it again."
   fi
