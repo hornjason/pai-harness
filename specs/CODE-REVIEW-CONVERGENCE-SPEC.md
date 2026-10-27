@@ -784,8 +784,19 @@ moved.
 positive clears by closing the thread with a reason*) and CRC-B8 (*every
 finding gets answered*) were each exercised twice on 2026-10-26 and a third
 time on #1622 on 2026-10-27, whose round 5 finding was stale rather than wrong
-about the code and cleared by closing the thread with that reason — and three
-is three draws, not a population. CRC-N4's reading is the 13-threads-for-3-findings
+about the code and cleared by closing the thread with that reason — **three
+exercises, which is not a population.**
+
+**Three exercises is not three draws, and the word is reserved.** The review
+of this paragraph caught it asserting "three draws" while *The swarm track,
+and the reorder it asks for* corrects an earlier round for claiming exactly
+that number. Both are true of the same three pull requests and they count
+different things: #1616, #1619 and #1622 each exercised these three criteria,
+and the same three supply **two complete Phase 0 draws and one half**, because
+#1619 was read before any thread was resolved. A *draw* in this document is a
+`BLOCKED`→`CLEAN` observation and nothing else.
+
+CRC-N4's reading is the 13-threads-for-3-findings
 count below. Ticking any of them on this evidence is the error CRC-A4's own
 promotion condition exists to prevent, so the column records what the reading
 feeds and the boxes stay open.
