@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 import {
   assertAdjudicationShape,
+  assertOneJudgementPerPair,
   censusRows,
   isAmbiguousId,
   issueNames,
@@ -203,10 +204,60 @@ describe("a malformed record is a refusal, not an absent judgement", () => {
     ["a misspelled criterion field", { criterion: undefined }, /criterion/],
     ["an empty signer", { by: "" }, /by/],
     ["a date that is not a date", { collected: "yesterday" }, /collected/],
+    ["a day that does not exist", { collected: "2026-02-30" }, /collected/],
+    ["a month that does not exist", { collected: "2026-13-01" }, /collected/],
     ["a null record", null, /not an object/],
   ])("%s is refused by name", (_what, mutation, expected) => {
     const record = mutation === null ? null : { ...good, ...mutation };
     expect(() => assertAdjudicationShape(record, "store[0]")).toThrow(expected);
+  });
+});
+
+describe("two judgements for one pair are a refusal, not a silent first-wins", () => {
+  // Raised by the required reviewer on #1641. The store is hand-maintained and
+  // append-ordered, so appending a correction is the obvious way to change your
+  // mind — and the lookup is a `find`, which takes the first match. The
+  // corrected verdict would never take effect and the view would keep printing
+  // the superseded one, carrying its original date and signer.
+  const fingerprint = criterionFingerprint("the gate refuses an unsigned payload.");
+  const base: Adjudication = {
+    criterion: "SC-9101",
+    issue: 42,
+    verdict: "unrelated",
+    by: "jason",
+    collected: "2026-10-01",
+    note: "misjudged on a first read",
+    fingerprint,
+  };
+  const correction: Adjudication = {
+    ...base,
+    verdict: "contradicts",
+    collected: "2026-10-28",
+    note: "re-read it; the issue does say the criterion is untrue",
+  };
+
+  test("the census refuses rather than reporting the superseded verdict", () => {
+    expect(() =>
+      censusRows(spec(TICKED), [issue(42, "SC-9101 is not true")], [base, correction]),
+    ).toThrow(/SC-9101\/#42/);
+  });
+
+  test("the SAME two records against different issues are accepted", () => {
+    // The control. One variable differs — the issue number — so the refusal
+    // above measured the duplicate pair and not the pair of records.
+    const [row] = censusRows(
+      spec(TICKED),
+      [issue(42, "SC-9101 here"), issue(43, "SC-9101 there")],
+      [base, { ...correction, issue: 43 }],
+    );
+    expect(row.namedBy).toEqual([42, 43]);
+    expect(unadjudicated([row])).toEqual([]);
+  });
+
+  test("the refusal names both record positions, so the file can be edited", () => {
+    // A message saying only "duplicate" sends the reader looking through a
+    // hand-maintained file for a pair it already found.
+    expect(() => assertOneJudgementPerPair([base, correction])).toThrow(/records 0 and 1/);
   });
 });
 

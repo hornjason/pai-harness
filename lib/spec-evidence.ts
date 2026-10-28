@@ -204,7 +204,7 @@ export function specDeclaresEvidence(content: string): boolean {
  *
  * The round-trip rejects `2026-02-31`, which the regex alone accepts.
  */
-function isIsoDay(value: string): boolean {
+export function isIsoDay(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const d = new Date(`${value}T00:00:00Z`);
   // UTC-INTENTIONAL: the expiry is validated against the UTC calendar, and the

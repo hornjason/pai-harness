@@ -56,7 +56,7 @@
  * judgement wearing a census's clothes.
  */
 
-import { criterionFingerprint, parseCriteria } from "./spec-evidence";
+import { criterionFingerprint, isIsoDay, parseCriteria } from "./spec-evidence";
 import { isAntiCriterion, isIssueShaped, oneScMentionPattern } from "./sc-ids";
 
 /** An open issue, reduced to the two fields a name-match can read. */
@@ -178,12 +178,54 @@ export function assertAdjudicationShape(
       `\`verdict\` must be contradicts, cites or unrelated, got ${JSON.stringify(r.verdict)}`,
     );
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(r.collected ?? "")) {
-    problems.push(`\`collected\` must be YYYY-MM-DD, got ${JSON.stringify(r.collected)}`);
+  // `isIsoDay` from `lib/spec-evidence.ts`, not a second regex. The pattern
+  // alone accepts `2026-02-30`, which is not a day, and a record dated to a
+  // day that does not exist prints in the view as though somebody looked at
+  // the issue on it. Reusing the module's own validator also keeps this from
+  // becoming the "two deciders that agree" shape
+  // `.claude/rules/checks-must-be-able-to-fail.md` names: a second copy here
+  // would survive any mutation of the first and nobody could tell which one
+  // the suite was holding up. Raised by the required reviewer on #1641.
+  if (!isIsoDay(r.collected ?? "")) {
+    problems.push(`\`collected\` must be a real YYYY-MM-DD day, got ${JSON.stringify(r.collected)}`);
   }
   if (problems.length > 0) {
     throw new Error(
       `${at} is malformed and would silently report as UNADJUDICATED: ${problems.join("; ")}.`,
+    );
+  }
+}
+
+/**
+ * Refuse a store holding two judgements for the same (criterion, issue).
+ *
+ * The lookup below is a `find`, so it takes the FIRST match and the rest are
+ * invisible — and the store is hand-maintained and append-ordered, which makes
+ * appending a correction the obvious way to change your mind. Under a `find`
+ * that correction never takes effect and the view keeps printing the judgement
+ * it replaced, with its original date and signer, looking entirely current.
+ *
+ * Taking the last record instead would be the cheap fix and the wrong one: it
+ * makes the store's meaning depend on line order, which nothing states and no
+ * reader can see. Two records for one pair is somebody's unresolved
+ * disagreement, and the only honest reading of it is a refusal. Raised by the
+ * required reviewer on #1641 — the same corruption-as-absence shape as the
+ * file read and the per-record validation, one level further out.
+ */
+export function assertOneJudgementPerPair(adjudications: readonly Adjudication[]): void {
+  const seen = new Map<string, number>();
+  const duplicates: string[] = [];
+  adjudications.forEach((a, at) => {
+    const key = `${a.criterion}/#${a.issue}`;
+    const first = seen.get(key);
+    if (first === undefined) seen.set(key, at);
+    else duplicates.push(`${key} (records ${first} and ${at})`);
+  });
+  if (duplicates.length > 0) {
+    throw new Error(
+      `the adjudication store holds more than one judgement for: ${duplicates.join("; ")}. ` +
+        `The lookup takes the first match, so every later record — including a correction ` +
+        `appended deliberately — would be silently ignored. Edit the existing record instead.`,
     );
   }
 }
@@ -208,6 +250,7 @@ export function censusRows(
   issues: readonly IssueRef[],
   adjudications: readonly Adjudication[],
 ): CensusRow[] {
+  assertOneJudgementPerPair(adjudications);
   const rows: CensusRow[] = [];
 
   for (const spec of specs) {
