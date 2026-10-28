@@ -7,7 +7,7 @@ status: active
 owner: jason
 created: 2026-10-22
 source: https://claude.dev/blog/solving-code-review-at-anthropic/
-updated: 2026-10-27
+updated: 2026-10-28
 ---
 
 # Code Review Convergence
@@ -56,6 +56,246 @@ made while a PR was already open touching that exact file.
 
 Every criterion below is subordinate to this one. A mechanism that makes filing smarter
 without making *not filing* the default has missed the point.
+
+## How we open a new area of this spec
+
+**Standing practice, agreed 2026-10-28.** This spec holds 61 criteria. Picking one off
+the list and building it is how the work has gone so far, and it is why three of the
+figures in this document describe no system that exists. Criteria are not a queue.
+
+Before any area of this spec is opened, the frame below is written **here**, not in a
+conversation:
+
+1. **Why** — the problem in one paragraph, in the language of what it costs.
+2. **Target outcomes** — each with the measured baseline beside it **and the command
+   that produced it**. An outcome whose baseline is untrustworthy gets no target until
+   one has been measured; inventing a target against a number nobody believes is how
+   this document acquired its bad figures. An outcome with no baseline at all makes the
+   increment *"instrument it"*, never *"improve it"*.
+3. **Competing hypotheses** — more than one, because the point of measuring is to
+   choose between them.
+4. **An increment** — the smallest set of criteria that together move one outcome.
+   Several criteria, not one: a criterion that moves nothing on its own is not shippable
+   on its own. This is a **Minimum Marketable Feature** (Denne & Cleland-Huang, 2003)
+   — **UNVERIFIED, not read against the source; see the citation table below** — not an
+   MVP: an MVP buys learning, an MMF delivers value.
+5. **An appetite, and a circuit breaker.** A budget fixed before design. An increment
+   that exceeds it is **cancelled by default** rather than extended by default; an
+   extension has to be argued for. That is Shape Up's circuit breaker and it is
+   **VERIFIED 2026-10-28** against the book itself: *"If they don't finish, by default
+   the project doesn't get an extension"*, and its glossary gives the mechanism as
+   *"Cancel projects that don't ship in one cycle by default instead of extending them
+   by default"*. MMF says what to ship and is silent on what happens when it does not
+   finish, which is the gap this closes.
+6. **Exit criteria** — what must be true for the increment to be done, written before
+   it starts.
+7. **Pre-specified decision criteria** — which hypothesis each possible reading selects,
+   **committed in advance**, including the reading that abandons the increment. Written
+   after the measurement, it is a rationalisation. The test it must pass is
+   determinism: *two people following the rule are guaranteed to reach the same
+   decision*. A rule that needs interpretation is not one.
+8. **A deviations record, written after the measurement.** Restate the decision criteria
+   verbatim and list every departure from them. **This step, not step 7, is the one with
+   evidence behind it** — see below.
+
+A criterion that is plain correctness work with no outcome to move is marked
+**"correctness only — no outcome claimed"** and skips steps 2, 3 and 7. Forcing an
+outcome onto such a criterion manufactures a vanity baseline, which is worse than
+declaring there is none.
+
+### Why step 8 is not optional
+
+Committing a decision rule in advance sounds sufficient and is not. The best available
+comparison is van den Akker et al., *Preregistration in practice*, **Behavior Research
+Methods** (2023), `doi:10.3758/s13428-023-02277-0`. **Read 2026-10-28 from the
+publisher's PDF**, the abstract states it compared *"193 psychology studies that earned
+a Preregistration Challenge prize or preregistration badge to 193 related studies that
+were not preregistered"* and that *"we did not find that preregistered studies had a
+lower proportion of positive results (Hypothesis 1), smaller effect sizes (Hypothesis
+2), or fewer statistical errors (Hypothesis 3)"*.
+
+So the artefact that does the work is the deviations record, not the rule. A
+pre-specified rule with nothing comparing it to the outcome is decoration.
+
+**Two figures previously in this paragraph are WITHDRAWN** — *"roughly three quarters
+of preregistered studies deviate from their plan"* and *"adherence rises to about 92%"*.
+Both were credited to the paper above and **neither is in it**; its design compares
+preregistered to non-preregistered studies and does not measure deviation from a plan
+at all, so the attribution was structurally wrong and not merely unlocated. Deviation
+rates are a different literature with different numbers, and this document is not
+standing on figures it has not read. The claim above survives on the headline result
+alone, which is weaker and checked.
+
+### Every external citation in this section, and whether anybody read it
+
+Round 11 of #1637 observed that the external claims here rest on the same mechanism that
+produced the withdrawn Mobius attribution, and that nothing in this repository can check
+any of them. Round 12 then made the sharper point: a sentence *saying* the others are
+unverified, three paragraphs away from where they are asserted, is not a mark on any of
+them — a reader scanning the claims sees confident prose. Both are correct, and the
+round-11 census was **itself short by one**: it named five claims and missed Pre-SPEC
+entirely. A census of unchecked claims that is not itself complete reproduces the defect
+it records, so the population is enumerated here rather than counted.
+
+Each row is marked at its own claim site as well as in this table.
+
+| Citation | Status | What was actually read |
+|---|---|---|
+| van den Akker et al., *Preregistration in practice*, 2023 | **VERIFIED** 2026-10-28 | Publisher PDF; abstract quoted above. Cost two withdrawals. |
+| Shape Up, the circuit breaker | **VERIFIED** 2026-10-28 | `https://basecamp.com/shapeup/2.2-chapter-08` and the glossary; both quoted above. |
+| Pre-SPEC (Kahan, Forbes & Cro, 2020) | **VERIFIED** 2026-10-28 | Open-access full text; points 4 and 5 and the determinism definition quoted above. |
+| Open Practice Library / Mobius | **WITHDRAWN** | Practice page read; the *options pivot* URL returns HTTP 404. |
+| MMF (Denne & Cleland-Huang, 2003) | **UNVERIFIED** | Nothing. It is a book and no copy was consulted. |
+| GQM (Basili et al., NASA SEL) | **UNVERIFIED** | A search returned only a secondary method guide; no primary text. |
+| ISO/IEC/IEEE 15939:2017 | **UNVERIFIED** | Nothing — paywalled; ISO's browsing platform returned HTTP 403. |
+
+Three read, three not, one withdrawn. The three unread are the three that are hardest to
+reach, which is the honest reason and not a good one; what this table buys is that no
+reader has to guess which is which.
+
+### Provenance, and one correction
+
+The first draft of this section called the above "one turn of a Mobius loop". That
+attribution was **wrong and is withdrawn**. Checked directly: the Open Practice Library's
+*Target Outcomes* practice prescribes a whiteboard template, a visible timer, Start At
+The End, Affinity Mapping and a SMART goal — **no baseline step, no current-state
+measurement, no instrumentation**. And the Open Practice Library URL for "options
+pivot" — `https://openpracticelibrary.com/practice/options-pivot/` — returns
+**HTTP 404**; it is a phase label, not a practice, and carries no
+decision rule. The two things this section most needed are precisely the two Mobius does
+not supply; they were invented here and credited to it.
+
+The honest lineage is older and testable. **GQM** (Basili et al., NASA SEL) writes its
+*interpretation model* alongside the questions, before any data — **UNVERIFIED: no
+primary Basili or SEL text was read; a search on 2026-10-28 returned only a secondary
+method guide.** **ISO/IEC/IEEE 15939:2017** makes *decision criteria* a defined term —
+thresholds fixed in advance that determine the need for action — and defines an analysis
+model as measures combined with them: **UNVERIFIED, and not cheaply verifiable — the
+standard is paywalled and ISO's browsing platform returned HTTP 403 on 2026-10-28.** The
+determinism test in step 7 is **Pre-SPEC** (Kahan, Forbes & Cro, *BMC Medicine* 18:253,
+2020, `doi:10.1186/s12916-020-01706-7`), and this one is **VERIFIED 2026-10-28** from the
+open-access full text: its fifth point is *"adaptive analysis strategies should use
+deterministic decision rules"*, and it defines the test as *"A decision rule is
+deterministic if two different people are guaranteed to get the exact same result by
+following the rule"* — which is step 7's sentence, and the paraphrase was faithful.
+Mobius is prior art here and nothing is inherited from it.
+
+## The current loop — Increment 1: make the verdict readable
+
+**Why.** A change costs about four and a half review rounds, and 45.8% of rounds end
+with no readable verdict. The second number is the worse one: a round that could not be
+measured is indistinguishable from a round that found nothing, so the gate's silence
+carries no information. That is SUCCESS.md claim 4 failing inside this repository's own
+merge gate.
+
+**Target outcomes.**
+
+Every baseline carries the day it was taken and the command that produced it.
+Step 2 of *How we open a new area of this spec* requires both, and an earlier
+revision of this table carried neither — caught by the required reviewer on
+2026-10-28, which is the document failing its own rule inside the section that
+states it.
+
+| # | Outcome | Baseline | Taken | Command | Target |
+|---|---|---|---|---|---|
+| O1 | Rounds to pass | 4.50 — **untrustworthy** | 2026-10-28 | `bun evals/ai-review-control/run.ts rounds` | set at the end of this loop |
+| O2 | One-round pass rate | 26.1% — **untrustworthy** | 2026-10-28 | `bun evals/ai-review-control/run.ts rounds` | set at the end of this loop |
+| O3 | Rounds ending unreadable | 45.8% | 2026-10-28 | `bun evals/ai-review-control/run.ts rounds` | ≤5% |
+| O4 | A reading describing ONE configuration | does not exist (n=1) | 2026-10-28 | the same reading, partitioned by configuration — no command produces it today, which is what O4 says | n≥12, configuration named |
+
+All three numeric baselines come from one reading over **#1573–#1634: 48 pull
+requests, 203 rounds**. The denominator for O2 and O3 is **rounds**, not pull
+requests. O4's cell has no command on purpose: the absence IS the baseline, and
+inventing one would be the vanity baseline this frame warns about.
+
+O1 and O2 carry no target **by decision**. Both were measured across #1573–#1634, which
+spans at least two mechanism changes (#1614 made the advisory reviewer run on every pull
+request; #1634 made repeat suppression live) and a third landed in #1636. A cohort that
+spans a mechanism change describes no system, so a target set against it would be a
+number invented to look like a plan. O4 is what makes O1 and O2 real, which is why it is
+in this loop and they are not.
+
+**Options — competing hypotheses.**
+
+| | Hypothesis | What would select it |
+|---|---|---|
+| H1 | Most unreadable rounds are the reviewer never reading the code at all | unreadable rounds are mostly zero-tool-call |
+| H2 | The reviewer stops early because `REVIEW.md` asks for its three best guesses; told to cover the change, it reports materially more per pass | unreadable rounds mostly DID call tools |
+| H3 | Rounds are high because findings arrive in a drip, not because there are many | findings-per-round flat across rounds at constant diff size |
+| H4 | Truncated diffs caused part of the miss rate | superseded — the cap moved in #1636; now measurable |
+
+**The increment.** CRC-M12, CRC-M13, CRC-M14, CRC-M15 below, shipped as a set. Each is
+one pull request; none of them moves O3 or O4 alone.
+
+**Appetite and circuit breaker.** Four pull requests and one release. An increment that
+has not produced a reading after that is **cancelled, not extended** — and its
+cancellation is itself a result about O4, because it would mean a single-configuration
+reading cannot be taken by this route.
+
+**Exit criteria — all five, or the increment is not done.**
+
+1. An unreadable round reports **which** named mode it was, not merely that it was unreadable.
+2. The share of unreadable rounds with zero tool calls is a recorded number.
+3. Every reading in the store names the published version it was taken under.
+4. A cohort row exists describing a single configuration, with that configuration
+   named, over **n≥12 rounds** — the same n the O4 target states. An earlier revision
+   wrote this as "one cohort row exists", which is satisfied at n=1 and would have
+   closed the increment on a reading too thin for the decision table below to read.
+   Caught by the required reviewer on 2026-10-28.
+5. O1 and O2 carry a target, **or** a written statement of why they still cannot. Their
+   Target column promises one at the end of this loop and criteria 1–4 never ask for it,
+   so without this row the promise is enforced by nothing. "Still untrustworthy, because
+   X" is a complete answer; silence is not.
+
+**Pre-specified decision criteria, committed before the measurement.** Each reading
+below selects exactly one next increment, so two readers of the same number reach the
+same decision.
+
+**Rows are evaluated in order and the first match wins.** Without that sentence the
+futility row overlaps all three percentage rows — any n<12 reading also lands in one of
+them — and two readers could reach different decisions from one number, which is exactly
+the determinism test this section claims to pass. Caught by the required reviewer on
+2026-10-28, and it was right: a table whose rows are not disjoint is not a decision rule.
+
+| Order | Reading on the unreadable rounds | Selects | Next increment |
+|---|---|---|---|
+| 1 | fewer than **12** unreadable rounds recorded in one configuration | neither — **futility** | the instrument did not produce enough draws; cancel and re-scope rather than read a number this thin. Evaluated FIRST, so a thin reading never reaches a percentage row |
+| 2 | **> 60%** have zero tool calls | H1 | reviewer reliability — a prompt A/B would be measuring the wording of an instruction nothing read |
+| 3 | **< 40%** have zero tool calls | H2 | the `REVIEW.md` A/B, testing the standing prediction (current ~1 finding/pass, coverage arm ≥2.5×) |
+| 4 | **40–60%** inclusive of both endpoints | both | H1 first, because it is the cheaper build |
+
+**H3 is not selectable by this reading, and that is a decision rather than an
+oversight.** The table branches on one axis — whether the unreadable rounds called tools
+— and H3 is a claim about findings-per-round at constant diff size, which this
+increment's instruments do not measure. So no reading above can select it. H3 stays in
+the Options table as live and **unaddressed**, and if rows 2–4 all turn out to be wrong
+it is the first thing to instrument. Writing a fifth row for a hypothesis nothing here
+can test would be a decision criterion no measurement could trigger, which is worse than
+saying so.
+
+**Deviations record — to be written after the measurement, and empty until then.**
+Restate the table above verbatim and list every departure from it. If no reading was
+taken, say that. An increment that closes with this section still empty has not closed.
+
+**Increment 2 is not scoped here, deliberately.** Its content is whichever row of the
+table above the measurement selects, and scoping it now would commit the choice before
+the evidence.
+
+## Housekeeping — carried here so it is visible, but it is not criteria
+
+Three known items move none of this document's outcomes. They are written down because
+work nobody can see gets rediscovered, and left out of the criteria list because
+`CLAUDE.md` is right that cleanup should say it is cleanup rather than borrow urgency
+from something that is measured. **Nothing below gates an increment.**
+
+- [ ] Two rows are missing from `CENSUS_TRIGGERS` in `scripts/census-routing.ts`, so the
+      router under-reports which census tests a diff can trip.
+- [ ] The `Cited` table in this document is hand-maintained and should be rendered from
+      data, like the routing table in `.claude/rules/self-referential-tests.md` already is.
+- [ ] Three scare quotes are silently dropped in the generated `.github/workflows/ai-review.yml`.
+      The advisory reviewer reported this as breaking the shell string early; **that claim
+      was checked by running both lines and is false** — exit 0, no stderr, full sentence
+      emitted. What remains is cosmetic.
 
 ## Success criteria
 
@@ -125,6 +365,46 @@ implementation.
 - [ ] CRC-M9: Human-time metrics tracked — approvals per PR (median and p95), human comments, time waiting on a person.
 - [ ] CRC-M10: **Revert and incident rates are the guardrail.** If they rise, human time was moved, not saved.
 - [x] CRC-M11: Rounds-to-pass is tracked alongside recall. (shipped, #1441/#1448)
+
+Increment 1 of *The current loop* above. These four are a set: each one alone leaves the
+unreadable rate exactly where it is.
+
+- [ ] CRC-M12: **An unreadable round names its mode.** `no_payload` (the action ran and
+      wrote no findings file), `none_posted` (findings were written and none reached the
+      pull request) and `diff_truncated` (the reviewer was shown part of the change) are
+      **distinct recorded outcomes**, not one bucket. A round recorded as merely
+      "unmeasured" is the defect this criterion exists to remove: it is the state that
+      reads as "nothing wrong" to every consumer of the number.
+- [ ] CRC-M13: **Whether the reviewer READ anything is recorded, separately from whether
+      it WROTE anything.** `lib/review-execution-reading.ts` already computes
+      `toolCallsByName` and `NO_TOOL_CALLS`; it is wired into the advisory reviewer only,
+      and the required reviewer runs in consumer repositories that have no `scripts/`
+      directory, so the reading is unreachable there. The criterion is met when the
+      required reviewer reports the tool-call census on the no-payload route — **not**
+      when the library can compute it. A reading nothing invokes is not a reading.
+      Satisfying this needs the reader published as a CLI command, hence a release.
+- [ ] CRC-M14: **Every reading names the published version it was taken under.** CI pins
+      `bunx rungate@<version>`, so a merged change to `lib/` is dormant until a release
+      while a merged workflow change is live immediately. A reading that does not say
+      which published version produced it cannot be attributed to a configuration, and
+      an unattributable reading is what O1 and O2 above are made of.
+- [ ] CRC-M15: **The staleness check reads contents, not a version string.**
+      `lib/distribution-standing.ts` makes **two** comparisons on **two different
+      fields**, and neither reads an artefact. `standing.published` — the version a
+      consumer can install — is checked for membership in
+      `[registry.latest, registry.previous]`, so one release of lag is permitted
+      unconditionally. `standing.tree` — the version the measurements were taken
+      against — is checked for equality with `package.json`'s version, and never
+      against the registry at all. **It never reads the published artefact** — two
+      earlier drafts of this criterion got this wrong in two different ways: the
+      first said it compared package SIZE, the second said the measurement-baseline
+      field was the one compared to the registry. Both were corrected on 2026-10-28
+      after the required reviewer read the module, in rounds 5 and 6. The gap is not
+      the comparison it makes but the one it does not:
+      a version match says nothing about whether the published tarball carries a `lib/`
+      fix that is already merged, which is exactly how a merged change stays dormant
+      behind a green check. Met when a package whose version is acceptable and whose
+      contents differ from the tree is refused, by name.
 
 ### Convergence — the non-convergent review failure
 
@@ -736,6 +1016,107 @@ the dense end of that distribution is ordinary English rather than
 measurement. Both readings are commands, not assertions, and both can be
 re-taken against whatever this file says today.
 
+**A third variant was proposed on 2026-10-28 and is refused by CLASS, not
+by cost.** Round 7 of #1637 asked for one scanner over the whole body,
+minus frontmatter and fenced code, demanding a date or a command from every
+block stating a bare multi-digit number — on the correct observation that
+hand-picking sections is the recurring failure mode rather than the
+particular section picked.
+
+**The figure first published here — 292 blocks, 136 stating a number, 63
+without provenance — is WITHDRAWN, and its withdrawal is this rule proving
+itself on its own paragraph.** It was written with a date and no command, so
+when round 10 asked for the command there was nothing to re-run: the count
+could not be reproduced, and nobody reading it could have told. Re-taken
+2026-10-28 against the same revision it described, with the command recorded
+this time:
+
+```sh
+git show e7e12ed9:specs/CODE-REVIEW-CONVERGENCE-SPEC.md > /tmp/body.md
+bun -e 'const fs=require("fs");
+let d=fs.readFileSync("/tmp/body.md","utf-8")
+  .replace(/^---\n[\s\S]*?\n---\n/,"").replace(/```[\s\S]*?```/g,"");
+const blocks=d.split(/\n\s*\n/).map(s=>s.trim()).filter(Boolean)
+  .filter(b=>!/^#{1,6} /.test(b) && !/^\|/.test(b));
+const withNum=blocks.filter(b=>/\b\d{2,}\b/.test(b));
+const noProv=withNum.filter(b=>!/\b20\d\d-\d\d-\d\d\b|`[^`]*\b(bun|gh|git|grep|npm|node)\b[^`]*`|\brun \d|\b[0-9a-f]{7,40}\b/.test(b));
+console.log(blocks.length, withNum.length, noProv.length)'
+```
+
+**240 non-heading, non-table blocks, 129 stating a number, 68 naming no date,
+run, commit or command.** 68 is a payable price. The
+reason it is still wrong is the table above: re-takeability is the
+**world-derived** rule. A large share of those 63 are document-derived — the
+47/30 split, the bullet tallies, every figure a guard in
+`test/code-review-convergence-spec.test.ts` already recomputes — or cited,
+like Tricorder's thresholds and the 65% → 78% target this document is aimed
+at. Demanding a date and a command from those two classes asks the wrong
+question of them, and a guard that is wrong about most of what it fires on
+is routed around within a week. That judgement does not depend on which of
+the two counts is right: 63 and 68 are the same order and the same argument.
+
+**A fourth variant was proposed on 2026-10-28 and is accepted as a class,
+deferred as an instrument, with the measurement here so the next round reads
+it rather than re-deriving it.** Round 9 of #1637 observed that the recurring
+defect across rounds 2 through 9 is one class: *a prose claim about something
+EXTERNAL to this document — another document's practice, what a named `lib/`
+module compares, whether a baseline carries a date — is asserted from memory
+and corrected only after a reviewer re-reads the source.* That is right, and
+it names four instances this document already records, including CRC-M15
+being wrong three times. Its proposed remedy is that such a claim should cite
+what it describes.
+
+The mechanism for that **already exists and is proven**: `lib/source-anchor.ts`
+resolves a citation written as a source path, an `@`, and a quoted snippet of
+the line meant, to exactly one site or it refuses — `ANCHOR_CITATION` is the
+pattern and `resolveCitation` the resolver. `specs/GATE-CONTRACTS-SPEC.md` is
+bound to it — where three of the four
+citations outside the guard were already wrong when it was built. So the
+generaliser is not a new instrument; it is giving that one something to
+resolve. Taken 2026-10-28 against `a6d79e17`, the commit that first carried
+this paragraph:
+
+```sh
+git show a6d79e17:specs/CODE-REVIEW-CONVERGENCE-SPEC.md > /tmp/doc.md
+bun -e 'const fs=require("fs");
+const d=fs.readFileSync("/tmp/doc.md","utf-8");
+const m=[...d.matchAll(/`((?:lib|scripts|gates|hooks|test|workflows)\/[A-Za-z0-9_.\/-]+\.(?:ts|js|json|md))`/g)].map(x=>x[1]);
+console.log(m.length, new Set(m).size,
+  [...new Set(m)].filter(f=>!fs.existsSync(f)).length)'
+```
+
+**75 backticked mentions of a source path, across 39 distinct files, every
+one of which exists on disk, and ZERO citations in the resolvable anchor
+form.** Pointing `citationFailures()` at this document passes while reading
+nothing — a vacuous green, which is the shape this spec exists to refuse.
+
+**This figure was first published as 73 across 38, and the correction is
+worth more than the number.** The reading was taken, and then this paragraph
+was written — and the paragraph names two more source paths, so the file it
+described no longer existed by the time the sentence about it was committed.
+A world reading that does not name the revision it was taken against will
+drift from the document that carries it, in the direction of the author's own
+edit, with nothing able to notice. That is the whole argument for naming a
+revision and a command rather than only a date.
+
+**The cheap proxy was measured and is refused on its error rate**, which is
+why this is deferred rather than shipped in the round it was raised. Inferring
+the attribution instead of requiring it — charging every backticked identifier
+in a paragraph to the one source file that paragraph names — yields three
+claims here and **one false of the three**: `review_scope_for_round()` is a
+shell function in the generated `ai-review-carry` step and the sentence says
+so, but the same paragraph also names `lib/ai-review-rounds.ts`, so proximity
+charges it there. A guard wrong about a third of what it fires on is routed
+around within a week. The attribution has to be written by the author in the
+anchor form, which makes this a pass over 73 sentences — a piece of work, not
+a review round.
+
+That is also why the **section census** below is the right generaliser and a
+whole-body number scan is not: the census asks whether a section is
+ACCOUNTED FOR, so each section declares which class governs its numbers,
+rather than one rule being applied to three classes that owe different
+things.
+
 So the class is real and it is not closable by a guard over this file at a
 price worth paying. It is a property of the genre — a long hand-written
 document that restates its own measurements — and the honest scope for
@@ -1059,7 +1440,7 @@ deviate, so CRC-B8 counts with the remainder below and these two do not.
 
 ### Not done — the remainder, with what is there instead
 
-**29 bullets, one per criterion that leads one**, listed because the
+**33 bullets, one per criterion that leads one**, listed because the
 near-misses are the expensive ones: each has something in the tree that
 resembles it and is not it. The unit is stated because this line read `34`
 from before CRC-N6 was added until 2026-10-26, when counting it found 29 —
@@ -1067,7 +1448,7 @@ the number had been stale for long enough that nobody could say what it had
 counted, and incrementing it would have carried the error forward. One
 further id is NAMED inside these bullets without leading one (CRC-A6); it is
 accounted for in its own bucket, and one bullet leads with TWO ids
-(**CRC-E3, CRC-E9**), which is why 31 ids appear here and 29 is the right
+(**CRC-E3, CRC-E9**), which is why 35 ids appear here and 33 is the right
 count of this list.
 
 **Every number in the paragraph above is recomputed from the bullets by
@@ -1088,7 +1469,16 @@ hand-types dozens of other tallies — *272 (finding, later round) pairs*,
 machine-verify them, or declare them exempt. **Machine-verifying them is not
 possible and would be wrong if it were.** The classes below are sorted by
 where the authority for a number lives, and only the first is a property of
-this document:
+this document.
+
+**Those four figures are citations, not readings taken here**, and round 6
+was right that nothing in the sentence said so. Each is stated with its
+date, its method and its controls in *Measured non-obvious facts* below —
+272 pairs and 147 parseable ledgers under the second-chance reading taken
+2026-10-24, 161 distinct rounds under the round-3 floor, 31 review threads
+under the fifteen-rounds draw — and is named up here only as an example of
+the class. A citation and a fresh reading are the same shape in prose, which
+is exactly why the rule below is about where the number is TAKEN.
 
 | Class | Example | Can a test recompute it? | Rule |
 |---|---|---|---|
@@ -1151,6 +1541,10 @@ instance of it.
 - **CRC-M6** One bucket of four is derived from evidence. The other three report UNMEASURED unless hand-declared, and `noiseRate` is `null`.
 - **CRC-M7** The control exists and counts `FIRED` on clean subjects. The criterion's own number — findings that *would have led to a harmful change* — is declared UNMEASURED by the control's README, because a finding carries no remedy anything can apply. A tripwire in `test/review-negative-control.test.ts` reds the day the contract grows one.
 - **CRC-M10** Nothing tracks revert or incident rates.
+- **CRC-M12** One bucket, not three. `lib/review-execution-reading.ts` already distinguishes `EXECUTION_FILE_ABSENT`, `NO_TOOL_CALLS`, `NO_REVIEW_POSTED`, `REVIEW_COUNT_UNAVAILABLE` and `DIFF_TRUNCATED` as reason codes, and `record-ai-review-unmeasured` (#1488) records a kind per round — but `no_payload`, the nothing-posted case and `DIFF_TRUNCATED` are not named failure modes in this spec, so nothing binds the recorded kinds to a criterion and the rate they roll up into is a single undifferentiated 45.8% — read 2026-10-28 with `bun evals/ai-review-control/run.ts rounds` over #1573–#1634, 48 pull requests and 203 rounds, the denominator being ROUNDS.
+- **CRC-M13** The census is computed and unreachable where it matters. `toolCallsByName` and `NO_TOOL_CALLS` are wired into the advisory reviewer only (`.github/workflows/claude-review.yml`). The required reviewer is generated and runs in consumer repositories through `bunx rungate@<pin>`, which ships no `scripts/` directory, so there is no command for it to call. Nothing anywhere reports whether a no-payload round read a single file.
+- **CRC-M14** No reading names its published version. CI pins `bunx rungate@<pin>`, so a merged `lib/` change is dormant until a release while a merged generated workflow is live on merge — two different latencies behind one number, and the stored readings record neither.
+- **CRC-M15** `lib/distribution-standing.ts` checks `standing.published` — the version a consumer can install — for membership in `[registry.latest, registry.previous]`, so one release of lag is permitted unconditionally, and checks `standing.tree` against `package.json`'s version only. Neither reads the published artefact. A tarball whose version is acceptable and whose contents differ from the tree passes, which is how an earlier increment stayed dormant behind a green check. Two earlier drafts of this bullet were wrong about which field is compared to what — the first said SIZE, the second named a field (`standing.taken`) the module does not have — both corrected on 2026-10-28 after the module was read, in review rounds 5 and 6. #1226 is adjacent and unassigned.
 - **CRC-N4** **Half of it shipped in #1381 and the half the criterion is named for did not.** The walker exists: the generated `ai-review-carry` step reads the ledger, searches each prior finding's file for the recorded anchor TEXT at this commit (#1601 — it compared the text at the recorded LINE NUMBER until 2026-10-24, and an edit anywhere above a finding dropped it as resolved), and hands the reviewer the unresolved set under one of three readings that may not collapse — `AI_REVIEW_CARRY_READ`, `AI_REVIEW_CARRY_ABSENT`, `AI_REVIEW_CARRY_UNMEASURED`. It restates `readLedger → priorFindings → carryForward` in bash and is bound to the library over one matrix by `test/ai-review-carry-forward.test.ts`, because `lib/scaffold/ai-review-step.ts` may not import: the step is deliberately import-free so that the 27 suites copying it into a temp directory can build mutants that load. What remained was **suppression**, and #1586 built it: `lib/ai-review-suppression.ts` turns the carry step's state file and a ledger snapshot into the prior key set, and `scripts/ai-review-findings.ts` hands the adjudicator a gate over it. Three things keep this criterion unticked. **It is dormant** — the generated job runs `bunx rungate@<pinned>`, so this reaches CI only when the pin moves, and a tick is read as *running*. **It is advisory-only by declared deviation** — a blocking repeat is re-reported and still blocks; see the deviations table. **The key symmetry is new** — before #1586 the adjudicator formed `n:<line>` keys and the ledger held `t:<text>` keys, so a dedupe built on it would have matched nothing while reporting cleanly; `lineTextFor` reads the checkout and `test/ai-review-suppression.test.ts` AS-5 is the control that holds it.
 - **CRC-N5** Nothing runs review agents nightly over existing code.
 - **CRC-N6** **Named because it was measured, with nothing built.** Five consecutive rounds on #1614 re-raised one already-fixed defect: four consecutive rounds from a docblock that QUOTED the removed regex, and the FINAL round — after the quotation was deleted — from the PARAPHRASE that replaced it, reconstructing a regex literal that appears nowhere in the tree. CRC-N4's dedupe cannot absorb it, because the suppression key is `file \0 line-text \0 summary` and a regenerated finding carries a new summary: it is not a repeat, it is a new finding about code that does not exist. The near-miss is *"do not quote dead code in comments"*, which was applied and then defeated. The reading is in *Measured non-obvious facts*. **It is deliberately NOT a request for new machinery** — the prior-art section above found that a verification gate re-checking each finding against the real code at the cited line is the documented mitigation for the wider class it belongs to, and that gate is CRC-B4. This criterion names the case so a verifier can be held to it; it does not ask for a second mechanism beside one already planned.
@@ -1434,9 +1828,9 @@ stops being told anything.
 
 **A row with no pull request is work this spec says is next and nobody has
 claimed.** That is the state worth seeing, and it is the one a tracker of
-merged work cannot show: `bun bin/rungate.ts audit-specs` reports 46 of this
-spec's 56 criteria unmatched and has no way to say which of them anybody is
-moving. Every row here, with or without a number, names criteria from the list
+merged work cannot show: `bun bin/rungate.ts audit-specs` reports this spec's
+61 criteria as 10 ticked and 51 unticked, and has no way to say which of them
+anybody is moving. Every row here, with or without a number, names criteria from the list
 below, and `test/code-review-convergence-spec.test.ts` fails on an id this
 spec does not declare — so a row cannot point at a criterion that does not
 exist, which is the cheapest way for a traceability table to go quietly wrong.
@@ -1452,8 +1846,8 @@ to observe it. This table says what WAS observed, and it is the only place a
 phase may be called done.
 
 **Why it is a second table and not a column.** `bun bin/rungate.ts
-audit-specs` already reports this spec's criteria — 10 ticked of 56 at the
-time of writing — and `scripts/sync-sc-status.ts` maintains that automatically.
+audit-specs` already reports this spec's criteria — 10 ticked of 61 — and
+`scripts/sync-sc-status.ts` maintains that automatically.
 It is a real tracker and it is not this one: it reports whether a criterion is
 **bound by a test**, and a phase exit is an **observation on a live pull
 request** that no unit test can name. Both are needed and conflating them is

@@ -30,13 +30,26 @@
  *   MMF is silent on: what happens when an increment does not finish. The
  *   default is CANCELLED, not extended.
  * - **Pre-specified decision criteria.** 15939's defined term. The test is
- *   determinism — two people following the rule reach the same decision — so
- *   a threshold written as a number beats one written as "if it looks good".
- * - **A deviations record, written after the measurement.** The only element
- *   of this frame with direct empirical support: van den Akker et al. (2023)
- *   found ~75% of studies deviate from their protocol, and adherence rose to
- *   92% where deviations had to be declared. Empty until the measurement
- *   exists is the correct state; absent is not.
+ *   determinism, and it is **Pre-SPEC's**, read 2026-10-28 from the
+ *   open-access paper: *"A decision rule is deterministic if two different
+ *   people are guaranteed to get the exact same result by following the
+ *   rule."* So a threshold written as a number beats one written as "if it
+ *   looks good".
+ * - **A deviations record, written after the measurement.** Empty until the
+ *   measurement exists is the correct state; absent is not.
+ *
+ * TWO FIGURES WERE WITHDRAWN FROM THIS DOCBLOCK ON 2026-10-28, and they had
+ * already reached main in #1639. It said van den Akker et al. (2023) found
+ * ~75% of studies deviate from their protocol and that adherence rose to 92%
+ * where deviations had to be declared. NEITHER figure is in that paper: its
+ * design compares preregistered with non-preregistered studies and does not
+ * measure deviation from a plan at all. The same two figures were withdrawn
+ * from `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` at round 11 of #1637; this
+ * copy survived that fix because nobody swept for it, which is the eighth
+ * time on that pull request a fact was corrected in one place and left
+ * standing in another. What the paper does support is quoted in the spec.
+ * Which of the citations above has and has not been read against its source
+ * is enumerated there too — three of seven have not.
  *
  * ## The checker is shipped with the template, deliberately
  *
