@@ -16,6 +16,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { localCalendarDay } from "../lib/local-calendar-day";
+import { hasContent } from "../lib/spec-evidence";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -453,5 +454,43 @@ describe("the headline counts ticks, not the buckets ticks land in", () => {
     // The control: the fix must not move the honest case.
     const rows = inventory(SPEC, snapshot({}), [], TODAY);
     expect(renderMarkdown(rows, snapshot({}), [], TODAY)).toContain("1 of 2 are ticked");
+  });
+});
+
+describe("a lone dash is blank, here and in the gate that blocks the build", () => {
+  // Fourth instance of this file's defect class, and the one that falsifies
+  // my round-5 claim to have closed it: `classify` and `waiverProblem` each
+  // decided "is this cell filled in" with `.trim() !== ""`, while
+  // `evidenceViolations` — the gate that actually blocks — uses
+  // `hasContent`, which treats a lone `-` as blank. So the inventory called
+  // a criterion DONE that the gate flags EVIDENCE_BLANK. Both now read
+  // `hasContent`. Raised by the required reviewer on #1642.
+  const base = {
+    id: "CRC-Q9", ticked: true, waived: false, needs: "test", provedBy: null,
+    text: "x", openIssues: [], closedIssues: [], mergedPrs: [], tests: [], waiverProblem: null,
+  };
+
+  test("`proved-by: -` is not proof", () => {
+    expect(classify({ ...base, provedBy: "-" }, {})).not.toBe("DONE");
+    expect(classify({ ...base, provedBy: " - " }, {})).not.toBe("DONE");
+    // The control: real content still reaches DONE, so the predicate was
+    // tightened rather than broken.
+    expect(classify({ ...base, provedBy: "test/x.test.ts" }, {})).toBe("DONE");
+  });
+
+  test("a waiver field holding a lone dash is incomplete", () => {
+    const dash = { reason: "-", by: "rayford", until: "2026-12-31" };
+    expect(waiverProblem({ ticked: true }, dash, TODAY)).toContain("reason");
+    // Control.
+    expect(waiverProblem({ ticked: true }, { ...dash, reason: "because" }, TODAY)).toBeNull();
+  });
+
+  test("this file and the blocking gate share one blank decider", () => {
+    // Named, so a future third spelling is a visible edit rather than a
+    // silent divergence.
+    expect(hasContent("-")).toBe(false);
+    expect(hasContent("")).toBe(false);
+    expect(hasContent(null)).toBe(false);
+    expect(hasContent("x")).toBe(true);
   });
 });

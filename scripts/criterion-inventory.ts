@@ -57,7 +57,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { isIsoDay, parseCriteria } from "../lib/spec-evidence";
+import { hasContent, isIsoDay, parseCriteria } from "../lib/spec-evidence";
 import { oneScMentionPattern } from "../lib/sc-ids";
 import { localCalendarDay } from "../lib/local-calendar-day";
 
@@ -188,7 +188,7 @@ export function waiverProblem(
 ): string | null {
   if (!waiver) return null;
   if (!row.ticked) return "a waiver on an unticked criterion settles nothing";
-  const missing = (["reason", "by", "until"] as const).filter(k => waiver[k].trim() === "");
+  const missing = (["reason", "by", "until"] as const).filter(k => !hasContent(waiver[k]));
   if (missing.length > 0) return `the waiver is missing: ${missing.join(", ")}`;
   if (!isIsoDay(waiver.until)) return `\`waived-until: ${waiver.until}\` is not a real day`;
   if (waiver.until < today) return `the waiver expired on ${waiver.until}`;
@@ -208,7 +208,7 @@ export function classify(
   // the one the expiry check was added to prevent. A tick with neither proof
   // nor a standing waiver falls through on its other evidence, and the script
   // names it as a false tick rather than letting it pass as finished.
-  if (row.ticked && (row.provedBy ?? "").trim() !== "") return "DONE";
+  if (row.ticked && hasContent(row.provedBy ?? null)) return "DONE";
   if (row.tests.length > 0) return "BOUND";
   if (row.mergedPrs.some(n => prChangedCode[n] === true)) return "TOUCHED";
   if (row.mergedPrs.length > 0 || row.openIssues.length > 0 || row.closedIssues.length > 0) {
