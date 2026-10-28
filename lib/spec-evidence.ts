@@ -126,6 +126,7 @@ export interface EvidenceViolation {
     | "NEEDS_UNKNOWN"
     | "WAIVER_INCOMPLETE"
     | "WAIVER_EXPIRED"
+    | "FINGERPRINT_MISSING"
     | "EVIDENCE_STALE";
   /** One line naming the criterion and what to do about it. */
   message: string;
@@ -379,7 +380,32 @@ export function evidenceViolations(
     }
 
     const actual = criterionFingerprint(c.text);
-    if (hasContent(c.recordedFingerprint) && c.recordedFingerprint.trim() !== actual) {
+
+    // The fingerprint is REQUIRED, not optional, and that is the whole of
+    // this rule's third claim. An earlier revision checked staleness only
+    // when a fingerprint happened to be present and required one nowhere —
+    // so a ticked criterion with evidence and no fingerprint could be
+    // reworded freely, which is the common case and makes "rewording
+    // invalidates the proof" false exactly where it matters. Caught on
+    // #1639 by the required reviewer, verified by reading this function.
+    //
+    // Doorstop's fingerprint is optional in the same way and that is why
+    // clearing it there is a manual command nobody has to justify.
+    if (!hasContent(c.recordedFingerprint)) {
+      out.push({
+        id: c.id,
+        line: c.line,
+        code: "FINGERPRINT_MISSING",
+        message:
+          `${at} is ticked and names evidence, but records no \`fingerprint:\`. Without one ` +
+          `the text can be reworded and the evidence keeps counting, which is the state ` +
+          `this rule exists to refuse. Run \`bun scripts/audit-spec-evidence.ts ` +
+          `--record-fingerprints\`; the expected value is ${actual}.`,
+      });
+      continue;
+    }
+
+    if (c.recordedFingerprint.trim() !== actual) {
       out.push({
         id: c.id,
         line: c.line,

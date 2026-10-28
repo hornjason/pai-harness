@@ -165,8 +165,8 @@ const UNCLAIMED_RATCHET = 150;
 // vocabulary was declared in `lib/finding-jury.ts` and the deployed CI path
 // could not import it, so a matcher over the symbol would have ticked a
 // criterion nothing in CI could reach.
-// 96 -> 111 on 2026-10-28: SC-2560..SC-2574 of
-// SPEC-AUTHORING-SPEC.md, all fifteen ticked, all claimed by
+// 96 -> 112 on 2026-10-28: SC-2560..SC-2575 of
+// SPEC-AUTHORING-SPEC.md, all sixteen ticked, all claimed by
 // `test/spec-evidence.test.ts` and `test/spec-template.test.ts`. Unbindable
 // because each is a claim about what `evidenceViolations` RETURNS for a
 // planted document — "a waiver whose expiry has passed is a violation again"
@@ -178,7 +178,7 @@ const UNCLAIMED_RATCHET = 150;
 // `test/spec-evidence.test.ts`, which runs each case against the module and
 // against a copy with the decider short-circuited, and the document's own
 // `proved-by:` lines name it per criterion.
-const CLAIMED_UNBINDABLE = 111;
+const CLAIMED_UNBINDABLE = 112;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

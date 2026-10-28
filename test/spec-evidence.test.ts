@@ -213,6 +213,14 @@ describe("the decider can fail (mutation battery)", () => {
     ["WAIVER_EXPIRED"],
   );
 
+  // covers SC-2575
+  bothWays(
+    "SC-2575: a ticked criterion with evidence and no fingerprint is a violation",
+    "- [x] SC-2575: the loader throws on malformed JSON.\n      needs: test\n" +
+      "      proved-by: test/config-loader.test.ts\n",
+    ["FINGERPRINT_MISSING"],
+  );
+
   // covers SC-2567
   bothWays(
     "SC-2567: evidence recorded against a different wording is stale",
@@ -317,10 +325,12 @@ describe("the parser saw what it thinks it saw", () => {
     // SPEC-AUTHORING-SPEC.md. A parser that stopped here would report the
     // whole document as evidence-free, and the reading would be identical to
     // a document that genuinely recorded none.
+    const text = "the loader throws on malformed JSON.";
     const content =
-      `${BOUND}- [x] SC-2560: the loader throws on malformed JSON.\n` +
+      `${BOUND}- [x] SC-2560: ${text}\n` +
       "<!-- REVIEW: unmatched (no registry pattern was close enough) -->\n" +
-      "      needs: test\n      proved-by: test/config-loader.test.ts\n";
+      "      needs: test\n      proved-by: test/config-loader.test.ts\n" +
+      `      fingerprint: ${criterionFingerprint(text)}\n`;
     const [parsed] = parseCriteria(content);
     expect(parsed.needs).toBe("test");
     expect(parsed.provedBy).toBe("test/config-loader.test.ts");

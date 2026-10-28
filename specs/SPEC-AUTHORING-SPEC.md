@@ -176,6 +176,10 @@ the criterion later invalidates what proved it.
       needs: test
       proved-by: test/spec-template.test.ts "SC-2573: create-spec.ts does not emit a second template"
       fingerprint: 3428ff61
+- [x] SC-2575: a ticked criterion with evidence and no fingerprint is a violation
+      needs: test
+      proved-by: test/spec-evidence.test.ts "SC-2575: a ticked criterion with evidence and no fingerprint is a violation"
+      fingerprint: 1073dc36
 - [x] SC-2574: the decider refuses nothing when short-circuited, and that is observed
       needs: test
       proved-by: test/spec-evidence.test.ts "the mutant and the real module differ on a named input"
