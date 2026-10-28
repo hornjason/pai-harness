@@ -64,6 +64,29 @@ import { localCalendarDay } from "../lib/local-calendar-day";
 /** Every refusal exits through this, so a test can mutate one site. */
 export const EXIT_REFUSED = 1;
 
+/**
+ * The day this report is anchored to — **UTC, explicitly**, and the only
+ * place this script decides it.
+ *
+ * `waiverProblem` compares `waiver.until < today`, and `waiver.until` is
+ * validated by `isIsoDay` in `lib/spec-evidence.ts` under a UTC convention.
+ * A bare `localCalendarDay()` returns the day the RUNNER is living in, so
+ * the two sides of that comparison were anchored differently: a waiver
+ * reading `2026-10-28`, read at 02:00Z on the 29th from Los Angeles, is
+ * live here and expired to `scripts/audit-spec-evidence.ts` — which anchors
+ * UTC and whose comment calls itself the one place the anchoring is
+ * decided. That is the same defect #1639 fixed in that gate, reintroduced
+ * in a second reader of the same field, which is what makes it a class
+ * rather than a bug: two deciders, one question, and whichever one you run
+ * is the answer you get. Raised by the required reviewer on #1642.
+ *
+ * The display stamp uses it too. A report whose heading says one day while
+ * its expiry maths uses another is the drift in miniature.
+ */
+export function inventoryToday(at: Date = new Date()): string {
+  return localCalendarDay(at, "UTC");
+}
+
 export const STATES = [
   "DONE",
   "WAIVED",
@@ -294,6 +317,8 @@ export function renderMarkdown(
 
   const n = rows.length;
   const count = (s: State) => rows.filter(r => r.state === s).length;
+  const ticked = rows.filter(r => r.ticked).length;
+  const ticked0 = falseTicks(rows);
   const out: string[] = [
     "---",
     "doc-type: research",
@@ -314,10 +339,22 @@ export function renderMarkdown(
     "",
     "## The headline",
     "",
-    `${count("DONE") + count("WAIVED")} of ${n} are ticked, and ${count("WAIVED")} of those are ticked against a waiver rather than a`,
-    `proof. ${count("BOUND")} more have a test naming them and no tick. The remaining ${count("TOUCHED") + count("DOCUMENT ONLY") + count("NOT STARTED")} divide into`,
-    "work that touched code, work that exists only as writing, and work nobody has started — and",
-    "before this inventory all of them looked identical, because a checkbox has two states.",
+    // Counted off `row.ticked` and `falseTicks()`, never off the state
+    // buckets. `count("DONE") + count("WAIVED")` is NOT the ticked count: a
+    // ticked row with nothing holding it up falls through into BOUND /
+    // TOUCHED / DOCUMENT ONLY / NOT STARTED, so the bucket arithmetic
+    // reported it as unstarted work and undercounted the ticks — the third
+    // instance of this document's own defect class, two readings of one
+    // fact drifting because nothing made them agree. Dormant at 0 false
+    // ticks and live the moment there is one. Raised by the required
+    // reviewer on #1642.
+    `${ticked} of ${n} are ticked: ${count("DONE")} name what proved them, ${count("WAIVED")} stand on a waiver` +
+      (ticked0.length > 0
+        ? `, and **${ticked0.length} have neither** and are listed below.`
+        : ", and none are ticked without one or the other."),
+    `${count("BOUND")} more have a test naming them and no tick. The rest divide into work that`,
+    "touched code, work that exists only as writing, and work nobody has started — and before",
+    "this inventory all of them looked identical, because a checkbox has two states.",
     "",
     "## How the state was derived",
     "",
@@ -358,7 +395,6 @@ export function renderMarkdown(
     "",
   ];
 
-  const ticked0 = falseTicks(rows);
   out.push("## Ticked, with nothing holding the tick up", "");
   if (ticked0.length === 0) {
     out.push(
@@ -483,7 +519,7 @@ function main(): number {
     console.error(`UNMEASURED: no test files under ${join(root, "test")}. Every criterion would read as unbound.`);
     return EXIT_REFUSED;
   }
-  const today = localCalendarDay();
+  const today = inventoryToday();
   const rows = inventory(readFileSync(specPath, "utf-8"), snapshot, testFiles, today);
 
   const unclassified = [
@@ -505,7 +541,7 @@ function main(): number {
     return 0;
   }
 
-  console.log(`criterion inventory — ${specPath.split("/").pop()}, ${localCalendarDay()}`);
+  console.log(`criterion inventory — ${specPath.split("/").pop()}, ${today} (UTC)`);
   console.log(`  ${rows.length} criteria, ${snapshot.issues.length} issues, ${snapshot.prs.length} PRs read\n`);
   for (const state of STATES) {
     const group = rows.filter(r => r.state === state);

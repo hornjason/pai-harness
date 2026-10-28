@@ -17,10 +17,10 @@ is the column it starts in.
 
 ## The headline
 
-10 of 61 are ticked, and 2 of those are ticked against a waiver rather than a
-proof. 15 more have a test naming them and no tick. The remaining 36 divide into
-work that touched code, work that exists only as writing, and work nobody has started — and
-before this inventory all of them looked identical, because a checkbox has two states.
+10 of 61 are ticked: 8 name what proved them, 2 stand on a waiver, and none are ticked without one or the other.
+15 more have a test naming them and no tick. The rest divide into work that
+touched code, work that exists only as writing, and work nobody has started — and before
+this inventory all of them looked identical, because a checkbox has two states.
 
 ## How the state was derived
 

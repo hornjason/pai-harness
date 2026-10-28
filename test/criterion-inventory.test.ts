@@ -15,12 +15,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { localCalendarDay } from "../lib/local-calendar-day";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   CODE_DIRS,
+  inventoryToday,
   STATES,
   changedCode,
   classify,
@@ -366,5 +368,90 @@ describe("an absent pr-files.jsonl is the first pass, not a failed fetch", () =>
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the expiry comparison is anchored in UTC, like the gate that enforces it", () => {
+  // `scripts/audit-spec-evidence.ts` anchors `today` to UTC explicitly and
+  // its comment calls itself "the one place the anchoring is decided". This
+  // script became a SECOND reader of the same `waived-until` field and
+  // anchored it to the runner's zone, so a waiver could be live here and
+  // expired there — the #1639 defect reintroduced one file over. Raised by
+  // the required reviewer on #1642.
+
+  test("the same instant yields the same day whatever the runner's zone", () => {
+    // The real instrument: 02:00Z on the 29th is still the 28th in Los
+    // Angeles. A local anchor returns two different days for one instant.
+    const instant = new Date("2026-10-29T02:00:00Z");
+    expect(inventoryToday(instant)).toBe("2026-10-29");
+    // And the control that makes the line above mean something — a LOCAL
+    // reading of the same instant genuinely disagrees, so the assertion is
+    // not true by construction.
+    expect(localCalendarDay(instant, "America/Los_Angeles")).toBe("2026-10-28");
+    expect(localCalendarDay(instant, "Pacific/Kiritimati")).toBe("2026-10-29");
+  });
+
+  test("a waiver expiring on the UTC day is read as expired in no zone and live in none", () => {
+    // The behaviour the drift produced: one waiver, two verdicts.
+    const row = { ticked: true };
+    const waiver = { reason: "r", by: "b", until: "2026-10-28" };
+    const instant = new Date("2026-10-29T02:00:00Z");
+    expect(waiverProblem(row, waiver, inventoryToday(instant))).toContain("expired");
+    // Under the local anchor this script used to have, the same call said
+    // the waiver still stands. That is the disagreement, written down.
+    expect(waiverProblem(row, waiver, localCalendarDay(instant, "America/Los_Angeles"))).toBeNull();
+  });
+
+  test("two zones 25 hours apart give the script one answer", () => {
+    // Spawned, not reasoned about — the same shape SC-2576 uses on the gate.
+    const spec = join(mkdtempSync(join(tmpdir(), "rg-inv-tz-")), "s.md");
+    writeFileSync(spec, SPEC);
+    const dir = mkdtempSync(join(tmpdir(), "rg-inv-tzsnap-"));
+    writeFileSync(join(dir, "issues.json"), JSON.stringify([{ number: 1, title: "x", body: "", state: "OPEN" }]));
+    writeFileSync(join(dir, "prs.json"), JSON.stringify([{ number: 9, title: "x", body: "", state: "MERGED", mergedAt: "2026-10-28T00:00:00Z" }]));
+    try {
+      const day = (TZ: string) =>
+        JSON.parse(
+          Bun.spawnSync(["bun", SCRIPT, "--snapshot", dir, "--spec", spec, "--json"], {
+            env: { ...process.env, TZ },
+          }).stdout.toString(),
+        ).taken;
+      const east = day("Pacific/Kiritimati");
+      const west = day("Pacific/Midway");
+      expect(east).toBe(west);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the headline counts ticks, not the buckets ticks land in", () => {
+  // `count("DONE") + count("WAIVED")` is not the ticked count: a tick with
+  // nothing behind it falls through into another bucket, so the headline
+  // called it unstarted work and undercounted the ticks. Third instance of
+  // this file's own defect class. Raised by the required reviewer on #1642.
+  const FALSE_TICK = [
+    "---", "doc-type: spec", "---", "",
+    "- [x] CRC-Q1: the tick nobody earned.",
+    "      needs: test",
+    "- [x] CRC-Q2: this one is real.",
+    "      needs: test",
+    "      proved-by: test/x.test.ts",
+    "",
+  ].join("\n");
+
+  test("a false tick is counted as ticked, and named rather than absorbed", () => {
+    const rows = inventory(FALSE_TICK, snapshot({}), [], TODAY);
+    const md = renderMarkdown(rows, snapshot({}), [], TODAY);
+    expect(md).toContain("2 of 2 are ticked");
+    expect(md).toContain("**1 have neither**");
+    // The bucket arithmetic the headline used to do would have said "1 of 2".
+    expect(md).not.toContain("1 of 2 are ticked");
+  });
+
+  test("with no false ticks the headline still agrees with the buckets", () => {
+    // The control: the fix must not move the honest case.
+    const rows = inventory(SPEC, snapshot({}), [], TODAY);
+    expect(renderMarkdown(rows, snapshot({}), [], TODAY)).toContain("1 of 2 are ticked");
   });
 });
