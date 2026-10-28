@@ -63,25 +63,71 @@ without making *not filing* the default has missed the point.
 the list and building it is how the work has gone so far, and it is why three of the
 figures in this document describe no system that exists. Criteria are not a queue.
 
-Before any area of this spec is opened, it is framed as one turn of a Mobius loop and
-the frame is written **here**, not in a conversation:
+Before any area of this spec is opened, the frame below is written **here**, not in a
+conversation:
 
 1. **Why** — the problem in one paragraph, in the language of what it costs.
-2. **Target outcomes** — each with the measured baseline beside it. An outcome whose
-   baseline is untrustworthy gets no target until a loop has produced one; inventing a
-   target against a number nobody believes is how this document acquired its bad figures.
-3. **Options** — competing *hypotheses*, not tasks. More than one, because the point of
-   measuring is to choose between them.
+2. **Target outcomes** — each with the measured baseline beside it **and the command
+   that produced it**. An outcome whose baseline is untrustworthy gets no target until
+   one has been measured; inventing a target against a number nobody believes is how
+   this document acquired its bad figures. An outcome with no baseline at all makes the
+   increment *"instrument it"*, never *"improve it"*.
+3. **Competing hypotheses** — more than one, because the point of measuring is to
+   choose between them.
 4. **An increment** — the smallest set of criteria that together move one outcome.
    Several criteria, not one: a criterion that moves nothing on its own is not shippable
-   on its own.
-5. **Exit criteria** — what must be true for the increment to be done, written before
+   on its own. This is a **Minimum Marketable Feature** (Denne & Cleland-Huang, 2003),
+   not an MVP — an MVP buys learning, an MMF delivers value.
+5. **An appetite, and a circuit breaker.** A budget fixed before design. An increment
+   that exceeds it is **cancelled by default** rather than extended by default; an
+   extension has to be argued for. MMF says what to ship and is silent on what happens
+   when it does not finish, which is the gap this closes.
+6. **Exit criteria** — what must be true for the increment to be done, written before
    it starts.
-6. **The pivot rule** — which hypothesis each possible reading selects, **committed in
-   advance**. Written after the measurement, it is a rationalisation.
+7. **Pre-specified decision criteria** — which hypothesis each possible reading selects,
+   **committed in advance**, including the reading that abandons the increment. Written
+   after the measurement, it is a rationalisation. The test it must pass is
+   determinism: *two people following the rule are guaranteed to reach the same
+   decision*. A rule that needs interpretation is not one.
+8. **A deviations record, written after the measurement.** Restate the decision criteria
+   verbatim and list every departure from them. **This step, not step 7, is the one with
+   evidence behind it** — see below.
 
-A loop closes by recording what the measurement said and which option it selected. The
-next loop's Why is the previous loop's Learn.
+A criterion that is plain correctness work with no outcome to move is marked
+**"correctness only — no outcome claimed"** and skips steps 2, 3 and 7. Forcing an
+outcome onto such a criterion manufactures a vanity baseline, which is worse than
+declaring there is none.
+
+### Why step 8 is not optional
+
+Committing a decision rule in advance sounds sufficient and is not. The best available
+comparison — van den Akker et al., *Behavior Research Methods* (2023), matching 193
+preregistered studies against 193 unregistered — found **no** reduction in positive
+results, effect sizes, or statistical errors. Roughly three quarters of preregistered
+studies deviate from their plan, and nobody checks. Where the plan *is* checked against
+the result, adherence rises to about 92%.
+
+So the artefact that does the work is the deviations record, not the rule. A
+pre-specified rule with nothing comparing it to the outcome is decoration.
+
+### Provenance, and one correction
+
+The first draft of this section called the above "one turn of a Mobius loop". That
+attribution was **wrong and is withdrawn**. Checked directly: the Open Practice Library's
+*Target Outcomes* practice prescribes a whiteboard template, a visible timer, Start At
+The End, Affinity Mapping and a SMART goal — **no baseline step, no current-state
+measurement, no instrumentation**. And the Open Practice Library URL for "options
+pivot" — `https://openpracticelibrary.com/practice/options-pivot/` — returns
+**HTTP 404**; it is a phase label, not a practice, and carries no
+decision rule. The two things this section most needed are precisely the two Mobius does
+not supply; they were invented here and credited to it.
+
+The honest lineage is older and testable. **GQM** (Basili et al., NASA SEL) writes its
+*interpretation model* alongside the questions, before any data. **ISO/IEC/IEEE
+15939:2017** makes *decision criteria* a defined term — thresholds fixed in advance that
+determine the need for action — and defines an analysis model as measures combined with
+them. The determinism test in step 7 is **Pre-SPEC** (Kahan et al., *BMC Medicine*,
+2020). Mobius is prior art here and nothing is inherited from it.
 
 ## The current loop — Increment 1: make the verdict readable
 
@@ -119,6 +165,11 @@ in this loop and they are not.
 **The increment.** CRC-M12, CRC-M13, CRC-M14, CRC-M15 below, shipped as a set. Each is
 one pull request; none of them moves O3 or O4 alone.
 
+**Appetite and circuit breaker.** Four pull requests and one release. An increment that
+has not produced a reading after that is **cancelled, not extended** — and its
+cancellation is itself a result about O4, because it would mean a single-configuration
+reading cannot be taken by this route.
+
 **Exit criteria — all four, or the increment is not done.**
 
 1. An unreadable round reports **which** named mode it was, not merely that it was unreadable.
@@ -126,17 +177,24 @@ one pull request; none of them moves O3 or O4 alone.
 3. Every reading in the store names the published version it was taken under.
 4. One cohort row exists describing a single configuration, with that configuration named.
 
-**The pivot rule, committed before the measurement.**
+**Pre-specified decision criteria, committed before the measurement.** Each reading
+below selects exactly one next increment, so two readers of the same number reach the
+same decision.
 
-- Unreadable rounds **mostly zero-tool-call** → H1. The next loop is reviewer
-  reliability. A prompt A/B would be measuring the wording of an instruction nothing read.
-- Unreadable rounds **mostly did call tools** → H2. The next loop is the `REVIEW.md` A/B,
-  and the standing prediction (current ~1 finding/pass, coverage arm ≥2.5×) is tested.
-- **Roughly even** → both are real; H1 goes first, because it is the cheaper build.
+| Reading on the unreadable rounds | Selects | Next increment |
+|---|---|---|
+| **> 60%** have zero tool calls | H1 | reviewer reliability — a prompt A/B would be measuring the wording of an instruction nothing read |
+| **< 40%** have zero tool calls | H2 | the `REVIEW.md` A/B, testing the standing prediction (current ~1 finding/pass, coverage arm ≥2.5×) |
+| **40–60%** | both | H1 first, because it is the cheaper build |
+| fewer than **12** unreadable rounds recorded in one configuration | neither — **futility** | the instrument did not produce enough draws; cancel and re-scope rather than read a number this thin |
 
-**Increment 2 is not scoped here, deliberately.** Its content is whichever branch of the
-pivot rule the measurement selects, and scoping it now would commit the choice before the
-evidence.
+**Deviations record — to be written after the measurement, and empty until then.**
+Restate the table above verbatim and list every departure from it. If no reading was
+taken, say that. An increment that closes with this section still empty has not closed.
+
+**Increment 2 is not scoped here, deliberately.** Its content is whichever row of the
+table above the measurement selects, and scoping it now would commit the choice before
+the evidence.
 
 ## Housekeeping — carried here so it is visible, but it is not criteria
 
