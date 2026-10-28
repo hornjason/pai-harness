@@ -176,6 +176,37 @@ describe("the gather step hands the agent a diff the runner can actually read (#
   });
 
   /**
+   * AC-5: the ceiling on the cap, which nothing asserted while the cap was a
+   * number somebody could raise.
+   *
+   * The step writes the diff into `GITHUB_OUTPUT`, and the runner refuses the
+   * whole file above **1 MB in total** — shared with `truncated`,
+   * `reviews_before` and every other output this job sets. A cap at or above
+   * that limit does not produce a truncated review; it produces the run
+   * 39339388211 failure mode this file was written for, where the step dies
+   * and `auth` and `Review` are skipped. So the honest bound is well under it.
+   *
+   * HALF, and the reason is not caution. A diff is not the only output, and a
+   * fixture at `MAX_BYTES * 2` is constructed by AC-2 above — so a cap over
+   * half the limit makes this file's own over-the-cap case unrunnable, and the
+   * truncation branch would stop being exercised while every row stayed green.
+   * The bound and the battery are the same constraint.
+   *
+   * Breaking it: set `MAX_BYTES` to `"600000"` in the workflow and this goes
+   * red naming the limit, while AC-1 and AC-2 keep passing — which is the
+   * point, because they are what a raiser would run.
+   */
+  test("AC-5: the cap leaves room under GITHUB_OUTPUT's 1 MB total", () => {
+    const GITHUB_OUTPUT_LIMIT = 1_000_000;
+    expect(
+      MAX_BYTES,
+      `MAX_BYTES is ${MAX_BYTES}; GITHUB_OUTPUT accepts ${GITHUB_OUTPUT_LIMIT} bytes in TOTAL ` +
+        "across every output this step writes, and AC-2 builds a fixture at twice the cap. " +
+        "Raising it past half the limit breaks the runner's write, not the review's coverage.",
+    ).toBeLessThanOrEqual(GITHUB_OUTPUT_LIMIT / 2);
+  });
+
+  /**
    * The control. Under the cap, nothing is truncated and the diff round-trips
    * whole — so a failure in the row below is about the cut and not about the
    * harness.
