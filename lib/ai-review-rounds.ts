@@ -1301,21 +1301,72 @@ export function selectLedgerComment(
  * bare array would discard the history of every pull request mid-flight at
  * the moment the new writer merged.
  */
-export function readLedger(body: unknown): LedgerReading {
-  if (typeof body !== "string") return { status: AI_REVIEW_LEDGER_ABSENT };
-  const marker = body.indexOf(AI_REVIEW_LEDGER_COMMENT_MARKER);
-  if (marker === -1) return { status: AI_REVIEW_LEDGER_ABSENT };
+export const LEDGER_PAYLOAD_FOUND = "LEDGER_PAYLOAD_FOUND";
+export const LEDGER_PAYLOAD_NO_MARKER = "LEDGER_PAYLOAD_NO_MARKER";
+export const LEDGER_PAYLOAD_NO_FENCE = "LEDGER_PAYLOAD_NO_FENCE";
+export const LEDGER_PAYLOAD_UNCLOSED = "LEDGER_PAYLOAD_UNCLOSED";
 
+/**
+ * Four arms, not two — one object type per status rather than one carrying a
+ * union of three. TypeScript narrows a discriminated union by eliminating
+ * ARMS, so three `if (status === …) return` checks against a single
+ * three-literal arm eliminate none of it and `payload.text` stays an error.
+ */
+export type LedgerPayload =
+  | { readonly status: typeof LEDGER_PAYLOAD_FOUND; readonly text: string }
+  | { readonly status: typeof LEDGER_PAYLOAD_NO_MARKER }
+  | { readonly status: typeof LEDGER_PAYLOAD_NO_FENCE }
+  | { readonly status: typeof LEDGER_PAYLOAD_UNCLOSED };
+
+/**
+ * Where the ledger's JSON payload starts and stops. THE ONLY SITE.
+ *
+ * The fence rule is `indexOf("```json")` from the marker, then
+ * `indexOf("\n```")` from there, and the obvious alternative —
+ * `split("```json")[1].split("```")[0]` — is wrong on live data rather than
+ * in theory: a ledger whose stored finding quotes a fenced code block is cut
+ * at the quote. On 2026-10-27 that cut a 27,252-character ledger at 18,021,
+ * and the text at the cut was a reviewer quoting the recipe that did the
+ * cutting.
+ *
+ * It is one exported function because it was briefly two. #1633 round 6
+ * found `readLedger` and `ledgerRawRounds` each computing these three
+ * offsets, agreeing by convention with nothing enforcing it — the *two
+ * deciders that agree* shape in `.claude/rules/checks-must-be-able-to-fail.md`,
+ * where no behavioural test can tell them apart and a mutation of either
+ * leaves the other holding the case up. They cannot now disagree, because
+ * there is only one of them.
+ *
+ * `scripts/record-ai-review-unmeasured.ts` still cuts its own, because it
+ * needs the whole DOCUMENT rather than the payload — it splices annotated
+ * rounds back in, and the bare-array and `{rounds}` shapes are written back
+ * differently. That one is a declared second decider and it is narrower:
+ * it indexes from the start of the body rather than from the marker.
+ */
+export function ledgerPayloadText(body: unknown): LedgerPayload {
+  if (typeof body !== "string") return { status: LEDGER_PAYLOAD_NO_MARKER };
+  const marker = body.indexOf(AI_REVIEW_LEDGER_COMMENT_MARKER);
+  if (marker === -1) return { status: LEDGER_PAYLOAD_NO_MARKER };
   const fence = body.indexOf("```json", marker);
-  if (fence === -1) {
+  if (fence === -1) return { status: LEDGER_PAYLOAD_NO_FENCE };
+  const start = body.indexOf("\n", fence);
+  const close = start === -1 ? -1 : body.indexOf("\n```", start);
+  if (close === -1) return { status: LEDGER_PAYLOAD_UNCLOSED };
+  return { status: LEDGER_PAYLOAD_FOUND, text: body.slice(start + 1, close) };
+}
+
+export function readLedger(body: unknown): LedgerReading {
+  const payload = ledgerPayloadText(body);
+  if (payload.status === LEDGER_PAYLOAD_NO_MARKER) {
+    return { status: AI_REVIEW_LEDGER_ABSENT };
+  }
+  if (payload.status === LEDGER_PAYLOAD_NO_FENCE) {
     return ledgerUnreadable(
       "the ledger comment is present and holds no ```json block, so the rounds it " +
         "recorded cannot be read; it is not being treated as an empty ledger",
     );
   }
-  const start = body.indexOf("\n", fence);
-  const close = start === -1 ? -1 : body.indexOf("\n```", start);
-  if (close === -1) {
+  if (payload.status === LEDGER_PAYLOAD_UNCLOSED) {
     return ledgerUnreadable(
       "the ledger comment's ```json block is not closed, so it was truncated in " +
         "transit or in storage and the rounds it recorded cannot be read",
@@ -1324,7 +1375,7 @@ export function readLedger(body: unknown): LedgerReading {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(body.slice(start + 1, close));
+    parsed = JSON.parse(payload.text);
   } catch (e) {
     return ledgerUnreadable(
       `the ledger comment's JSON block could not be parsed (${
@@ -1361,6 +1412,48 @@ export function readLedger(body: unknown): LedgerReading {
     rounds: rounds.map(toLedgerRound),
     truncation: readTruncation(obj[AI_REVIEW_LEDGER_TRUNCATED_KEY]),
   };
+}
+
+/**
+ * The ledger's round entries **as written**, for readers that need a field
+ * `LedgerRound` does not carry.
+ *
+ * `readLedger` is the reading; this is the same bytes with nothing dropped.
+ * The `unmeasured` key is the case that forced it — `lib/ai-review-unmeasured.ts`
+ * adds it in a second pass and `toLedgerRound` has no slot for it, so counting
+ * how many rounds were `declined` rather than `no_payload` means going back to
+ * the entry.
+ *
+ * **It does not compute the fence** — `ledgerPayloadText` does, for this and
+ * for `readLedger` both, so the two cannot disagree about where the payload
+ * is (#1633 round 6).
+ *
+ * `null` means `readLedger` would not have returned READ either — absent,
+ * unfenced, unparseable, or an object with no `rounds` array. A caller wanting
+ * to know WHICH should ask `readLedger`; this answers only "hand me the
+ * entries".
+ *
+ * **IT CANNOT THROW**, and the reason is structural rather than a catch. A
+ * reader of a RANGE calls it once per pull request,
+ * and an exception from one of them would abort the whole reading and lose
+ * the other forty-five — the exact failure the jq recipe this replaces had.
+ * Refusing one entry costs one `UNMEASURED` line.
+ */
+export function ledgerRawRounds(body: unknown): unknown[] | null {
+  if (readLedger(body).status !== AI_REVIEW_LEDGER_READ) return null;
+  const payload = ledgerPayloadText(body);
+  /* c8 ignore next — narrowing the union; a READ reading implies FOUND. */
+  if (payload.status !== LEDGER_PAYLOAD_FOUND) return null;
+  // No try/catch, deliberately. READ means `readLedger` already parsed THIS
+  // STRING — the same bytes from the same function — so a catch here could
+  // never fire, and a guard against a state nothing can produce is a guard
+  // no test can prove (`.claude/rules/checks-must-be-able-to-fail.md`). What
+  // makes the throw impossible is the single fence site, and that is
+  // asserted rather than defended against.
+  const parsed: unknown = JSON.parse(payload.text);
+  if (Array.isArray(parsed)) return parsed;
+  const rounds = (parsed as Record<string, unknown>)[AI_REVIEW_LEDGER_ROUNDS_KEY];
+  return Array.isArray(rounds) ? rounds : null;
 }
 
 /**
