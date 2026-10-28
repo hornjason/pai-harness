@@ -79,6 +79,13 @@ export interface ExtractResult {
   /** What was planned against what was read. Never inferred from `candidates`. */
   coverage: ScanCoverage;
   /**
+   * Set when `## Hard Constraints` holds lines that parsed to no constraints
+   * at all, so `deduped.existingConstraints` of 0 means "could not read them"
+   * rather than "there are none" (#1644). `null` when the section is absent,
+   * empty, or read successfully — those are all honest zeroes.
+   */
+  unreadConstraints: string | null;
+  /**
    * Observed failures mined from `fix:` and `Revert` commits (#545).
    *
    * Carried BESIDE `candidates` rather than merged into it, deliberately. The
@@ -167,16 +174,107 @@ function extractSignalPhrases(content: string, filePath: string, projectPath: st
   return candidates;
 }
 
-function loadExistingConstraints(projectPath: string): string[] {
+/**
+ * The body of `AGENTS.md`'s `## Hard Constraints` section, or null when the
+ * file or the section is absent.
+ *
+ * One function, because `loadExistingConstraints` and
+ * `unreadConstraintSection` each held a byte-identical copy of this pattern.
+ * Nothing tied them together, so an edit to one — a different heading
+ * level, trailing text after the heading — would give the reporter a
+ * different view of "the section" than the parser has, and the reporter's
+ * whole job is to say when the parser read nothing. A checker that can
+ * disagree with the thing it checks reports on a section that was never
+ * parsed. Raised by the required reviewer on #1644.
+ */
+export function hardConstraintsSection(projectPath: string): string | null {
   const agentsPath = join(projectPath, "AGENTS.md");
-  if (!existsSync(agentsPath)) return [];
-  const content = readFileSync(agentsPath, "utf-8");
-  const hcMatch = content.match(/## Hard Constraints[^\n]*\n\n([\s\S]*?)(?=\n## |\s*$)/);
-  if (!hcMatch) return [];
-  return hcMatch[1]
-    .split("\n")
-    .filter((l) => l.startsWith("- "))
-    .map((l) => l.replace(/^- \*\*[^*]+\*\*\s*—?\s*/, "").trim().toLowerCase());
+  if (!existsSync(agentsPath)) return null;
+  const m = readFileSync(agentsPath, "utf-8")
+    .match(/## Hard Constraints[^\n]*\n\n([\s\S]*?)(?=\n## |\s*$)/);
+  return m ? m[1] : null;
+}
+
+/**
+ * The constraints a project has already written down, so a mined candidate
+ * restating one is deduped rather than offered again.
+ *
+ * Reads **both** markdown list forms. The first version matched only `- `,
+ * and `## Hard Constraints` in this repository is a numbered list, so all
+ * seven rules parsed to nothing: the section matched, 31 lines were read,
+ * and the filter kept 0. Nothing refused — a parse failure and a project
+ * with no constraints returned the same empty array, which is the Silent
+ * Default Substitution `.claude/rules/config-access.md` names. Raised by
+ * the required reviewer on #1644.
+ *
+ * Continuation lines are joined into their item. A wrapped rule is one
+ * constraint, and taking only its first line is worse than not reading it:
+ * rule 1 here would have yielded the fragment `specs still`, and dedup is
+ * substring containment in both directions, so a short fragment silently
+ * swallows unrelated candidates that happen to contain it.
+ */
+export function loadExistingConstraints(projectPath: string): string[] {
+  const section = hardConstraintsSection(projectPath);
+  if (section === null) return [];
+
+  // Where an item's text ends, and it is the BLANK LINE that decides —
+  // not the indentation.
+  //
+  // CommonMark: an unindented line directly after an item's paragraph is a
+  // *lazy continuation* and belongs to the item; after a blank line, only
+  // an indented line continues it. Two wrong versions preceded this one.
+  // The first ran a continuation to the next list marker, so a footer after
+  // the last bullet was glued onto it. The second terminated on ANY
+  // unindented line, which fixed that and broke lazy continuation — a
+  // wrapped sentence somebody did not indent was dropped from its item
+  // instead, the same failure in the other direction.
+  //
+  // It matters because dedup is substring containment in both directions:
+  // an item carrying a paragraph it does not own swallows candidates it
+  // should not, and an item missing half its sentence stops matching the
+  // candidates it should. Neither is reported — the parse is non-empty
+  // either way, so `unreadConstraintSection` stays quiet. Both raised by
+  // the required reviewer on #1644, one round apart.
+  const ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
+  const items: string[] = [];
+  let open = false; // an item is running
+  let blanked = false; // ...and a blank line has closed its paragraph
+  for (const line of section.split("\n")) {
+    if (ITEM.test(line)) {
+      items.push(line.replace(ITEM, ""));
+      open = true;
+      blanked = false;
+    } else if (line.trim() === "") {
+      blanked = true;
+    } else if (!open) {
+      // Prose before the first item belongs to nobody.
+    } else if (/^\s/.test(line)) {
+      items[items.length - 1] += ` ${line.trim()}`; // indented: continues either way
+      blanked = false;
+    } else if (blanked) {
+      open = false; // unindented after a blank line: a new block, not this item
+    } else {
+      items[items.length - 1] += ` ${line.trim()}`; // CommonMark lazy continuation
+    }
+  }
+  return items
+    .map((t) => t.replace(/^\*\*[^*]+\*\*\s*—?\s*/, "").trim().toLowerCase())
+    .filter((t) => t !== "");
+}
+
+/**
+ * A `## Hard Constraints` section holding list items that parse to zero
+ * constraints. Returned so the caller can say so instead of reporting a
+ * project that simply has none — the two were indistinguishable, and that
+ * is how seven rules went unread.
+ */
+export function unreadConstraintSection(projectPath: string): string | null {
+  const section = hardConstraintsSection(projectPath);
+  if (section === null) return null;
+  const lines = section.split("\n").filter((l) => l.trim() !== "");
+  if (lines.length === 0) return null;
+  if (loadExistingConstraints(projectPath).length > 0) return null;
+  return `AGENTS.md '## Hard Constraints' holds ${lines.length} non-blank line(s) and parsed to 0 constraints, so nothing there can dedup a mined candidate. Constraints must be markdown list items ('- ' or '1. ').`;
 }
 
 function loadRejectedHashes(projectPath: string): Set<string> {
@@ -383,6 +481,7 @@ export async function extractConstraints(
     },
     staleness,
     coverage: { planned: scanFiles.length, read, unread },
+    unreadConstraints: unreadConstraintSection(projectPath),
     evidence,
     retirement,
     promotion,

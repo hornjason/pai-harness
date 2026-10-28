@@ -101,7 +101,7 @@ describe("#380 SC-847: the real AGENTS.md produces no false positives and does n
     expect(referencedPaths(`${content}\n\`CODE-MAP.md\`\n`)).toContain("CODE-MAP.md");
   });
 
-  test("rungate's own AGENTS.md names no files at all, and that is why #380 was invisible", () => {
+  test("rungate's own AGENTS.md names one file, and the check has real work to do here", () => {
     // Measured, and written down because it is the uncomfortable half of
     // the finding. The check reported three spans here, all false; its
     // true-positive count was zero because there was nothing true to find.
@@ -109,10 +109,17 @@ describe("#380 SC-847: the real AGENTS.md produces no false positives and does n
     // tables into `.claude/rules/`, so every real path reference left with
     // them. What remained was a Commands table full of command strings.
     //
-    // If this ever stops being zero the assertion should be updated, not
-    // deleted: a non-zero count means the file names files again and the
-    // check has real work to do here.
-    expect(referencedPaths(content)).toEqual([]);
+    // It stopped being zero on 2026-10-28, which this test's previous
+    // revision said to handle by UPDATING the assertion rather than
+    // deleting the reference. `## Hard Constraints` rule 5 cites the spec
+    // that holds the measurement it argues against, because a rule whose
+    // evidence is a bare number is a rule nobody can check. So the
+    // population is now exactly one, asserted by name: the check is no
+    // longer vacuous here, and a second path arriving is a deliberate
+    // edit somebody should see in this diff.
+    expect(referencedPaths(content)).toEqual(["specs/CODE-REVIEW-CONVERGENCE-SPEC.md"]);
+    // And it resolves — the half that makes naming it worth anything.
+    expect(require("fs").existsSync(join(ROOT, "specs/CODE-REVIEW-CONVERGENCE-SPEC.md"))).toBe(true);
   });
 });
 
