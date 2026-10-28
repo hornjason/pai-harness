@@ -199,11 +199,26 @@ export function loadExistingConstraints(projectPath: string): string[] {
   const hcMatch = content.match(/## Hard Constraints[^\n]*\n\n([\s\S]*?)(?=\n## |\s*$)/);
   if (!hcMatch) return [];
 
-  const ITEM = /^(?:[-*+]|\d+[.)])\s+/;
+  // A continuation line is an INDENTED non-blank line directly under an
+  // open item. Three terminators, not one: the next item, a blank line, and
+  // any unindented text. The first version had only the first, so a closing
+  // sentence or a footer added after the last bullet — ordinary things to
+  // find in a hand-written section — was glued onto the last constraint,
+  // lengthening it silently. Dedup is substring containment, so a
+  // constraint carrying a paragraph it does not own changes what it
+  // swallows, and nothing reports it: `unreadConstraintSection` sees a
+  // non-empty parse and stays quiet. Raised by the required reviewer
+  // on #1644.
+  const ITEM = /^(\s*)(?:[-*+]|\d+[.)])\s+/;
   const items: string[] = [];
+  let open = false;
   for (const line of hcMatch[1].split("\n")) {
-    if (ITEM.test(line)) items.push(line.replace(ITEM, ""));
-    else if (items.length > 0 && line.trim() !== "" && !line.startsWith("#")) {
+    if (ITEM.test(line)) {
+      items.push(line.replace(ITEM, ""));
+      open = true;
+    } else if (line.trim() === "" || !/^\s/.test(line)) {
+      open = false;
+    } else if (open) {
       items[items.length - 1] += ` ${line.trim()}`;
     }
   }

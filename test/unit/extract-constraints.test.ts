@@ -236,6 +236,28 @@ describe("#1644: Hard Constraints is read as a list, in both markdown forms", ()
     expect(got[0]).toBe("specs still carry checkboxes. work comes off the tracker.");
   });
 
+  test("a trailing note after the last item is not glued onto it", () => {
+    // Three terminators, not one. The first version stopped a continuation
+    // only at the next list marker, so ordinary trailing prose lengthened
+    // the last constraint silently — and dedup is substring containment,
+    // so a constraint carrying a paragraph it does not own changes what it
+    // swallows. Raised by the required reviewer on #1644.
+    tmpDir = plant("1. **Proof.** The proof is a test, not a tick.\n\nThese rules were agreed in October and are reviewed quarterly.");
+    expect(loadExistingConstraints(tmpDir)).toEqual(["the proof is a test, not a tick."]);
+    rmSync(tmpDir, { recursive: true });
+
+    // Unindented text with no blank line before it also terminates: a
+    // paragraph break is not the only way somebody writes a footer.
+    tmpDir = plant("1. **Proof.** The proof is a test, not a tick.\nAgreed October 2026.");
+    expect(loadExistingConstraints(tmpDir)).toEqual(["the proof is a test, not a tick."]);
+    rmSync(tmpDir, { recursive: true });
+
+    // The control: a genuinely INDENTED continuation must still be joined,
+    // or the terminator would have broken the wrap fix it sits beside.
+    tmpDir = plant("1. **Proof.** The proof is a test,\n   not a tick.");
+    expect(loadExistingConstraints(tmpDir)).toEqual(["the proof is a test, not a tick."]);
+  });
+
   test("the real AGENTS.md parses to all seven rules", () => {
     // The input the finding was actually about. A fixture can agree with a
     // fixture; this is the file that went unread.
