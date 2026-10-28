@@ -93,7 +93,7 @@ complete, signed, unexpired waiver.
 | **CRC-E3** | A **second classifier** asks whether this change needs another person even when its tier says no. | test | `code-review-convergence-spec` | #1437 | — |
 | **CRC-E9** | Tiers **start strict and loosen with evidence**. | measurement | `code-review-convergence-spec` | #1437 | — |
 | **CRC-F1** | A merge queue re-runs every check against main with the change applied. | test | `code-review-convergence-spec` | **#1503** #1469 | #1502 #1435 #1340 |
-| **CRC-M12** | **An unreadable round names its mode.** `no_payload` (the action ran and wrote no findings file), `none_posted` (findings were written and none reached the pull request)  … | test | `spec-evidence` | — | #1638* #1637 |
+| **CRC-M12** | **An unreadable round names its mode.** `no_payload` (the action ran and wrote no findings file), `none_posted` (findings were written and none reached the pull request) … | test | `spec-evidence` | — | #1638* #1637 |
 | **CRC-N2** | **Diff-only re-review** after the first few passes. | test | `ai-review-rounds-step` `ai-review-rounds` `ai-review-diff-scope` | **#1601** **#1600** #1586 #1381 | #1629 #1619 #1602 |
 | **CRC-N3** | **Flag the class of bug**, so the author fixes every instance rather than one line. | test | `issue-filing-gate` `code-review-convergence-spec` | #1595 | #1627 #1360 #1340 |
 | **CRC-N4** | **No repeats** of findings already posted. | test | `ai-review-carry-forward` `ai-review-suppression` `code-review-convergence-spec` | **#1601** **#1600** **#1592** #1586 #1381 | #1634 #1630* #1626* #1625* (+10) |

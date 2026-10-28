@@ -261,11 +261,27 @@ const HEADING: Record<State, string> = {
 };
 
 /** First sentence only. Three criteria in this spec carry a page of reasoning. */
+/**
+ * Free text, safe to put in a markdown table cell.
+ *
+ * Every cell holding text that came out of the spec goes through this. The
+ * first version escaped `|` inside `gist()` only, so the criterion text was
+ * safe and `proved-by:` and `needs:` — both free-form annotations a human
+ * types — were not. One `|` in a `proved-by:` like
+ * `371 pass, 0 fail | re-run 2026-10-28` silently misaligns every column to
+ * its right in the committed document, which is the failure `gist()` was
+ * written to avoid, left in place two cells over. Raised by the required
+ * reviewer on #1642.
+ */
+export function cell(text: string | null): string {
+  return (text ?? "").replace(/\s+/g, " ").trim().replace(/\|/g, "\\|");
+}
+
 function gist(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
   const cut = flat.match(/^.{0,170}?[.?!](?=\s|$)/);
   const short = cut ? cut[0] : flat.slice(0, 170);
-  return (short.length < flat.length ? `${short} …` : short).replace(/\|/g, "\\|");
+  return cell(short.length < flat.length ? `${short} …` : short);
 }
 
 /**
@@ -309,7 +325,7 @@ export function renderMarkdown(
     return [...open, ...closed].join(" ") + more;
   };
   const evidence = (r: InventoryRow): string => {
-    if (r.state === "DONE") return `\`${(r.provedBy ?? "").replace(/\s+/g, " ").trim()}\``;
+    if (r.state === "DONE") return `\`${cell(r.provedBy ?? "")}\``;
     if (r.state === "WAIVED") return "a waiver that still stands";
     if (r.tests.length > 0) return r.tests.map(t => `\`${t.replace(".test.ts", "")}\``).join(" ");
     return "—";
@@ -413,7 +429,7 @@ export function renderMarkdown(
       "|---|---|---|",
     );
     for (const r of ticked0) {
-      out.push(`| **${r.id}** | ${r.waiverProblem ?? "no proof recorded"} | ${HEADING[r.state]} |`);
+      out.push(`| **${r.id}** | ${cell(r.waiverProblem ?? "no proof recorded")} | ${HEADING[r.state]} |`);
     }
     out.push("");
   }
@@ -425,7 +441,7 @@ export function renderMarkdown(
     out.push("|---|---|---|---|---|---|");
     for (const r of group) {
       out.push(
-        `| **${r.id}** | ${gist(r.text)} | ${r.needs} | ${evidence(r)} | ${issues(r)} | ${prs(r.mergedPrs)} |`,
+        `| **${r.id}** | ${gist(r.text)} | ${cell(r.needs)} | ${evidence(r)} | ${issues(r)} | ${prs(r.mergedPrs)} |`,
       );
     }
     out.push("");

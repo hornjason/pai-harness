@@ -23,6 +23,7 @@ import { join } from "node:path";
 
 import {
   CODE_DIRS,
+  cell,
   inventoryToday,
   STATES,
   changedCode,
@@ -492,5 +493,38 @@ describe("a lone dash is blank, here and in the gate that blocks the build", () 
     expect(hasContent("")).toBe(false);
     expect(hasContent(null)).toBe(false);
     expect(hasContent("x")).toBe(true);
+  });
+});
+
+describe("every free-text cell is escaped, not only the criterion text", () => {
+  // `gist()` escaped `|` and `proved-by:`/`needs:` — both free-form
+  // annotations a human types — did not. One pipe in a `proved-by:` like
+  // `371 pass, 0 fail | re-run 2026-10-28` misaligns every column to its
+  // right in the committed document. Raised by the required reviewer
+  // on #1642.
+  const PIPED = [
+    "---", "doc-type: spec", "---", "",
+    "- [x] CRC-P1: a pipe | in the criterion text.",
+    "      needs: test | measurement",
+    "      proved-by: 371 pass, 0 fail | re-run 2026-10-28",
+    "",
+  ].join("\n");
+
+  test("no rendered row carries an unescaped pipe beyond its own delimiters", () => {
+    const rows = inventory(PIPED, snapshot({}), [], TODAY);
+    const row = renderMarkdown(rows, snapshot({}), [], TODAY)
+      .split("\n")
+      .find(l => l.startsWith("| **CRC-P1**"))!;
+    // Six cells means six delimiters plus the leading one. An unescaped
+    // pipe anywhere in the free text pushes this over.
+    expect(row.replace(/\\\|/g, "").split("|")).toHaveLength(8);
+    expect(row).toContain("371 pass, 0 fail \\| re-run");
+    expect(row).toContain("test \\| measurement");
+  });
+
+  test("the escaper is one function, and it handles the empty case", () => {
+    expect(cell("a | b")).toBe("a \\| b");
+    expect(cell(null)).toBe("");
+    expect(cell(" a\n  b ")).toBe("a b");
   });
 });
