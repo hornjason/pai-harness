@@ -186,7 +186,18 @@ const UNCLAIMED_RATCHET = 150;
 // `scripts/audit-spec-evidence.ts`, which is satisfied by the word sitting in
 // a comment above a call that does not pass it — which is exactly the state
 // the module was in when the reviewer found this on #1639.
-const CLAIMED_UNBINDABLE = 113;
+// 113 -> 116 on 2026-10-28: SC-2577, SC-2578, SC-2579, same spec, same
+// reason. Each is a claim about what a SPAWNED command does to a planted
+// tree — which document it reads, what it says when there is nothing to
+// read, whether the instruction it emits names something the reader has —
+// and no registered matcher pattern expresses a spawn. The available ones
+// would bind to `scripts/audit-spec-evidence.ts` appearing in
+// `package.json`, which is satisfied by the string sitting in a `files[]`
+// array while the command defaults its root to the installed package and
+// reports rungate's own compliance as the consumer's. That mutation was run:
+// removing `projectRootFlag` makes it answer "1494 of 1753 across 23 specs"
+// for a consumer holding one spec, and exit zero.
+const CLAIMED_UNBINDABLE = 116;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

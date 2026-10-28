@@ -32,6 +32,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { CLI_COMMANDS } from "../lib/cli-commands.ts";
 import { evidenceViolations, parseCriteria } from "../lib/spec-evidence.ts";
 import { EVIDENCE_FRONTMATTER_KEY, renderSpecTemplate } from "../lib/spec-template.ts";
 
@@ -127,6 +128,75 @@ describe("the generated spec is born inside the rule", () => {
     );
     expect(ticked).not.toBe(generated);
     expect(evidenceViolations(ticked, TODAY).map(v => v.code)).toEqual(["EVIDENCE_BLANK"]);
+  });
+});
+
+/**
+ * A generated spec is read in the project it was generated FOR.
+ *
+ * The required reviewer raised this on #1639 at rounds 1, 2, 3, 4 and 5 and
+ * it was answered on none of them, because its finding anchors
+ * `package.json` — a file outside that pull request's diff — so
+ * `ai-review-threads` could not create a thread for it (422, "path could not
+ * be resolved") and the job failed with a message naming the POSTING failure
+ * rather than the finding. Five rounds of a high-severity finding were
+ * invisible to anyone reading review threads. It is in the ledger comment.
+ *
+ * The defect itself: the template stamped `evidence: required` into every
+ * generated spec and told the reader to run `bun
+ * scripts/audit-spec-evidence.ts`, which resolves against the READER's
+ * `scripts/` directory, where no such file exists — and the script was in
+ * neither `package.json`'s `files[]` nor `CLI_COMMANDS`, so there was no
+ * second route either. Every consumer got a document declaring a gate
+ * nothing could run.
+ *
+ * `CLOSURE-14` cannot see this and is right not to: it requires a harness
+ * anchor (`$HARNESS_ROOT`, `<harness>`), and an unanchored `bun scripts/…`
+ * is deliberately read as the consumer's own path — `lib/typescript-project.ts`
+ * emits exactly that shape legitimately. So the binding is asserted here,
+ * where the population is one document and the right answer is knowable: a
+ * generated spec names CLI COMMANDS, and every command it names must be
+ * registered AND shipped.
+ */
+describe("SC-2577: a generated spec only tells the reader to run things the reader has", () => {
+  const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf-8")) as {
+    files: string[];
+  };
+
+  test("it names no `bun scripts/…` path, which would resolve in the reader's own tree", () => {
+    const paths = [...generated.matchAll(/bun\s+(scripts\/[A-Za-z0-9._/-]+)/g)].map(m => m[1]);
+    expect(
+      paths,
+      "A generated spec is read in the consumer's project, so `bun scripts/x.ts` names " +
+        "THEIR scripts/ directory. Name a registered CLI command instead — the consumer " +
+        "has `rungate`, and does not have this repository's scripts/.",
+    ).toEqual([]);
+  });
+
+  test("every `rungate <command>` it names is registered and ships in the tarball", () => {
+    const named = [...new Set([...generated.matchAll(/\brungate\s+([a-z][a-z0-9-]*)/g)].map(m => m[1]))];
+    // Anti-vacuity, and it is the half that matters: a template that stopped
+    // naming any command would satisfy both assertions in this describe while
+    // leaving the reader with no way to run the gate its frontmatter declares.
+    expect(
+      named.length,
+      "the generated spec names no `rungate <command>` at all, so it declares " +
+        "`evidence: required` and tells the reader nothing about how to check it.",
+    ).toBeGreaterThan(0);
+
+    const broken = named.flatMap(name => {
+      const entry = CLI_COMMANDS[name];
+      if (!entry) return [`rungate ${name} — not in CLI_COMMANDS, so the command does not exist`];
+      const shipped = pkg.files.some(f => entry.script === f || entry.script.startsWith(f));
+      return shipped ? [] : [`rungate ${name} — ${entry.script} is not in package.json files[]`];
+    });
+    expect(
+      broken,
+      "The generated spec instructs the reader to run a command the published package " +
+        "cannot provide. Register it in lib/cli-commands.ts AND add its script to " +
+        "package.json files[] — a generator that ships without its checker emits " +
+        "documents that declare a gate nobody can run.",
+    ).toEqual([]);
   });
 });
 

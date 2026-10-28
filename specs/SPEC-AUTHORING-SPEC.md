@@ -184,6 +184,18 @@ the criterion later invalidates what proved it.
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2576: the audit's `today` is UTC, so two runners cannot disagree"
       fingerprint: 1ba07da3
+- [x] SC-2577: a generated spec names only commands the reader's own package provides
+      needs: test
+      proved-by: test/spec-template.test.ts "every `rungate <command>` it names is registered and ships in the tarball"
+      fingerprint: 60e14ca2
+- [x] SC-2578: the shipped command audits the tree it is pointed at, not the installed package
+      needs: test
+      proved-by: test/spec-evidence.test.ts "SC-2578: the shipped command audits the tree it is pointed at, not the installed package"
+      fingerprint: 668b56e0
+- [x] SC-2579: an absent specs directory is reported UNMEASURED and refuses, rather than reading clean
+      needs: test
+      proved-by: test/spec-evidence.test.ts "SC-2579: an absent specs directory is UNMEASURED, not clean"
+      fingerprint: 039f1df2
 - [x] SC-2574: the decider refuses nothing when short-circuited, and that is observed
       needs: test
       proved-by: test/spec-evidence.test.ts "the mutant and the real module differ on a named input"

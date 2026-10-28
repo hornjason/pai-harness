@@ -170,12 +170,19 @@ proving one, say so out loud instead:
 \`\`\`
 
 When you tick a criterion, record \`fingerprint:\` beside its evidence with
-\`bun scripts/audit-spec-evidence.ts --record-fingerprints\`, so that
-**rewording the criterion later invalidates what proved it.** That command
-only ever adds a fingerprint — refreshing a stale one is a decision, and it
-means re-running the evidence first.
+\`rungate audit-spec-evidence --record-fingerprints\`, so that **rewording the
+criterion later invalidates what proved it.** That command only ever adds a
+fingerprint — refreshing a stale one is a decision, and it means re-running
+the evidence first.
 
-Check the whole document at any time with \`bun scripts/audit-spec-evidence.ts\`.
+Check the whole document at any time with \`rungate audit-spec-evidence\`.
+
+Both are named as CLI commands and not as paths into \`scripts/\`, because a
+generated spec is read in the project it was generated FOR. A \`bun
+scripts/…\` line resolves against that project's own \`scripts/\` directory,
+where this tool does not live, so the instruction would name a path the
+reader does not have — and the frontmatter above would declare a gate the
+reader cannot run.
 
 ${criteriaBlock(input.criteria)}`;
 }

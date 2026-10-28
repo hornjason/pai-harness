@@ -30,7 +30,7 @@
  * witnessed nothing. One line, one site.
  */
 
-import { readdirSync, readFileSync, statSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { join, relative } from "path";
 
 import { writeSpec } from "../lib/write-spec";
@@ -47,6 +47,19 @@ import { localCalendarDay } from "../lib/local-calendar-day";
 export const EVIDENCE_AUDIT_EXIT = 1;
 
 function markdownFiles(dir: string): string[] {
+  if (!existsSync(dir)) {
+    // An absent `specs/` is UNMEASURED, not clean. Exiting zero here would
+    // tell a consumer who pointed the command at the wrong directory that
+    // their specs comply, and "no specs found" and "every spec complies" are
+    // byte-identical on the only channel they would read
+    // (`.claude/rules/config-access.md`, Silent Default Substitution).
+    console.error(
+      `no specs directory at ${dir}. UNMEASURED — nothing was read, which is not the ` +
+        `same as nothing being wrong. Pass --project-root <dir> naming the tree whose ` +
+        `specs/ you mean.`,
+    );
+    process.exit(EVIDENCE_AUDIT_EXIT);
+  }
   return readdirSync(dir).flatMap(entry => {
     const path = join(dir, entry);
     if (statSync(path).isDirectory()) return markdownFiles(path);
@@ -54,7 +67,35 @@ function markdownFiles(dir: string): string[] {
   });
 }
 
-const root = join(import.meta.dir, "..");
+/**
+ * The tree to audit.
+ *
+ * `--project-root <dir>` is REQUIRED for any consumer and the dispatcher in
+ * `lib/cli-commands.ts` appends it, because the default — this script's own
+ * location — is correct for `bun scripts/audit-spec-evidence.ts` inside this
+ * repository and wrong everywhere else. Without it,
+ * `bunx rungate audit-spec-evidence` would walk
+ * `node_modules/rungate/specs/`, report rungate's own compliance, exit zero
+ * and tell the consumer their specs are clean. That is a command that reports
+ * success about a tree it never looked at, which is the #363 shape and the
+ * exact one `lib/cli-commands.ts` documents for `create-spec`.
+ */
+function resolveRoot(argv: string[]): string {
+  const at = argv.indexOf("--project-root");
+  if (at === -1) return join(import.meta.dir, "..");
+  const value = argv[at + 1];
+  if (value === undefined || value.startsWith("--")) {
+    console.error(
+      "--project-root was given with no directory after it. Refusing rather than " +
+        "falling back to this script's own location, which would audit the installed " +
+        "package and report its result as yours.",
+    );
+    process.exit(EVIDENCE_AUDIT_EXIT);
+  }
+  return value;
+}
+
+const root = resolveRoot(process.argv);
 const specsDir = join(root, "specs");
 // UTC, EXPLICITLY, and this is the one place the anchoring is decided.
 //

@@ -122,6 +122,31 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
     summary: "Report which success criteria are matched, unmatched or uncovered",
     usage: "rungate audit-specs",
   },
+  // Registered because `create-spec` SHIPS and stamps every generated spec
+  // with `evidence: required`, and this is the only thing that enforces that
+  // key (#1639). Without the entry the published package emitted a document
+  // declaring itself gated and carried no gate — half of a generator/checker
+  // pair, which is the shape the `create-spec` note above records this
+  // registry already having been built for once.
+  //
+  // Raised by the required reviewer on EVERY round of #1639, rounds 1 through
+  // 5, and answered on none of them: its finding anchors `package.json`,
+  // which is not in that pull request's diff, so `ai-review-threads` could
+  // not create the thread (422, "path could not be resolved") and the job
+  // failed with a message naming the posting failure rather than the finding.
+  // A finding on a file outside the diff is invisible to anyone reading
+  // review threads. Read the ledger.
+  //
+  // `projectRootFlag` is load-bearing: the script defaults its root to its
+  // own location, so without the flag `bunx rungate audit-spec-evidence`
+  // would walk `node_modules/rungate/specs/` and report RUNGATE's compliance
+  // as the consumer's — a pass about a tree it never opened.
+  "audit-spec-evidence": {
+    script: "scripts/audit-spec-evidence.ts",
+    summary: "Refuse a ticked criterion that does not name what proved it",
+    usage: "rungate audit-spec-evidence [--json] [--record-fingerprints]",
+    projectRootFlag: true,
+  },
   "sync-spec-tests": {
     script: "scripts/sync-spec-tests.ts",
     summary: "Regenerate the conformity suite from the specs",

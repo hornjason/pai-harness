@@ -37,7 +37,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -457,6 +457,69 @@ describe("the parser saw what it thinks it saw", () => {
     expect([before, after], `the audit reported ${east}, which is no UTC day around now`).toContain(
       east,
     );
+  });
+
+  // covers SC-2578
+  test("SC-2578: the shipped command audits the tree it is pointed at, not the installed package", () => {
+    // `scripts/audit-spec-evidence.ts` defaults its root to its own location,
+    // which is right for `bun scripts/…` in this repo and catastrophic for a
+    // consumer: `bunx rungate audit-spec-evidence` would walk
+    // `node_modules/rungate/specs/`, report RUNGATE's compliance, and exit
+    // zero. A green answer about a tree the command never opened is worse
+    // than no command, and `lib/cli-commands.ts` records the identical
+    // defect having shipped once already for `create-spec` (#363).
+    //
+    // So this spawns the real dispatcher with a cwd that is NOT this repo,
+    // over a planted spec whose verdict this repo's own specs cannot produce.
+    const consumer = mkdtempSync(join(tmpdir(), "rungate-consumer-"));
+    try {
+      mkdirSync(join(consumer, "specs"), { recursive: true });
+      writeFileSync(
+        join(consumer, "specs", "CONSUMER-SPEC.md"),
+        `${BOUND}- [x] SC-9101: the consumer ticked something and named nothing\n      needs: test\n`,
+      );
+      const run = spawnSync("bun", [join(import.meta.dir, "..", "bin", "rungate.ts"), "audit-spec-evidence"], {
+        encoding: "utf-8",
+        cwd: consumer,
+        timeout: 60_000,
+      });
+      const out = `${run.stdout}${run.stderr}`;
+      expect(out, `the command did not read the consumer tree.\n${out}`).toContain(
+        "specs/CONSUMER-SPEC.md",
+      );
+      // The discriminating assertion. This repo has 23 specs; the consumer
+      // has one. A run that defaulted to the installed package would report
+      // the larger number and a clean verdict, and both readings print the
+      // same KIND of line — so the count is what separates them.
+      expect(out, `it read ${run.stdout.split("\n")[1]} — that is not the consumer's tree`).toContain(
+        "across 1 specs",
+      );
+      expect(out).toContain("SC-9101");
+      expect(run.status, "a bound consumer spec with no evidence must make the command refuse")
+        .not.toBe(0);
+    } finally {
+      rmSync(consumer, { recursive: true, force: true });
+    }
+  });
+
+  // covers SC-2579
+  test("SC-2579: an absent specs directory is UNMEASURED, not clean", () => {
+    // The control for the case above, and the one direction a report must
+    // never be wrong in. A consumer who points the command at the wrong
+    // directory gets no specs — and "nothing was read" and "nothing is
+    // wrong" print identically unless one of them says so.
+    const empty = mkdtempSync(join(tmpdir(), "rungate-empty-consumer-"));
+    try {
+      const run = spawnSync("bun", [join(import.meta.dir, "..", "bin", "rungate.ts"), "audit-spec-evidence"], {
+        encoding: "utf-8",
+        cwd: empty,
+        timeout: 60_000,
+      });
+      expect(`${run.stdout}${run.stderr}`).toContain("UNMEASURED");
+      expect(run.status, "an unreadable tree must not exit zero").not.toBe(0);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
   });
 
   test("the evidence kinds are a closed set and the message names them", () => {
