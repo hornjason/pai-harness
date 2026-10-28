@@ -301,10 +301,43 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.guard.outputs.pr }}
           REPO: ${{ github.repository }}
-          # 100 kB. GITHUB_OUTPUT accepts 1 MB in total and the prompt has a
+          # 256 kB. GITHUB_OUTPUT accepts 1 MB in total and the prompt has a
           # context budget of its own; a number here is a deliberate limit with
           # a reading attached, not a silent default.
-          MAX_BYTES: "100000"
+          #
+          # THE READING, taken 2026-10-28 over the 49 pull requests numbered
+          # #1573..#1635 that still resolve, measuring each one's own diff in
+          # bytes (`gh api .../pulls/N -H 'Accept: application/vnd.github.
+          # v3.diff' | wc -c`):
+          #
+          #   median 20,919 · p75 34,245 · p90 65,320 · max 209,298
+          #   over the old 100,000 cap: 3 of 49 — #1597, #1621, #1633
+          #
+          # So the old cap cut 6.1% of pull requests, and it cut them at the
+          # top of the distribution: #1597 was reviewed on 48% of its diff.
+          # Those are the same long-tail pull requests that dominate the
+          # rounds-to-pass figure — #1633 alone contributed 13 of one 203-round
+          # cohort — so the truncation lands hardest exactly where the review
+          # is worth most. 256 kB clears every one of the 49 with headroom.
+          #
+          # WHAT THIS DOES NOT CLAIM. It does not make reviews find more. The
+          # advisory reviewer has never exhausted its turn budget — 4 to 25 of
+          # 25 across twelve measured runs — so a bigger subject does not buy
+          # more attention, and the drip is not input-limited. The claim is
+          # narrower and is the only one the reading supports: a reviewer
+          # cannot report on bytes it was never shown, and "no findings" over
+          # half a diff reads exactly like "no findings" over all of it.
+          #
+          # RAISING THIS IS THE CHEAPEST WRONG FIX FOR A DIFFERENT PROBLEM, and
+          # `test/claude-review-diff-gather.test.ts` says so in its header: the
+          # heredoc delimiter crash on run 39339388211 was not a cap problem
+          # and was not fixed by a bigger cap. That fix stands untouched here,
+          # and the cases survive this change by construction, because they
+          # size their fixtures off this value rather than off a literal.
+          #
+          # The ceiling on any future raise is GITHUB_OUTPUT's 1 MB, which is
+          # shared with every other output this job writes. AC-5 asserts it.
+          MAX_BYTES: "262144"
         run: |
           set -euo pipefail
           # Passed through env:, never interpolated into the script body —
