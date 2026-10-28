@@ -970,9 +970,30 @@ by cost.** Round 7 of #1637 asked for one scanner over the whole body,
 minus frontmatter and fenced code, demanding a date or a command from every
 block stating a bare multi-digit number — on the correct observation that
 hand-picking sections is the recurring failure mode rather than the
-particular section picked. Counted the same day, splitting the stripped body
-on blank lines: **292 non-heading, non-table blocks, 136 stating a number,
-63 naming no date, run, commit or command.** 63 is a payable price. The
+particular section picked.
+
+**The figure first published here — 292 blocks, 136 stating a number, 63
+without provenance — is WITHDRAWN, and its withdrawal is this rule proving
+itself on its own paragraph.** It was written with a date and no command, so
+when round 10 asked for the command there was nothing to re-run: the count
+could not be reproduced, and nobody reading it could have told. Re-taken
+2026-10-28 against the same revision it described, with the command recorded
+this time:
+
+```sh
+git show e7e12ed9:specs/CODE-REVIEW-CONVERGENCE-SPEC.md > /tmp/body.md
+bun -e 'const fs=require("fs");
+let d=fs.readFileSync("/tmp/body.md","utf-8")
+  .replace(/^---\n[\s\S]*?\n---\n/,"").replace(/```[\s\S]*?```/g,"");
+const blocks=d.split(/\n\s*\n/).map(s=>s.trim()).filter(Boolean)
+  .filter(b=>!/^#{1,6} /.test(b) && !/^\|/.test(b));
+const withNum=blocks.filter(b=>/\b\d{2,}\b/.test(b));
+const noProv=withNum.filter(b=>!/\b20\d\d-\d\d-\d\d\b|`[^`]*\b(bun|gh|git|grep|npm|node)\b[^`]*`|\brun \d|\b[0-9a-f]{7,40}\b/.test(b));
+console.log(blocks.length, withNum.length, noProv.length)'
+```
+
+**240 non-heading, non-table blocks, 129 stating a number, 68 naming no date,
+run, commit or command.** 68 is a payable price. The
 reason it is still wrong is the table above: re-takeability is the
 **world-derived** rule. A large share of those 63 are document-derived — the
 47/30 split, the bullet tallies, every figure a guard in
@@ -980,7 +1001,8 @@ reason it is still wrong is the table above: re-takeability is the
 like Tricorder's thresholds and the 65% → 78% target this document is aimed
 at. Demanding a date and a command from those two classes asks the wrong
 question of them, and a guard that is wrong about most of what it fires on
-is routed around within a week.
+is routed around within a week. That judgement does not depend on which of
+the two counts is right: 63 and 68 are the same order and the same argument.
 
 **A fourth variant was proposed on 2026-10-28 and is accepted as a class,
 deferred as an instrument, with the measurement here so the next round reads
@@ -1000,11 +1022,31 @@ pattern and `resolveCitation` the resolver. `specs/GATE-CONTRACTS-SPEC.md` is
 bound to it — where three of the four
 citations outside the guard were already wrong when it was built. So the
 generaliser is not a new instrument; it is giving that one something to
-resolve. Counted 2026-10-28 over this file: **73 backticked mentions of a
-source path, across 38 distinct files, every one of which exists on disk, and
-ZERO citations in the resolvable anchor form.** Pointing `citationFailures()`
-at this document today passes while reading nothing — a vacuous green, which
-is the shape this spec exists to refuse.
+resolve. Taken 2026-10-28 against `a6d79e17`, the commit that first carried
+this paragraph:
+
+```sh
+git show a6d79e17:specs/CODE-REVIEW-CONVERGENCE-SPEC.md > /tmp/doc.md
+bun -e 'const fs=require("fs");
+const d=fs.readFileSync("/tmp/doc.md","utf-8");
+const m=[...d.matchAll(/`((?:lib|scripts|gates|hooks|test|workflows)\/[A-Za-z0-9_.\/-]+\.(?:ts|js|json|md))`/g)].map(x=>x[1]);
+console.log(m.length, new Set(m).size,
+  [...new Set(m)].filter(f=>!fs.existsSync(f)).length)'
+```
+
+**75 backticked mentions of a source path, across 39 distinct files, every
+one of which exists on disk, and ZERO citations in the resolvable anchor
+form.** Pointing `citationFailures()` at this document passes while reading
+nothing — a vacuous green, which is the shape this spec exists to refuse.
+
+**This figure was first published as 73 across 38, and the correction is
+worth more than the number.** The reading was taken, and then this paragraph
+was written — and the paragraph names two more source paths, so the file it
+described no longer existed by the time the sentence about it was committed.
+A world reading that does not name the revision it was taken against will
+drift from the document that carries it, in the direction of the author's own
+edit, with nothing able to notice. That is the whole argument for naming a
+revision and a command rather than only a date.
 
 **The cheap proxy was measured and is refused on its error rate**, which is
 why this is deferred rather than shipped in the round it was raised. Inferring
