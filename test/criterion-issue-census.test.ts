@@ -19,6 +19,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   censusRows,
@@ -31,6 +34,7 @@ import {
   type SpecRef,
 } from "../lib/criterion-issue-census";
 import { criterionFingerprint } from "../lib/spec-evidence";
+import { readAdjudications } from "../scripts/criterion-issue-census";
 
 const TICKED = "- [x] SC-9101: the gate refuses an unsigned payload.\n      needs: test\n";
 const UNTICKED = "- [ ] SC-9102: the gate also refuses an expired one.\n      needs: test\n";
@@ -126,6 +130,47 @@ describe("the judgement is not a column", () => {
     // A verdict with no observer and no date is the shape this view exists to
     // refuse, so it must not be renderable.
     expect(text).not.toMatch(/CONTRADICTS\s*$/m);
+  });
+});
+
+describe("an absent store and an unreadable one are different facts", () => {
+  // Raised by the required reviewer on #1641: the first draft caught every
+  // error from the store read and returned `[]`, with a comment claiming the
+  // exact distinction the code did not make. `.claude/rules/config-access.md`
+  // names that anti-pattern — it converts corruption into absence — and here
+  // it would report every row as unadjudicated while the judgements sat in a
+  // file nobody could open.
+  test("absent returns no adjudications; unreadable throws", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-adjudications-"));
+    try {
+      // Absent: the store has never been written. A legitimate state.
+      expect(readAdjudications(dir)).toEqual([]);
+
+      // Present and unreadable. A DIRECTORY at the store's path is the
+      // cheapest errno that is not ENOENT and does not depend on running as a
+      // user who can be denied permission — root can read a 000 file, and a
+      // test that silently passes for root is the shape this file is about.
+      mkdirSync(join(dir, ".claude", "criterion-issue-adjudications.json"), {
+        recursive: true,
+      });
+      expect(() => readAdjudications(dir)).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("present with no `adjudications` array is a refusal, not an empty store", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-adjudications-"));
+    try {
+      mkdirSync(join(dir, ".claude"), { recursive: true });
+      writeFileSync(
+        join(dir, ".claude", "criterion-issue-adjudications.json"),
+        JSON.stringify({ judgements: [] }),
+      );
+      expect(() => readAdjudications(dir)).toThrow(/adjudications/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

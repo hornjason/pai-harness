@@ -47,14 +47,22 @@ function flagValue(argv: readonly string[], name: string): string | undefined {
   return at >= 0 ? argv[at + 1] : undefined;
 }
 
-function readAdjudications(root: string): Adjudication[] {
+export function readAdjudications(root: string): Adjudication[] {
   const path = join(root, ADJUDICATIONS_FILE);
   let raw: string;
   try {
     raw = readFileSync(path, "utf-8");
-  } catch {
-    // Absent is a real state and a legitimate one: nobody has judged anything
-    // yet. It is NOT the same as unreadable, which throws below.
+  } catch (e) {
+    // ENOENT and nothing else. Absent is a real, legitimate state: nobody has
+    // judged anything yet. Unreadable is not — a permission error, an EISDIR
+    // or any other errno means a store EXISTS and could not be read, and
+    // returning `[]` there would report every row as unadjudicated when the
+    // judgements may all be present. The first draft of this caught
+    // everything, with a comment claiming exactly the distinction the code did
+    // not make; raised by the required reviewer on #1641, and it is the
+    // anti-pattern `.claude/rules/config-access.md` names by name — "never
+    // `catch {}` around a config read. It converts corruption into absence."
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
     return [];
   }
   const parsed = JSON.parse(raw);
@@ -132,4 +140,6 @@ async function main(): Promise<number> {
   return strict && owed.length > 0 ? EXIT_REFUSED : 0;
 }
 
-process.exit(await main());
+// Guarded so a test can import `readAdjudications` without running the census
+// against the live tracker — which is what made the bug above untestable.
+if (import.meta.main) process.exit(await main());
