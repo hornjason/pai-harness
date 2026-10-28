@@ -465,6 +465,67 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every measurement can be taken 
 });
 
 /**
+ * A figure cited from elsewhere in this document must still be there.
+ *
+ * Round 7 of #1637 named the gap precisely: the four example figures in
+ * *Round 5 then asked the right question* sit in PROSE, and
+ * `unretakeableBullets` skips anything not starting with `- `, so if the
+ * dated readings they cite are renumbered, re-measured or deleted, the
+ * citation goes stale and nothing reds.
+ *
+ * The fix is not to widen the retakeability scanner over them — they are
+ * citations, and the obligation on a citation is that its SOURCE resolves,
+ * not that it restates the source's date. So this binds the citation to the
+ * home reading instead: every figure that paragraph names must still appear
+ * in *Measured non-obvious facts*. Delete or re-measure the bullet and this
+ * goes red naming the figure.
+ *
+ * Narrow on purpose, and the narrowness is the claim. A whole-body scan was
+ * proposed as the alternative and is refuted by class rather than by cost:
+ * the retakeability rule is the WORLD-DERIVED rule, and a scan over every
+ * block would demand a date and a command from document-derived numbers
+ * (which a guard already recomputes) and from cited ones (which owe a
+ * primary source, not a date). Measured 2026-10-28 over this document:
+ * 63 of 292 non-heading, non-table blocks state a multi-digit number and
+ * name no date, run, commit or command — and a large share of those are
+ * exactly the two classes the rule does not govern.
+ */
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: a cited figure's source still exists", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+
+  test("every figure the class paragraph cites is still in *Measured non-obvious facts*", () => {
+    expect(body, `${SPEC} is missing`).not.toBeNull();
+    const paragraph = body!.match(
+      /hand-types dozens of other tallies —([\s\S]*?)— none of them bound by anything/,
+    );
+    expect(
+      paragraph,
+      "the citing sentence was reworded and this guard no longer finds it, so the four " +
+        "figures it names are unchecked again. Re-point the pattern or delete this case — " +
+        "a text guard whose pattern stops matching stops guarding, silently.",
+    ).not.toBeNull();
+
+    const cited = [...paragraph![1].matchAll(/\*(\d[\d,]*)[^*]*\*/g)].map(m => m[1]);
+    expect(
+      cited.length,
+      "no italicised figures parsed out of the citing sentence, so the loop below is empty",
+    ).toBeGreaterThanOrEqual(4);
+
+    const facts = measuredFactsSection(body!);
+    expect(facts, "'## Measured non-obvious facts' was not found").not.toBeNull();
+
+    const orphaned = cited.filter(n => !new RegExp(`\\b${n}\\b`).test(facts!));
+    expect(
+      orphaned,
+      `These figures are cited as examples of the class and their home readings are no ` +
+        `longer in *Measured non-obvious facts*. A citation whose source has moved reads ` +
+        `exactly like a fresh reading nobody dated. Either restore the reading, or stop ` +
+        `citing the figure.`,
+    ).toEqual([]);
+  });
+});
+
+/**
  * The document counts its own criteria in prose, and prose drifts.
  *
  * Round 6 of #1637 found "this spec holds 56 criteria" off by five, in the

@@ -965,6 +965,29 @@ the dense end of that distribution is ordinary English rather than
 measurement. Both readings are commands, not assertions, and both can be
 re-taken against whatever this file says today.
 
+**A third variant was proposed on 2026-10-28 and is refused by CLASS, not
+by cost.** Round 7 of #1637 asked for one scanner over the whole body,
+minus frontmatter and fenced code, demanding a date or a command from every
+block stating a bare multi-digit number — on the correct observation that
+hand-picking sections is the recurring failure mode rather than the
+particular section picked. Counted the same day, splitting the stripped body
+on blank lines: **292 non-heading, non-table blocks, 136 stating a number,
+63 naming no date, run, commit or command.** 63 is a payable price. The
+reason it is still wrong is the table above: re-takeability is the
+**world-derived** rule. A large share of those 63 are document-derived — the
+47/30 split, the bullet tallies, every figure a guard in
+`test/code-review-convergence-spec.test.ts` already recomputes — or cited,
+like Tricorder's thresholds and the 65% → 78% target this document is aimed
+at. Demanding a date and a command from those two classes asks the wrong
+question of them, and a guard that is wrong about most of what it fires on
+is routed around within a week.
+
+That is also why the **section census** below is the right generaliser and a
+whole-body number scan is not: the census asks whether a section is
+ACCOUNTED FOR, so each section declares which class governs its numbers,
+rather than one rule being applied to three classes that owe different
+things.
+
 So the class is real and it is not closable by a guard over this file at a
 price worth paying. It is a property of the genre — a long hand-written
 document that restates its own measurements — and the honest scope for
