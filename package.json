@@ -5,11 +5,11 @@
   "description": "Ship harness — conformity tests, scaffold, and agent briefs for AI-first development",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hornjason/pai-harness.git"
+    "url": "git+https://github.com/hornjason/rungate.git"
   },
-  "homepage": "https://github.com/hornjason/pai-harness#readme",
+  "homepage": "https://github.com/hornjason/rungate#readme",
   "bugs": {
-    "url": "https://github.com/hornjason/pai-harness/issues"
+    "url": "https://github.com/hornjason/rungate/issues"
   },
   "files": [
     "bin/",

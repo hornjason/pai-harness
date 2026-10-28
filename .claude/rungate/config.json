@@ -1,7 +1,7 @@
 {
   "project": "rungate",
-  "repo": "hornjason/pai-harness",
-  "issueRepo": "hornjason/pai-harness",
+  "repo": "hornjason/rungate",
+  "issueRepo": "hornjason/rungate",
   "ship": {
     "mode": "direct",
     "since": "2026-10-19",

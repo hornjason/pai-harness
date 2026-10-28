@@ -43,6 +43,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { loadRungateConfig } from "../lib/config-loader";
 import { assertMarkedBlockReachable } from "../lib/reachability";
 import { structuralCut, structuralCutAround } from "../lib/source-slice";
 import {
@@ -172,6 +173,18 @@ describe("SC-1441: a remote URL becomes owner/name or nothing", () => {
 
 const WT = "/Users/jhorn/Projects/DailyBriefDashboard/.claude/worktrees/wf_5e3ed885-98c-12";
 const RIGHT = "/Users/jhorn/Projects/rungate/.claude/worktrees/wf_5e3ed885-98c-9";
+/**
+ * A FIXTURE, not a reading, and it deliberately still spells the repository's
+ * FORMER name. Every case below pairs it with a URL written beside it, so what
+ * it spells decides nothing: the pair is self-consistent whatever the string
+ * is, and a sweep that "modernises" it has to move nine other sites in step or
+ * redden seven cases. The live control at `the real rungate checkout reads as
+ * the repo this run targets` is the only case a rename can falsify, and it
+ * reads the declared repo rather than this constant.
+ *
+ * The repository was renamed `hornjason/pai-harness` → `hornjason/rungate` on
+ * 2026-10-28. This line was left alone on purpose.
+ */
 const RUN_REPO = "hornjason/pai-harness";
 
 /**
@@ -497,9 +510,23 @@ describe("SC-1444: readWorktreeRemote reads a real checkout", () => {
   test("the real rungate checkout reads as the repo this run targets", () => {
     // The positive control over live state: without it every case above is
     // satisfied by a reader that always errors.
+    //
+    // The expected side is the repo this project DECLARES, read from its own
+    // config — not the fixture above, and not a literal. Two independent
+    // sources: `git config --get remote.origin.url` and a hand-maintained
+    // JSON field. Asserting they agree is the whole value of the case, and
+    // it is what a literal cannot do. When the repository was renamed to
+    // `hornjason/rungate` on 2026-10-28 the remote moved and the config did
+    // not; a hardcoded expectation went red naming only itself, which reads
+    // as "the test is stale" rather than "the config is".
+    //
+    // Proved able to fail: setting `repo` in `.claude/rungate/config.json`
+    // to `hornjason/elsewhere` reddens this case and nothing else in the file.
+    const declared = loadRungateConfig(REPO_ROOT).repo ?? null;
+    expect(declared, "the project declares no `repo` to compare against").toBeTruthy();
     const reading = readWorktreeRemote(REPO_ROOT);
     expect(reading.error, reading.error || "").toBeNull();
-    expect(repoSlug(reading.url)).toBe(RUN_REPO);
+    expect(repoSlug(reading.url)).toBe(declared);
   });
 });
 

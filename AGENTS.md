@@ -11,7 +11,7 @@ updated: 2026-10-28
 
 Ship harness — conformity tests, scaffold, and agent briefs for AI-first development
 **Tech:** Bun, TypeScript, ESM
-- **Repo:** https://github.com/hornjason/pai-harness
+- **Repo:** https://github.com/hornjason/rungate
 
 ## Hard Constraints
 
@@ -71,5 +71,5 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 
 
 ## Workflow
-- **Repo:** https://github.com/hornjason/pai-harness
+- **Repo:** https://github.com/hornjason/rungate
 - **Test:** `bun test`
