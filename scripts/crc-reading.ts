@@ -150,6 +150,28 @@ function parseArgs(argv: readonly string[]): Args | { error: string } {
   if (!REPO_FORMAT.test(out.repo)) {
     return { error: `--repo ${JSON.stringify(out.repo)} is not owner/name` };
   }
+  // `--write-spec` renders the row THIS run computed, and `--record` is the
+  // only thing that puts that row in the store. Given one without the other
+  // the document ends up claiming a reading the store does not hold, which
+  // is what `test/crc-reading-spec-parity.test.ts` asserts against — and it
+  // reddens on the NEXT pull request, whose diff explains nothing.
+  //
+  // Scoped deliberately, and the other direction was considered and
+  // rejected. `--record` alone also leaves the pair out of step, so
+  // both-or-neither looks like the principled rule; it is the wrong one.
+  // `--record` alone is the primary operation — take a reading, store it —
+  // and refusing it would break the script's main use to fix a different
+  // flag's defect. The two harms are not the same kind either: this one
+  // writes a value backed by nothing into a tracked document, while
+  // `--record` alone writes a true value and leaves the document behind.
+  // One fabricates, the other lags, and only the first is silent.
+  if (out.writeSpec !== null && !out.record) {
+    return {
+      error:
+        `--write-spec ${out.writeSpec} without --record would splice a reading ` +
+        "into the document that no store row backs; pass --record too",
+    };
+  }
   return out;
 }
 

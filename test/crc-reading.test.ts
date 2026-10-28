@@ -790,6 +790,76 @@ describe("the script refuses, and the refusal can be removed", () => {
     }
   });
 
+  test("--write-spec without --record is refused, and --record alone is not", () => {
+    /**
+     * #1633 round 10. The two flags had no cross-validation, so
+     * `--write-spec` alone spliced a freshly computed reading into the
+     * document and never appended it to the store. The spec then showed a
+     * reading that exists in no store, and
+     * `test/crc-reading-spec-parity.test.ts` — which asserts the block
+     * equals a render of `store[store.length - 1]` — reddens on the next
+     * unrelated pull request, with nothing in that pull request's diff to
+     * explain it.
+     *
+     * THE REFUSAL IS SCOPED, NOT SYMMETRIC, and the control below is why.
+     * `--record` alone also leaves the live pair out of step, so
+     * both-or-neither reads as the principled rule — and it is the wrong
+     * one. `--record` alone is the PRIMARY operation (take a reading,
+     * store it); two cases in this file already exercise it, and
+     * forbidding it would break the script's main use to fix a different
+     * flag's defect. The harms also differ in kind: `--write-spec` alone
+     * writes a value backed by nothing into a tracked document, while
+     * `--record` alone writes a true value and leaves the document
+     * behind. One fabricates, the other lags.
+     */
+    const dir = mkdtempSync(join(tmpdir(), "crc-reading-"));
+    try {
+      const entries = join(dir, "entries.json");
+      writeFileSync(
+        entries,
+        JSON.stringify([
+          { number: 10, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+          { number: 20, passed: true, truncated: false, body: ledgerBody([measured(1)]) },
+        ]),
+      );
+      const store = join(dir, "store.json");
+      writeFileSync(store, "[]\n");
+      const spec = join(dir, "spec.md");
+      const before = `# Spec\n\n${CRC_BLOCK_BEGIN}\n${CRC_BLOCK_END}\n`;
+      writeFileSync(spec, before);
+
+      const base = ["--lo", "10", "--hi", "20", "--from", entries, "--store", "store.json"];
+      const args = [...base, "--write-spec", "spec.md"];
+
+      const real = run(SCRIPT, args, dir);
+      expect(real.status).toBe(1);
+      // Neither side moved. The document is the one the defect corrupted,
+      // and the store is the half that made the corruption invisible.
+      expect(readFileSync(spec, "utf-8")).toBe(before);
+      expect(JSON.parse(readFileSync(store, "utf-8"))).toEqual([]);
+      expect(real.stderr).toContain("--write-spec");
+      expect(real.stderr).toContain("--record");
+
+      // The removal of the non-zero exit, performed and observed — so a
+      // later pass for an unrelated reason is distinguishable from this.
+      const mutant = run(mutantPath(dir), args, dir);
+      expect(mutant.status).toBe(0);
+
+      // THE CONTROL: the case where the refusal must NOT fire. Without it
+      // a blanket both-or-neither rule would satisfy every assertion
+      // above while breaking the script's primary use.
+      const recordOnly = run(SCRIPT, [...base, "--record"], dir);
+      expect(recordOnly.status).toBe(0);
+      expect(recordOnly.stdout).toContain("recorded row 1");
+      expect(JSON.parse(readFileSync(store, "utf-8"))).toHaveLength(1);
+      // And it left the document alone, which is the lag rather than the
+      // fabrication — the state the parity suite reports truthfully.
+      expect(readFileSync(spec, "utf-8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("--save is the one write before a refusal, and it compounds nothing", () => {
     /**
      * The declared exception to the invariant stated in `main`. `--save`
