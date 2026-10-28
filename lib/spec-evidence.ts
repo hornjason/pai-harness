@@ -218,7 +218,18 @@ export function isIsoDay(value: string): boolean {
  * `needs:` with nothing after it, or a lone `-`, is the blank cell this module
  * exists to catch — accepting it would rebuild lobster's hole.
  */
-function hasContent(value: string | null): value is string {
+/**
+ * Is this annotation cell filled in? `needs:` with nothing after it, or a
+ * lone `-`, is the blank cell this module exists to catch.
+ *
+ * Exported because `scripts/criterion-inventory.ts` was deciding the same
+ * question with its own `.trim() !== ""`, which reads a lone `-` as
+ * content. The inventory therefore called a criterion DONE that
+ * `evidenceViolations` — the gate that actually blocks the build — flags
+ * EVIDENCE_BLANK. Two deciders, one question, different answers. Raised by
+ * the required reviewer on #1642.
+ */
+export function hasContent(value: string | null): value is string {
   return value !== null && value.trim().length > 0 && value.trim() !== "-";
 }
 
