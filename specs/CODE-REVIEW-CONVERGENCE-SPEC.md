@@ -2,6 +2,7 @@
 doc-type: spec
 testable: true
 compliance: strict
+evidence: required
 governs: Automated code review convergence — the mechanisms from Anthropic's "Solving code review" that RunGate adopts, what each one must do, and how we know whether it works. This is the alignment reference for all finding-arbiter, jury, review-depth and approval work.
 status: active
 owner: jason
@@ -302,69 +303,170 @@ from something that is measured. **Nothing below gates an increment.**
 Criteria are grouped by the source's own layers. Each states the mechanism, not the
 implementation.
 
+### This document is bound to the evidence rule
+
+Its frontmatter carries `evidence: required`, so `bun bin/rungate.ts audit-spec-evidence`
+refuses it unless every criterion says what would prove it and every ticked criterion
+says what did. The rule and the checker shipped in #1639; this is the first document
+retrofitted onto them, and the second bound to them at all.
+
+Every one of the 61 criteria carries a `needs:` line naming one of `test`,
+`measurement`, `run` or `review` — what KIND of proof it will take, which is a statement
+this document can make today about work nobody has started. Ticked criteria also carry
+`proved-by:` naming what was run, and `fingerprint:` binding that evidence to the
+criterion's exact wording, so **rewording a criterion invalidates what proved it**
+rather than silently carrying the claim across.
+
+**Two ticked criteria are waived rather than proved, and the waivers are the point.**
+
+| Criterion | Why | Expires |
+|---|---|---|
+| CRC-B7 | #1567: nobody has run a finding through the live path and observed a demotion, so the tagging is not verified end to end. | 2026-12-31 |
+| CRC-M11 | #1592: the metric counts run ATTEMPTS and the sentence says ROUNDS, so what is tracked is not what is claimed. | 2026-12-31 |
+
+Both keep their `needs:` line. A waiver replaces `proved-by:`, never `needs:` — it
+carries an expiry, so what it will take to prove is exactly what you want recorded while
+deciding not to take it yet. Both were found by a sweep of every ticked criterion in
+the tree against every open issue, matching ids on word boundaries; no figure is quoted
+for it here because that reading has no recorded command, and this document does not
+stand on numbers nobody can re-take. Both were ticked by a mechanism that reads a
+comment in a test file, which is the defect the evidence rule exists to replace.
+
+**It was red before it was green, on this document.** The first audit after annotation
+raised eight `FINGERPRINT_MISSING` violations, one per ticked-and-proved criterion, and
+exited non-zero. After recording, rewording a single word of CRC-C4 — *"if"* to
+*"when"* — turned it red again with `EVIDENCE_STALE`, naming both hashes. That is the
+check proving it can fail against this file and not against a fixture.
+
 ### Layer 1 — before the PR
 
 - [ ] CRC-A1: The agent is given something runnable and must show the output, not assert completion.
+      needs: run
 - [ ] CRC-A2: A fresh-context subagent reviews the diff before the PR opens.
+      needs: run
 - [ ] CRC-A3: `CLAUDE.md` is short, states stack/conventions/goals/non-goals, and points elsewhere for detail.
+      needs: test
 - [ ] CRC-A4: The reviewer flags code breaking a `CLAUDE.md` convention, AND changes that make a line in it out of date.
+      needs: test
 - [x] CRC-A5: `REVIEW.md` exists per owned area, written by code owners. (shipped, #1167)
+      needs: test
+      proved-by: test/ai-review-conventions.test.ts (AC-C10) — 371 pass, 0 fail, 2026-10-28
+      fingerprint: ec46dbf8
 - [x] CRC-A6: A check reports whether the reviewer actually followed `REVIEW.md`. (shipped, #1233/#1246)
+      needs: test
+      proved-by: test/ai-review-conventions.test.ts (AC-C1..AC-C9b) — 371 pass, 0 fail, 2026-10-28
+      fingerprint: ebeaeab9
 - [ ] CRC-A7: `REVIEW.md` caps the nits, lists paths to skip, demands file-and-line evidence rather than a guess from a name, and requires a summary that starts with a count and says plainly when there is nothing to fix.
+      needs: test
 - [ ] CRC-A8: **Fix at the source.** When the reviewer keeps flagging the same thing, the repair goes into the skill, a lint rule, or an instruction file — not into another finding.
+      needs: test
 
 ### Layer 2 — AI review on every PR
 
 - [ ] CRC-B1: The reviewer reads the diff against the whole repo **and the PR's stated intent**.
+      needs: test
 - [ ] CRC-B2: On a bug fix, the reviewer looks for the root cause.
+      needs: test
 - [ ] CRC-B3: **Several agents look for bugs at the same time** (parallel generation). **Not an unqualified good here, and the qualification is CRC-B4's, pointed the other way.** The reviewer is a *sampled* instrument, so N generators are N draws and they raise recall and the false-positive rate together. Measured on run `39962683401`: two attempts on merge commit `99d50fc`, both at round 5, with the tree, the head, the prompt and the model all held fixed, returned **BLOCKED then CLEAN** — and the blocking finding was false, claiming a routing row that was present at the reviewed head. So the disagreement a second draw buys has already been observed arriving in the costly direction. Under the source's priority that trade is worth taking; under ours it is not, because CRC-M8 is inverted here by declared decision and a false block costs a remedy commit, a CI round, a review round and an agent's whole context. **Parallel generation without CRC-B4's quorum behind it is therefore strictly worse than one generator** — it is N chances to block on a false positive with nothing filtering them — so this criterion is not adoptable before CRC-B4, and adopting it first would be measurable harm rather than partial progress.
+      needs: measurement
 - [ ] CRC-B4: **A separate group of agents votes on each finding**, and it is surfaced only if enough agree it is real. The ledger records **every verifier's individual vote** and **whether the verifiers disagreed**, both as first-class fields written at decision time. Without them every threshold except the one actually used is permanently UNMEASURED, and re-running to recover the votes re-samples the thing being measured. **A reading the mechanism produces whether or not it works does not satisfy this criterion.** Measured: the deployed filing path takes no votes at all — a regex over the title and set arithmetic over symptom keys, with no clock, model or network — so a variance control over it reports a single distinct outcome set, zero variance, by construction, and the reading that looks most like success is the signature of the failure mode. **Nor does a reading that varies for a reason other than the mechanism under test** — name the mechanism the reading is of, not only the number it produced. Where the flattering reading is available by construction, the criterion names what would distinguish it from the real thing, or declares itself UNMEASURED.
+      needs: test
 - [x] CRC-B5: Findings that are only **style, diagnostics or cleanup** are dropped.
+      needs: test
+      proved-by: test/issue-filing-gate.test.ts (WIRING + the DROPPED_CATEGORY rows) — 371 pass, 0 fail, 2026-10-28
+      fingerprint: 44bbb6ba
 - [ ] CRC-B6: The filters are **A/B tested** against real PRs before being kept, **with variance bounded**. The reviewer is a sampled instrument, so two verdicts on the same code are two draws; an A/B that does not account for that is comparing noise.
+      needs: measurement
 - [x] CRC-B7: Surviving findings are **sorted by severity** and tagged **Important / Nit / Pre-existing**, so a pre-existing bug does not read as the author's fault. (shipped, #1587)
+      needs: test
+      waived-reason: #1567 records that nobody has run a finding through the live path and observed a demotion, so the tagging is NOT verified end to end
+      waived-by: jason
+      waived-until: 2026-12-31
 - [ ] CRC-B8: **Every finding is answered** — fixed, or resolved with a stated reason. A finding is never silently dropped and never becomes a tracker item by default.
+      needs: test
 - [ ] CRC-B9: Review depth is configurable per repo as **Quick / Standard / Deep**.
+      needs: test
 
 ### Layer 3 — security review
 
 - [ ] CRC-C1: Security review is a separate automated pass.
+      needs: test
 - [ ] CRC-C2: A PR cannot merge while any bug-review or security-review finding is open.
+      needs: test
 - [ ] CRC-C3: A false positive clears by closing the thread with a short reason.
+      needs: test
 - [x] CRC-C4: A finding clears on its own if a later commit fixes it.
+      needs: test
+      proved-by: test/ai-review-workflow.test.ts (AC-3b) — 371 pass, 0 fail, 2026-10-28
+      fingerprint: c4bf24ad
 
 ### Layer 5 — human approval scaled by risk
 
 - [x] CRC-E1: Risk tiers are written down: low needs no human, medium one, high two. (shipped, #1437)
+      needs: test
+      proved-by: test/risk-tier.test.ts "CRC-E1: the tiers are written down — low none, medium one, high two" — 371 pass, 0 fail, 2026-10-28
+      fingerprint: a0fed192
 - [x] CRC-E2: **The change sets the tier, not the author** — a classifier reads the change. (shipped, #1437)
+      needs: test
+      proved-by: test/risk-tier.test.ts "CRC-E2: the CHANGE sets the tier, not the author" — 371 pass, 0 fail, 2026-10-28
+      fingerprint: 5de29c3d
 - [ ] CRC-E3: A **second classifier** asks whether this change needs another person even when its tier says no.
+      needs: test
 - [x] CRC-E4: Owner-listed sensitive paths and **any CI workflow file** always require a human. (shipped, #1437)
+      needs: test
+      proved-by: test/risk-tier.test.ts "CRC-E4: any CI workflow file, and any owner path, always needs a human" — 371 pass, 0 fail, 2026-10-28
+      fingerprint: e0c4546a
 - [ ] CRC-E5: Only trusted authors get the lighter paths.
+      needs: test
 - [ ] CRC-E6: **An agent's approval never counts as a person's.**
+      needs: test
 - [ ] CRC-E7: Whoever prompted the change counts as one of the required reviewers.
+      needs: test
 - [ ] CRC-E8: **An approval covers one specific commit**; new commits the system cannot vouch for dismiss it.
+      needs: test
 - [ ] CRC-E9: Tiers **start strict and loosen with evidence**.
+      needs: measurement
 
 ### Layer 6/7 — merge, release, detection
 
 - [ ] CRC-F1: A merge queue re-runs every check against main with the change applied.
+      needs: test
 - [ ] CRC-F2: New behaviour ships behind a flag, internal users first.
+      needs: test
 - [ ] CRC-F3: One-step rollback exists and is exercised.
+      needs: test
 - [ ] CRC-F4: Incident reviews ask **which layer should have caught it**.
+      needs: review
 - [ ] CRC-F5: Circuit breakers tighten approval when revert/incident rates move. *(the source names this as an admitted gap on their side; we adopt it as a target, not a copy)*
+      needs: measurement
 
 ### Measurement — how we know any of this works
 
 - [ ] CRC-M1: **Incidents are an eval.** Past incident-causing PRs, with fix-forwards and reverts, form a case set.
+      needs: review
 - [ ] CRC-M2: Each case is **expert-confirmed** — a human who knows the code confirms the bug and where it lived.
+      needs: review
 - [ ] CRC-M3: **Every new incident adds a case.**
+      needs: review
 - [ ] CRC-M4: Any change to the reviewer's prompts, tools or model is **rescored against the whole set**.
+      needs: test
 - [ ] CRC-M5: The eval runs **daily**; a change that raises the score is kept, one that does not is dropped.
+      needs: run
 - [ ] CRC-M6: **Noise is measured by what people do with the comments**, in four buckets: fixed it / said it was wrong / said it was intentional / decided it didn't matter.
+      needs: measurement
 - [ ] CRC-M7: A **clean-PR control** counts how often the reviewer reports something that would have led to a harmful change. (exists, `evals/ai-review-control/`)
+      needs: measurement
 - [ ] CRC-M8: Priority order is stated and enforced: **catching real bugs first, cutting review rounds second.**
+      needs: measurement
 - [ ] CRC-M9: Human-time metrics tracked — approvals per PR (median and p95), human comments, time waiting on a person.
+      needs: measurement
 - [ ] CRC-M10: **Revert and incident rates are the guardrail.** If they rise, human time was moved, not saved.
+      needs: measurement
 - [x] CRC-M11: Rounds-to-pass is tracked alongside recall. (shipped, #1441/#1448)
+      needs: measurement
+      waived-reason: #1592 records that the metric counts run ATTEMPTS while this sentence says ROUNDS, so what is tracked is not what is claimed
+      waived-by: jason
+      waived-until: 2026-12-31
 
 Increment 1 of *The current loop* above. These four are a set: each one alone leaves the
 unreadable rate exactly where it is.
@@ -375,6 +477,7 @@ unreadable rate exactly where it is.
       **distinct recorded outcomes**, not one bucket. A round recorded as merely
       "unmeasured" is the defect this criterion exists to remove: it is the state that
       reads as "nothing wrong" to every consumer of the number.
+      needs: test
 - [ ] CRC-M13: **Whether the reviewer READ anything is recorded, separately from whether
       it WROTE anything.** `lib/review-execution-reading.ts` already computes
       `toolCallsByName` and `NO_TOOL_CALLS`; it is wired into the advisory reviewer only,
@@ -383,11 +486,13 @@ unreadable rate exactly where it is.
       required reviewer reports the tool-call census on the no-payload route — **not**
       when the library can compute it. A reading nothing invokes is not a reading.
       Satisfying this needs the reader published as a CLI command, hence a release.
+      needs: test
 - [ ] CRC-M14: **Every reading names the published version it was taken under.** CI pins
       `bunx rungate@<version>`, so a merged change to `lib/` is dormant until a release
       while a merged workflow change is live immediately. A reading that does not say
       which published version produced it cannot be attributed to a configuration, and
       an unattributable reading is what O1 and O2 above are made of.
+      needs: test
 - [ ] CRC-M15: **The staleness check reads contents, not a version string.**
       `lib/distribution-standing.ts` makes **two** comparisons on **two different
       fields**, and neither reads an artefact. `standing.published` — the version a
@@ -405,6 +510,7 @@ unreadable rate exactly where it is.
       fix that is already merged, which is exactly how a merged change stays dormant
       behind a green check. Met when a package whose version is acceptable and whose
       contents differ from the tree is refused, by name.
+      needs: test
 
 ### Convergence — the non-convergent review failure
 
@@ -412,11 +518,19 @@ The source's measured failure: one PR ran **more than fifty rounds overnight**; 
 showed **~59%** of what the reviewer kept flagging was code present at its first pass.
 
 - [x] CRC-N1: **A round cap.** After three rounds the reviewer asks the author to step back and reconsider the approach. (shipped, #1168)
+      needs: test
+      proved-by: test/ai-review-rounds-step.test.ts (AC-S1..AC-S5) — 371 pass, 0 fail, 2026-10-28
+      fingerprint: 72c24240
 - [ ] CRC-N2: **Diff-only re-review** after the first few passes.
+      needs: test
 - [ ] CRC-N3: **Flag the class of bug**, so the author fixes every instance rather than one line.
+      needs: test
 - [ ] CRC-N4: **No repeats** of findings already posted.
+      needs: test
 - [ ] CRC-N5: Review agents run **nightly over existing code**.
+      needs: run
 - [ ] CRC-N6: **A fixed defect stays fixed.** A finding must not be re-raised from text that merely DESCRIBES it — a docblock quoting the code that was removed, or prose narrating what the bug used to be.
+      needs: test
 
 Their result, which is our target: pass-after-one-round 65% → 78%; five-or-more rounds
 8.9% → 1.5%; mean reviews to pass 2.08 → 1.32.
@@ -966,10 +1080,15 @@ holding 174 rounds.
 ### What stays human
 
 - [ ] CRC-H1: Direction, taste and scope — whether to build it at all.
+      needs: review
 - [ ] CRC-H2: Risky code — billing, auto-updater, CI workflows.
+      needs: review
 - [ ] CRC-H3: Architecture that sets a pattern others copy.
+      needs: review
 - [ ] CRC-H4: Reading the evidence. **"If you can't say what the checks would miss, ask for a real review rather than a quick approval."**
+      needs: review
 - [ ] CRC-H5: Owning the outcome — a person is accountable for every change that ships, whoever typed it.
+      needs: review
 
 ## What an unticked box means here
 

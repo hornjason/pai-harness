@@ -294,6 +294,26 @@ describe("the controls — what must NOT fire", () => {
     // The count is allowed to grow — this asserts the MECHANISM, not a ratchet:
     // a spec is bound only by its own frontmatter, so no existing document can be
     // dragged in by a change to this module.
+    //
+    // But the loop below is vacuous over an empty list, and an empty list is
+    // exactly what a broken `readdirSync` path, a renamed directory or a
+    // frontmatter reader that stopped matching would produce — all of which read
+    // as "every bound spec is clean". So name the two documents that are bound
+    // today. This is a LOWER bound and not an equality: a third document opting
+    // in must not redden anything, while either of these quietly dropping out of
+    // the gate must.
+    for (const expected of [
+      "SPEC-AUTHORING-SPEC.md",
+      "CODE-REVIEW-CONVERGENCE-SPEC.md",
+    ]) {
+      expect(
+        bound,
+        `specs/${expected} declares \`evidence: required\` and the census did not see ` +
+          `it. Either it opted out — which is a decision, not housekeeping — or this ` +
+          `census stopped reading the directory, and the loop below reads a shrinking ` +
+          `population as a clean tree.`,
+      ).toContain(expected);
+    }
     for (const f of bound) {
       const violations = evidenceViolations(readFileSync(join(dir, f), "utf-8"), TODAY);
       expect(
