@@ -1,7 +1,12 @@
 import { test, expect, describe, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { extractConstraints, contentHash } from "../../scripts/extract-constraints";
+import {
+  extractConstraints,
+  contentHash,
+  loadExistingConstraints,
+  unreadConstraintSection,
+} from "../../scripts/extract-constraints";
 
 function createTempDir(): string {
   const dir = join("/tmp", `ec-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -190,5 +195,69 @@ describe("extract-constraints: ADR staleness exemption", () => {
     expect(adrCandidate).toBe(true);
     const adrStale = result.staleness.some((s) => s.file.includes("ADR-001"));
     expect(adrStale).toBe(false);
+  });
+});
+
+describe("#1644: Hard Constraints is read as a list, in both markdown forms", () => {
+  // The seven rules in this repository's own AGENTS.md are a NUMBERED list,
+  // and the loader matched only `- `. The section matched, 31 lines were
+  // read, and the filter kept 0 — so every rule was invisible to the dedup
+  // and nothing said so. Raised by the required reviewer on #1644.
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  });
+
+  const plant = (section: string): string => {
+    const dir = createTempDir();
+    writeFileSync(join(dir, "AGENTS.md"), `# p\n\n## Hard Constraints\n\n${section}\n\n## Other\n\nx\n`);
+    return dir;
+  };
+
+  test("a numbered rule is read, and so is a dashed one", () => {
+    tmpDir = plant("1. **Proof.** The proof is a test, not a tick.");
+    expect(loadExistingConstraints(tmpDir)).toEqual(["the proof is a test, not a tick."]);
+    rmSync(tmpDir, { recursive: true });
+
+    // The control for the fix: the form that ALREADY worked must still work,
+    // or widening the matcher would have traded one blind spot for another.
+    tmpDir = plant("- **Proof.** The proof is a test, not a tick.");
+    expect(loadExistingConstraints(tmpDir)).toEqual(["the proof is a test, not a tick."]);
+  });
+
+  test("a wrapped item is one constraint, not its first line", () => {
+    // Without the join this yields the fragment `specs still`, and dedup is
+    // substring containment both ways — a short fragment silently swallows
+    // candidates that merely contain it.
+    tmpDir = plant("1. **A spec says what must be true.** Specs still\n   carry checkboxes. Work comes off the tracker.");
+    const got = loadExistingConstraints(tmpDir);
+    expect(got).toHaveLength(1);
+    expect(got[0]).toBe("specs still carry checkboxes. work comes off the tracker.");
+  });
+
+  test("the real AGENTS.md parses to all seven rules", () => {
+    // The input the finding was actually about. A fixture can agree with a
+    // fixture; this is the file that went unread.
+    const got = loadExistingConstraints(join(import.meta.dir, "..", ".."));
+    expect(got).toHaveLength(7);
+    expect(got.some((c) => c.includes("proved-by:"))).toBe(true);
+  });
+
+  test("an unreadable section is reported, and an absent one is not", async () => {
+    // The half that makes zero mean something. A section holding prose
+    // parses to no constraints and used to be indistinguishable from a
+    // project that has none.
+    tmpDir = plant("These are our rules and we take them seriously.");
+    expect(loadExistingConstraints(tmpDir)).toEqual([]);
+    expect(unreadConstraintSection(tmpDir)).toContain("parsed to 0 constraints");
+    expect((await extractConstraints(tmpDir, { apply: false })).unreadConstraints).toContain("parsed to 0");
+    rmSync(tmpDir, { recursive: true });
+
+    // The control. A readable section is silent — otherwise the signal
+    // fires on every project and nobody reads it.
+    tmpDir = plant("1. **Proof.** The proof is a test, not a tick.");
+    expect(unreadConstraintSection(tmpDir)).toBeNull();
+    expect((await extractConstraints(tmpDir, { apply: false })).unreadConstraints).toBeNull();
   });
 });
