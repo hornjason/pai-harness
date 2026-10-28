@@ -25,11 +25,15 @@ import {
   changedCode,
   classify,
   collectTestFiles,
+  falseTicks,
   inventory,
+  renderMarkdown,
   waiverProblem,
   type Snapshot,
   type Tracked,
 } from "../scripts/criterion-inventory";
+
+const SCRIPT = join(import.meta.dir, "..", "scripts", "criterion-inventory.ts");
 
 const TODAY = "2026-10-28";
 
@@ -255,9 +259,112 @@ describe("classify is the single decider", () => {
     expect(classify({ ...base, tests: ["a.test.ts"] }, {})).toBe("BOUND");
     expect(classify({ ...base, ticked: true, provedBy: "test/x.test.ts" }, {})).toBe("DONE");
     // A tick with no proof behind it is NOT done. It falls through on its
-    // other evidence and the script names it as a false tick — the two we
-    // found in this repo today were exactly this shape.
+    // other evidence and the script names it as a false tick. Measured on
+    // the 2026-10-28 snapshot: 10 ticked, 0 of this shape — the two that
+    // look like it, CRC-B7 and CRC-M11, carry standing waivers and reach
+    // WAIVED. So this case is a latent hole, not a live one, and an earlier
+    // draft of this comment claiming "the two we found today" was wrong.
     expect(classify({ ...base, ticked: true }, {})).toBe("NOT STARTED");
     expect(classify({ ...base, ticked: true, waived: true }, {})).toBe("WAIVED");
+  });
+});
+
+describe("the committed document names a false tick, not only the console", () => {
+  // The console branch reported FALSE TICKS and `renderMarkdown()` had no
+  // equivalent, so the document anybody actually reads filed a ticked
+  // criterion with nothing behind it under whatever other evidence it had —
+  // indistinguishable, in the tables, from an honest row. Raised by the
+  // required reviewer on #1642.
+  const TICKED_NO_PROOF = [
+    "---",
+    "doc-type: spec",
+    "---",
+    "",
+    "- [x] CRC-Z3: the tick nobody earned.",
+    "      needs: test",
+    "",
+  ].join("\n");
+
+  const render = (spec: string): string => {
+    const rows = inventory(spec, snapshot({}), [], TODAY);
+    return renderMarkdown(rows, snapshot({}), [], TODAY);
+  };
+
+  test("a ticked criterion with no proof is named in the markdown", () => {
+    const md = render(TICKED_NO_PROOF);
+    expect(md).toContain("## Ticked, with nothing holding the tick up");
+    expect(md).toContain("**CRC-Z3**");
+    expect(md).toContain("no proof recorded");
+  });
+
+  test("a ticked criterion that DOES name its proof is not", () => {
+    // The control. One variable differs — the `proved-by:` line — so the row
+    // above measured the false-tick section and not the fact that the
+    // heading is printed unconditionally.
+    const md = render(TICKED_NO_PROOF.replace("      needs: test", "      needs: test\n      proved-by: test/x.test.ts"));
+    expect(md).toContain("## Ticked, with nothing holding the tick up");
+    expect(md).toContain("None. Every ticked criterion carries");
+    expect(md).not.toContain("no proof recorded");
+  });
+
+  test("the document and the console read the same decider", () => {
+    // Not two filters that agree: a second copy would survive any mutation of
+    // the first and both surfaces would read as covered.
+    const rows = inventory(TICKED_NO_PROOF, snapshot({}), [], TODAY);
+    expect(falseTicks(rows).map(r => r.id)).toEqual(["CRC-Z3"]);
+    expect(falseTicks(inventory(SPEC, snapshot({}), [], TODAY))).toEqual([]);
+  });
+});
+
+describe("an absent pr-files.jsonl is the first pass, not a failed fetch", () => {
+  // The header's own recipe was circular: the file is populated FROM the
+  // UNCLASSIFIED numbers this script reports, and the script refused to run
+  // until the file existed. Raised by the required reviewer on #1642. Run as
+  // a subprocess because the refusal lives in `readSnapshot`, which the
+  // recipe reaches only through the command line.
+  const run = (dir: string, spec: string) =>
+    Bun.spawnSync(["bun", SCRIPT, "--snapshot", dir, "--spec", spec, "--json"]);
+
+  const plant = (opts: { prs: boolean }): { dir: string; spec: string } => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-inventory-snap-"));
+    writeFileSync(
+      join(dir, "issues.json"),
+      JSON.stringify([{ number: 1, title: "CRC-Z2 is wrong", body: "", state: "OPEN" }]),
+    );
+    if (opts.prs) {
+      writeFileSync(
+        join(dir, "prs.json"),
+        JSON.stringify([
+          { number: 900, title: "CRC-Z2", body: "", state: "MERGED", mergedAt: "2026-10-28T00:00:00Z" },
+        ]),
+      );
+    }
+    const spec = join(dir, "spec.md");
+    writeFileSync(spec, SPEC);
+    return { dir, spec };
+  };
+
+  test("it runs, and reports the merged PR it could not classify", () => {
+    const { dir, spec } = plant({ prs: true });
+    try {
+      const got = run(dir, spec);
+      expect(got.exitCode).toBe(0);
+      expect(JSON.parse(got.stdout.toString()).unclassified).toEqual([900]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an absent prs.json still refuses", () => {
+    // The control, and the reason the relaxation is not a silent default: for
+    // the two readings taken in one shot, absent means the fetch failed.
+    const { dir, spec } = plant({ prs: false });
+    try {
+      const got = run(dir, spec);
+      expect(got.exitCode).not.toBe(0);
+      expect(got.stderr.toString()).toContain("prs.json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

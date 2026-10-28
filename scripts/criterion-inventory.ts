@@ -22,11 +22,24 @@
  *     --json number,title,body,state > <dir>/issues.json
  *   gh pr list --state all --limit 3000 \
  *     --json number,title,body,state,mergedAt > <dir>/prs.json
- *   # then, for each number this script reports as UNCLASSIFIED:
- *   gh pr view <n> --json number,files \
- *     -q '{number:.number,files:[.files[].path]}' -c >> <dir>/pr-files.jsonl
  *
- * A snapshot missing any of the three is a **refusal**, not a partial
+ * Run it now. It reports which merged pull requests have no changed-file
+ * reading, under UNCLASSIFIED. Fetch exactly those, one line each:
+ *
+ *   gh pr view <n> --json number,files \
+ *     -q '{number:.number,files:[.files[].path]}' >> <dir>/pr-files.jsonl
+ *
+ * then run it again. An **absent** `pr-files.jsonl` is the legitimate state
+ * on the first pass — every merged pull request is simply unclassified and
+ * the run says so — so it is read as empty rather than refused. The recipe
+ * was circular before that: the file could only be populated from a reading
+ * the script would not produce until the file existed. Raised by the required
+ * reviewer on #1642, who also flagged the `-c` on that last command; `-c` is
+ * `--comments` and does nothing beside `--json`. Measured: with and without
+ * it, `gh pr view 1639 --json number,files -q '…'` emits exactly one line.
+ * Removed as misleading, not as a fix to the output shape.
+ *
+ * `issues.json` or `prs.json` missing IS a **refusal**, not a partial
  * reading: a pull-request list that silently came back empty would report
  * every criterion as NOT STARTED, which is the one direction that reads as
  * good news.
@@ -223,6 +236,24 @@ function gist(text: string): string {
   return (short.length < flat.length ? `${short} …` : short).replace(/\|/g, "\\|");
 }
 
+/**
+ * Ticked, and neither a `proved-by:` nor a standing waiver holds it up.
+ *
+ * One exported decider, read by `renderMarkdown()` and by the console branch
+ * of `main()`. The first draft spelled the filter only in the console branch,
+ * so the committed document — the artefact anybody actually reads — filed a
+ * false tick silently under whatever other evidence it happened to have, and
+ * a reader of the document could not tell it from an honest row. Raised by
+ * the required reviewer on #1642.
+ *
+ * Two copies of this predicate would be two deciders that agree, so a
+ * mutation of either leaves the other holding every case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`).
+ */
+export function falseTicks(rows: readonly InventoryRow[]): InventoryRow[] {
+  return rows.filter(r => r.ticked && r.state !== "DONE" && r.state !== "WAIVED");
+}
+
 export function renderMarkdown(
   rows: readonly InventoryRow[],
   snapshot: Snapshot,
@@ -317,6 +348,31 @@ export function renderMarkdown(
     "**Open issues are bold.** Long criteria are cut to their first sentence.",
     "",
   ];
+
+  const ticked0 = falseTicks(rows);
+  out.push("## Ticked, with nothing holding the tick up", "");
+  if (ticked0.length === 0) {
+    out.push(
+      "None. Every ticked criterion carries either a `proved-by:` naming what ran or a",
+      "complete, signed, unexpired waiver.",
+      "",
+    );
+  } else {
+    out.push(
+      `${ticked0.length} of the ${rows.length} criteria are ticked and neither a \`proved-by:\` nor a standing`,
+      "waiver holds the tick up. Each one is listed again below under whatever other evidence it",
+      "has, which is exactly why it is named here first: in the tables, a false tick is",
+      "indistinguishable from an honest row.",
+      "",
+      "| Criterion | Why the tick settles nothing | Filed under |",
+      "|---|---|---|",
+    );
+    for (const r of ticked0) {
+      out.push(`| **${r.id}** | ${r.waiverProblem ?? "no proof recorded"} | ${HEADING[r.state]} |`);
+    }
+    out.push("");
+  }
+
   for (const state of STATES) {
     const group = rows.filter(r => r.state === state);
     out.push(`## ${HEADING[state]} — ${group.length} of ${n}`, "");
@@ -369,7 +425,7 @@ function readSnapshot(dir: string): Snapshot {
     const path = join(dir, name);
     if (!existsSync(path)) {
       throw new Error(
-        `UNMEASURED: ${path} is absent. A snapshot missing one of its three readings ` +
+        `UNMEASURED: ${path} is absent. A snapshot missing either of its two required readings ` +
           `reports criteria as NOT STARTED that the tracker names — see this file's header ` +
           `for the commands that take one.`,
       );
@@ -384,8 +440,17 @@ function readSnapshot(dir: string): Snapshot {
         `request(s). An empty reading is a failed fetch, not an empty tracker.`,
     );
   }
+  // An absent `pr-files.jsonl` is the first pass, not a failed fetch: it is
+  // populated FROM this script's own UNCLASSIFIED report, so refusing on it
+  // made the documented recipe circular — the file could only be filled from
+  // a reading that would not run until the file existed. Read as empty, every
+  // merged pull request is unclassified and the run says so by name, which is
+  // a louder reading than a refusal and not a silent default. The refusal
+  // above stays for `issues.json` and `prs.json`, where absent or empty means
+  // the fetch failed. Raised by the required reviewer on #1642.
+  const prFiles = join(dir, "pr-files.jsonl");
   const prChangedCode: Record<number, boolean> = {};
-  for (const line of need("pr-files.jsonl").split("\n")) {
+  for (const line of (existsSync(prFiles) ? readFileSync(prFiles, "utf-8") : "").split("\n")) {
     if (line.trim() === "") continue;
     const parsed = JSON.parse(line) as { number: number; files: string[] };
     prChangedCode[parsed.number] = changedCode(parsed.files);
@@ -446,15 +511,15 @@ function main(): number {
     }
     console.log();
   }
-  const falseTicks = rows.filter(r => r.ticked && r.state !== "DONE" && r.state !== "WAIVED");
-  if (falseTicks.length > 0) {
-    console.log(`FALSE TICKS: ${falseTicks.length} criterion(s) are ticked with neither a \`proved-by:\` nor a standing waiver:`);
-    for (const r of falseTicks) {
+  const ticked0 = falseTicks(rows);
+  if (ticked0.length > 0) {
+    console.log(`FALSE TICKS: ${ticked0.length} criterion(s) are ticked with neither a \`proved-by:\` nor a standing waiver:`);
+    for (const r of ticked0) {
       console.log(`  ${r.id} — ${r.waiverProblem ?? "no proof recorded"} (reported as ${r.state})`);
     }
     console.log();
   }
-  const waiverProblems = rows.filter(r => r.waiverProblem !== null && !falseTicks.includes(r));
+  const waiverProblems = rows.filter(r => r.waiverProblem !== null && !ticked0.includes(r));
   if (waiverProblems.length > 0) {
     console.log("WAIVERS THAT SETTLE NOTHING:");
     for (const r of waiverProblems) console.log(`  ${r.id} — ${r.waiverProblem}`);

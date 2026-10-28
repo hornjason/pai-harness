@@ -54,6 +54,11 @@ Taken 2026-10-28 over 777 issues and 866 pull requests.
 Every merged pull request named below has a changed-file reading, so the split between TOUCHED and DOCUMENT ONLY is complete rather than a lower bound.
 **Open issues are bold.** Long criteria are cut to their first sentence.
 
+## Ticked, with nothing holding the tick up
+
+None. Every ticked criterion carries either a `proved-by:` naming what ran or a
+complete, signed, unexpired waiver.
+
 ## DONE — ticked, and it names what proved it — 8 of 61
 
 | Criterion | What it says | Needs | Test naming it | Issues | Merged PRs |
