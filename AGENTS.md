@@ -27,11 +27,18 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 4. **Ordering is data, not prose.** Use GitHub's `blocked by`. "Not adoptable
    before X" in a sentence is unreadable by every tool we own. *What's next*
    is then everything unblocked.
-5. **Three review rounds, then close and re-scope — never a fourth.** Across
-   40,214 PRs each extra reviewer comment *lowered* merge odds 2.8% on
-   agent-authored changes and *raised* them 2.7% on human ones (Yoshioka et
-   al., MSR '26, arXiv:2601.18749; their caveat kept — review activity
-   explains ~5% of the outcome). Rounds are a rejection signal, not progress.
+5. **At the third review round, stop repairing and re-scope.** Not an
+   automatic close — say what a fourth round would fix that the third did
+   not, and if that is a different problem it is a second issue. Rounds are
+   a rejection signal, not progress: across 40,214 PRs each extra reviewer
+   comment *lowered* merge odds 2.8% on agent-authored changes and *raised*
+   them 2.7% on human ones (Yoshioka et al., MSR '26, arXiv:2601.18749;
+   review activity explains ~5% of the outcome). **We are above three
+   today, and three is the target rather than the norm** — O1 in
+   `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` reads 4.50 rounds per change and
+   that spec marks it untrustworthy twice: the cohort spans two mechanism
+   changes, and #1592 records the counter counting run ATTEMPTS where the
+   sentence says ROUNDS.
 6. **The proof is a test, not a tick.** `proved-by:` names what ran, and a
    tick with it blank fails the build.
 7. **A review finding is a PR comment by default** — an issue only when it is
