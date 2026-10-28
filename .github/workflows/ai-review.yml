@@ -1,4 +1,4 @@
-# generated-sha: 826c969c5f3f10b0
+# generated-sha: 348c25754629483a
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -4084,12 +4084,22 @@ jobs:
               exit 1
             fi
 
-            # Which route, and nothing else. `route` is a string this block prints; no
-            # branch below reads it, and the exit code is identical whichever it holds
-            # (#826). A reading that changed the verdict would be the second decider the
-            # comment above declines to build.
+            # Which route, and nothing else. `route` and `refusal` are strings this
+            # block prints; no branch below reads either, and the exit code is identical
+            # whichever they hold (#826). A reading that changed the verdict would be the
+            # second decider the comment above declines to build.
+            #
+            # #1478: `refusal` is set HERE, in the same branches as `route`, and never
+            # from a second `-s` test beside the refusal itself. Two readings of one
+            # file are two deciders that agree, and the whole defect was the refusal
+            # contradicting the route one line later.
             route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request. The usual cause is the action's own workflow-validation guard, which refuses to run when ai-review.yml differs from the copy on the default branch — so a pull request that edits the workflow, including the first one that adds it, is skipped by design. This check is UNMEASURED, not a passing review."
+            refusal="The review action exited successfully WITHOUT writing a findings payload, so this pull request has no AI review. Failing rather than reporting a green check for a review that never ran: a required check that passes when the reviewer did not run is not a gate. This refusal does NOT consult RUNGATE_REQUIRE_AI_REVIEW — that flag is for a tree with no credential, where no review was ATTEMPTED; one was attempted here and it produced nothing (#1180). If the reviewer declined because this pull request edits ai-review.yml, which it refuses to review against a copy that differs from the default branch, label the pull request 'ai-review-override' to waive this ONE check on the record and have a human read the diff instead."
             if [ -s "${AI_REVIEW_EXECUTION_FILE:-}" ]; then
+              # Set once for all four sub-routes below: what separates them is WHAT the
+              # reviewer did, and every one of them has already established THAT it ran,
+              # which is the only thing the remedy turns on.
+              refusal="The review action exited successfully WITHOUT writing a findings payload, so this pull request has no AI review. Failing rather than reporting a green check for a review that never ran: a required check that passes when the reviewer did not run is not a gate. This refusal does NOT consult RUNGATE_REQUIRE_AI_REVIEW — that flag is for a tree with no credential, where no review was ATTEMPTED; one was attempted here and it produced nothing (#1180). The reviewer EXECUTED on this pull request — the action wrote an execution transcript — so it did not decline before starting and the workflow file is not worth checking. What the transcript did say is in the warning above; it is not kept as an artifact, because keeping it would publish the reviewer's full output on a public repository. A re-run is not a remedy either: a re-run replays the same merge commit, and on #1474 this state survived a freshly computed one too. The 'ai-review-override' label still waives this check mechanically, and on THIS route it would waive a review that ran and wrote nothing rather than one that was never attempted — so the diff has had no automated reading at all and a human has to give it one."
               # A text read of a JSON document, deliberately: a runner is not
               # guaranteed `jq`, and the consequence of a false match here is a
               # different explanatory sentence rather than a different verdict.
@@ -4149,7 +4159,10 @@ jobs:
               exit 0
             fi
 
-            echo "::error title=AI review UNMEASURED::The review action exited successfully WITHOUT writing a findings payload, so this pull request has no AI review. Failing rather than reporting a green check for a review that never ran: a required check that passes when the reviewer did not run is not a gate. This refusal does NOT consult RUNGATE_REQUIRE_AI_REVIEW — that flag is for a tree with no credential, where no review was ATTEMPTED; one was attempted here and it produced nothing (#1180). If the reviewer declined because this pull request edits ai-review.yml, which it refuses to review against a copy that differs from the default branch, label the pull request 'ai-review-override' to waive this ONE check on the record and have a human read the diff instead." >&2
+            # `escape_annotation`, as the warning above does, and for the same reason:
+            # this is now a shell variable rather than a literal spliced in by the
+            # generator, so it reaches `echo` the way `route` does.
+            echo "::error title=AI review UNMEASURED::$(escape_annotation "${refusal}")" >&2
             exit 1
           fi
 
