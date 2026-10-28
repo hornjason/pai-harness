@@ -30,8 +30,10 @@
  * witnessed nothing. One line, one site.
  */
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { readdirSync, readFileSync, statSync } from "fs";
 import { join, relative } from "path";
+
+import { writeSpec } from "../lib/write-spec";
 
 import {
   criterionFingerprint,
@@ -83,7 +85,15 @@ function recordFingerprintsIn(path: string): number {
     if (at >= lines.length) continue;
     lines.splice(at + 1, 0, `      fingerprint: ${criterionFingerprint(criterion.text)}`);
   }
-  writeFileSync(path, lines.join("\n"));
+  // #1552: every write under `specs/` goes through the chokepoint, which
+  // consults `mayWrite` and refuses on a derived document. A bare
+  // `writeFileSync` here would also be an OPAQUE site to the #1584 sweep —
+  // the path is a parameter, so nothing static can establish what it writes.
+  const result = writeSpec(path, lines.join("\n"), { label: relative(root, path) });
+  if (!result.written) {
+    console.error(result.refusal);
+    return 0;
+  }
   return pending.length;
 }
 

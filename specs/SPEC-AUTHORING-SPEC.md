@@ -121,77 +121,62 @@ says so out loud instead, with `waived-reason`, `waived-by` and
 the criterion later invalidates what proved it.
 
 - [x] SC-2560: a ticked criterion with no proved-by line is a violation
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2560: a ticked criterion with no proved-by line at all is a violation"
       fingerprint: b73c6a2e
 - [x] SC-2561: a ticked criterion whose proved-by is blank is a violation
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2561: a ticked criterion whose proved-by is BLANK is a violation, not a pass"
       fingerprint: d2c67601
 - [x] SC-2562: a criterion that never declares what would prove it is a violation
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2562: a criterion that never says what would prove it is a violation"
       fingerprint: 33d48939
 - [x] SC-2563: an evidence kind outside the closed set is a violation
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2563: an evidence kind outside the closed set is a violation, not a pass"
       fingerprint: 465cebd3
 - [x] SC-2564: a waiver with an empty reason is a violation
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2564: a waiver with an empty reason is a violation — lobster's hole, closed"
       fingerprint: 2ebeb40e
 - [x] SC-2565: a waiver with no expiry date is a violation
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2565: a waiver with no expiry is a violation"
       fingerprint: a17e7ea6
 - [x] SC-2566: a waiver whose expiry has passed is a violation again
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2566: a waiver whose expiry has passed is a violation again"
       fingerprint: 5f97edb7
 - [x] SC-2567: evidence recorded against a different wording is stale
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2567: evidence recorded against a different wording is stale"
       fingerprint: 9eb5b8f6
 - [x] SC-2568: a fully populated criterion produces zero violations
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2568: a fully populated criterion produces zero violations"
       fingerprint: e6b06338
 - [x] SC-2569: identical content is clean in a spec that has not opted in
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2569: the SAME broken content is clean when the spec has not opted in"
       fingerprint: abe36b56
 - [x] SC-2570: a newly created spec declares evidence required in its frontmatter
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-template.test.ts "SC-2570: a generated spec is bound by the evidence rule"
       fingerprint: 91063e88
 - [x] SC-2571: a newly created spec carries outcomes, an increment and exit criteria
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-template.test.ts "SC-2571: the generated frame carries every section the rule depends on"
       fingerprint: a52497b2
 - [x] SC-2572: a freshly generated spec is not born in violation
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-template.test.ts "SC-2572: the placeholder criterion is not parsed as a criterion"
       fingerprint: 8b475db7
 - [x] SC-2573: the spec template has exactly one emitter
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-template.test.ts "SC-2573: create-spec.ts does not emit a second template"
       fingerprint: 3428ff61
 - [x] SC-2574: the decider refuses nothing when short-circuited, and that is observed
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "the mutant and the real module differ on a named input"
       fingerprint: 7a1e7a71
