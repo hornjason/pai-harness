@@ -7,7 +7,7 @@ status: active
 owner: jason
 created: 2026-10-22
 source: https://claude.dev/blog/solving-code-review-at-anthropic/
-updated: 2026-10-27
+updated: 2026-10-28
 ---
 
 # Code Review Convergence
@@ -303,10 +303,17 @@ unreadable rate exactly where it is.
       while a merged workflow change is live immediately. A reading that does not say
       which published version produced it cannot be attributed to a configuration, and
       an unattributable reading is what O1 and O2 above are made of.
-- [ ] CRC-M15: **The staleness check reads contents, not size.** `lib/distribution-standing.ts`
-      permits one release of lag unconditionally and compares SIZE only, which is how
-      Increment 1 of the earlier distribution work stayed dormant behind a green check.
-      Met when a package that is the expected size and the wrong contents is refused.
+- [ ] CRC-M15: **The staleness check reads contents, not a version string.**
+      `lib/distribution-standing.ts` compares the version the measurements were taken
+      against to `[registry.latest, registry.previous]`, so one release of lag is
+      permitted unconditionally. **It never reads the published artefact at all** — an
+      earlier draft of this criterion said it compared package SIZE, which was wrong
+      and was corrected on 2026-10-28 after the required reviewer flagged it and the
+      module was read. The gap is not the comparison it makes but the one it does not:
+      a version match says nothing about whether the published tarball carries a `lib/`
+      fix that is already merged, which is exactly how a merged change stays dormant
+      behind a green check. Met when a package whose version is acceptable and whose
+      contents differ from the tree is refused, by name.
 
 ### Convergence — the non-convergent review failure
 
