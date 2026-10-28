@@ -485,10 +485,19 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every measurement can be taken 
  * the retakeability rule is the WORLD-DERIVED rule, and a scan over every
  * block would demand a date and a command from document-derived numbers
  * (which a guard already recomputes) and from cited ones (which owe a
- * primary source, not a date). Measured 2026-10-28 over this document:
- * 63 of 292 non-heading, non-table blocks state a multi-digit number and
- * name no date, run, commit or command — and a large share of those are
- * exactly the two classes the rule does not govern.
+ * primary source, not a date). Re-taken 2026-10-28 against `e7e12ed9` with
+ * the command recorded in the spec's own paragraph: 68 of 240 non-heading,
+ * non-table blocks state a multi-digit number and name no date, run, commit
+ * or command — and a large share of those are exactly the two classes the
+ * rule does not govern.
+ *
+ * That figure was first written here, and in the spec, as 63 of 292. It is
+ * WITHDRAWN: it carried a date and no command, so when round 10 asked for
+ * the command there was nothing to re-run, and the re-take against the same
+ * revision did not reproduce it. The spec records the withdrawal and the
+ * command; this docstring was the second, independent copy left stale by the
+ * fix — which is the meta-finding this PR has now reproduced seven times. A
+ * number restated in prose is a copy, and a copy is a thing that goes stale.
  */
 describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: a cited figure's source still exists", () => {
   const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;

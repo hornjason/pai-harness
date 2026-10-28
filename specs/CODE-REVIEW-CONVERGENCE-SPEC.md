@@ -101,14 +101,34 @@ declaring there is none.
 ### Why step 8 is not optional
 
 Committing a decision rule in advance sounds sufficient and is not. The best available
-comparison — van den Akker et al., *Behavior Research Methods* (2023), matching 193
-preregistered studies against 193 unregistered — found **no** reduction in positive
-results, effect sizes, or statistical errors. Roughly three quarters of preregistered
-studies deviate from their plan, and nobody checks. Where the plan *is* checked against
-the result, adherence rises to about 92%.
+comparison is van den Akker et al., *Preregistration in practice*, **Behavior Research
+Methods** (2023), `doi:10.3758/s13428-023-02277-0`. **Read 2026-10-28 from the
+publisher's PDF**, the abstract states it compared *"193 psychology studies that earned
+a Preregistration Challenge prize or preregistration badge to 193 related studies that
+were not preregistered"* and that *"we did not find that preregistered studies had a
+lower proportion of positive results (Hypothesis 1), smaller effect sizes (Hypothesis
+2), or fewer statistical errors (Hypothesis 3)"*.
 
 So the artefact that does the work is the deviations record, not the rule. A
 pre-specified rule with nothing comparing it to the outcome is decoration.
+
+**Two figures previously in this paragraph are WITHDRAWN** — *"roughly three quarters
+of preregistered studies deviate from their plan"* and *"adherence rises to about 92%"*.
+Both were credited to the paper above and **neither is in it**; its design compares
+preregistered to non-preregistered studies and does not measure deviation from a plan
+at all, so the attribution was structurally wrong and not merely unlocated. Deviation
+rates are a different literature with different numbers, and this document is not
+standing on figures it has not read. The claim above survives on the headline result
+alone, which is weaker and checked.
+
+**Scope of that check, because the rest of this section's citations have not had it.**
+Round 11 of #1637 observed that five external claims here — GQM, ISO/IEC/IEEE 15939,
+MMF, Shape Up's appetite, and this one — rest on the same mechanism that produced the
+withdrawn Mobius attribution, and that nothing in this repository can check any of them.
+That is correct. One has now been read against its primary source, and reading it cost
+one withdrawal. **The other four are UNVERIFIED and are marked so here rather than left
+to read as checked** — which is the same rule this document applies to a measurement it
+could not take.
 
 ### Provenance, and one correction
 
