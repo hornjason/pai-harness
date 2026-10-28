@@ -57,6 +57,87 @@ made while a PR was already open touching that exact file.
 Every criterion below is subordinate to this one. A mechanism that makes filing smarter
 without making *not filing* the default has missed the point.
 
+## How we open a new area of this spec
+
+**Standing practice, agreed 2026-10-28.** This spec holds 56 criteria. Picking one off
+the list and building it is how the work has gone so far, and it is why three of the
+figures in this document describe no system that exists. Criteria are not a queue.
+
+Before any area of this spec is opened, it is framed as one turn of a Mobius loop and
+the frame is written **here**, not in a conversation:
+
+1. **Why** — the problem in one paragraph, in the language of what it costs.
+2. **Target outcomes** — each with the measured baseline beside it. An outcome whose
+   baseline is untrustworthy gets no target until a loop has produced one; inventing a
+   target against a number nobody believes is how this document acquired its bad figures.
+3. **Options** — competing *hypotheses*, not tasks. More than one, because the point of
+   measuring is to choose between them.
+4. **An increment** — the smallest set of criteria that together move one outcome.
+   Several criteria, not one: a criterion that moves nothing on its own is not shippable
+   on its own.
+5. **Exit criteria** — what must be true for the increment to be done, written before
+   it starts.
+6. **The pivot rule** — which hypothesis each possible reading selects, **committed in
+   advance**. Written after the measurement, it is a rationalisation.
+
+A loop closes by recording what the measurement said and which option it selected. The
+next loop's Why is the previous loop's Learn.
+
+## The current loop — Increment 1: make the verdict readable
+
+**Why.** A change costs about four and a half review rounds, and 45.8% of rounds end
+with no readable verdict. The second number is the worse one: a round that could not be
+measured is indistinguishable from a round that found nothing, so the gate's silence
+carries no information. That is SUCCESS.md claim 4 failing inside this repository's own
+merge gate.
+
+**Target outcomes.**
+
+| # | Outcome | Baseline | Target |
+|---|---|---|---|
+| O1 | Rounds to pass | 4.50 — **untrustworthy** | set at the end of this loop |
+| O2 | One-round pass rate | 26.1% — **untrustworthy** | set at the end of this loop |
+| O3 | Rounds ending unreadable | 45.8% | ≤5% |
+| O4 | A reading describing ONE configuration | does not exist (n=1) | n≥12, configuration named |
+
+O1 and O2 carry no target **by decision**. Both were measured across #1573–#1634, which
+spans at least two mechanism changes (#1614 made the advisory reviewer run on every pull
+request; #1634 made repeat suppression live) and a third landed in #1636. A cohort that
+spans a mechanism change describes no system, so a target set against it would be a
+number invented to look like a plan. O4 is what makes O1 and O2 real, which is why it is
+in this loop and they are not.
+
+**Options — competing hypotheses.**
+
+| | Hypothesis | What would select it |
+|---|---|---|
+| H1 | Most unreadable rounds are the reviewer never reading the code at all | unreadable rounds are mostly zero-tool-call |
+| H2 | The reviewer stops early because `REVIEW.md` asks for its three best guesses; told to cover the change, it reports materially more per pass | unreadable rounds mostly DID call tools |
+| H3 | Rounds are high because findings arrive in a drip, not because there are many | findings-per-round flat across rounds at constant diff size |
+| H4 | Truncated diffs caused part of the miss rate | superseded — the cap moved in #1636; now measurable |
+
+**The increment.** CRC-M12, CRC-M13, CRC-M14, CRC-M15 below, shipped as a set. Each is
+one pull request; none of them moves O3 or O4 alone.
+
+**Exit criteria — all four, or the increment is not done.**
+
+1. An unreadable round reports **which** named mode it was, not merely that it was unreadable.
+2. The share of unreadable rounds with zero tool calls is a recorded number.
+3. Every reading in the store names the published version it was taken under.
+4. One cohort row exists describing a single configuration, with that configuration named.
+
+**The pivot rule, committed before the measurement.**
+
+- Unreadable rounds **mostly zero-tool-call** → H1. The next loop is reviewer
+  reliability. A prompt A/B would be measuring the wording of an instruction nothing read.
+- Unreadable rounds **mostly did call tools** → H2. The next loop is the `REVIEW.md` A/B,
+  and the standing prediction (current ~1 finding/pass, coverage arm ≥2.5×) is tested.
+- **Roughly even** → both are real; H1 goes first, because it is the cheaper build.
+
+**Increment 2 is not scoped here, deliberately.** Its content is whichever branch of the
+pivot rule the measurement selects, and scoping it now would commit the choice before the
+evidence.
+
 ## Success criteria
 
 Criteria are grouped by the source's own layers. Each states the mechanism, not the
@@ -125,6 +206,33 @@ implementation.
 - [ ] CRC-M9: Human-time metrics tracked — approvals per PR (median and p95), human comments, time waiting on a person.
 - [ ] CRC-M10: **Revert and incident rates are the guardrail.** If they rise, human time was moved, not saved.
 - [x] CRC-M11: Rounds-to-pass is tracked alongside recall. (shipped, #1441/#1448)
+
+Increment 1 of *The current loop* above. These four are a set: each one alone leaves the
+unreadable rate exactly where it is.
+
+- [ ] CRC-M12: **An unreadable round names its mode.** `no_payload` (the action ran and
+      wrote no findings file), `none_posted` (findings were written and none reached the
+      pull request) and `diff_truncated` (the reviewer was shown part of the change) are
+      **distinct recorded outcomes**, not one bucket. A round recorded as merely
+      "unmeasured" is the defect this criterion exists to remove: it is the state that
+      reads as "nothing wrong" to every consumer of the number.
+- [ ] CRC-M13: **Whether the reviewer READ anything is recorded, separately from whether
+      it WROTE anything.** `lib/review-execution-reading.ts` already computes
+      `toolCallsByName` and `NO_TOOL_CALLS`; it is wired into the advisory reviewer only,
+      and the required reviewer runs in consumer repositories that have no `scripts/`
+      directory, so the reading is unreachable there. The criterion is met when the
+      required reviewer reports the tool-call census on the no-payload route — **not**
+      when the library can compute it. A reading nothing invokes is not a reading.
+      Satisfying this needs the reader published as a CLI command, hence a release.
+- [ ] CRC-M14: **Every reading names the published version it was taken under.** CI pins
+      `bunx rungate@<version>`, so a merged change to `lib/` is dormant until a release
+      while a merged workflow change is live immediately. A reading that does not say
+      which published version produced it cannot be attributed to a configuration, and
+      an unattributable reading is what O1 and O2 above are made of.
+- [ ] CRC-M15: **The staleness check reads contents, not size.** `lib/distribution-standing.ts`
+      permits one release of lag unconditionally and compares SIZE only, which is how
+      Increment 1 of the earlier distribution work stayed dormant behind a green check.
+      Met when a package that is the expected size and the wrong contents is refused.
 
 ### Convergence — the non-convergent review failure
 
@@ -1059,7 +1167,7 @@ deviate, so CRC-B8 counts with the remainder below and these two do not.
 
 ### Not done — the remainder, with what is there instead
 
-**29 bullets, one per criterion that leads one**, listed because the
+**33 bullets, one per criterion that leads one**, listed because the
 near-misses are the expensive ones: each has something in the tree that
 resembles it and is not it. The unit is stated because this line read `34`
 from before CRC-N6 was added until 2026-10-26, when counting it found 29 —
@@ -1067,7 +1175,7 @@ the number had been stale for long enough that nobody could say what it had
 counted, and incrementing it would have carried the error forward. One
 further id is NAMED inside these bullets without leading one (CRC-A6); it is
 accounted for in its own bucket, and one bullet leads with TWO ids
-(**CRC-E3, CRC-E9**), which is why 31 ids appear here and 29 is the right
+(**CRC-E3, CRC-E9**), which is why 35 ids appear here and 33 is the right
 count of this list.
 
 **Every number in the paragraph above is recomputed from the bullets by
@@ -1151,6 +1259,10 @@ instance of it.
 - **CRC-M6** One bucket of four is derived from evidence. The other three report UNMEASURED unless hand-declared, and `noiseRate` is `null`.
 - **CRC-M7** The control exists and counts `FIRED` on clean subjects. The criterion's own number — findings that *would have led to a harmful change* — is declared UNMEASURED by the control's README, because a finding carries no remedy anything can apply. A tripwire in `test/review-negative-control.test.ts` reds the day the contract grows one.
 - **CRC-M10** Nothing tracks revert or incident rates.
+- **CRC-M12** One bucket, not three. `lib/review-execution-reading.ts` already distinguishes `EXECUTION_FILE_ABSENT`, `NO_TOOL_CALLS`, `NO_REVIEW_POSTED`, `REVIEW_COUNT_UNAVAILABLE` and `DIFF_TRUNCATED` as reason codes, and `record-ai-review-unmeasured` (#1488) records a kind per round — but `no_payload`, the nothing-posted case and `DIFF_TRUNCATED` are not named failure modes in this spec, so nothing binds the recorded kinds to a criterion and the rate they roll up into is a single undifferentiated 45.8%.
+- **CRC-M13** The census is computed and unreachable where it matters. `toolCallsByName` and `NO_TOOL_CALLS` are wired into the advisory reviewer only (`.github/workflows/claude-review.yml`). The required reviewer is generated and runs in consumer repositories through `bunx rungate@<pin>`, which ships no `scripts/` directory, so there is no command for it to call. Nothing anywhere reports whether a no-payload round read a single file.
+- **CRC-M14** No reading names its published version. CI pins `bunx rungate@<pin>`, so a merged `lib/` change is dormant until a release while a merged generated workflow is live on merge — two different latencies behind one number, and the stored readings record neither.
+- **CRC-M15** `lib/distribution-standing.ts` permits one release of lag unconditionally and compares SIZE, never CONTENTS. A package of the expected size with the wrong contents passes, which is how an earlier increment stayed dormant behind a green check. #1226 is adjacent and unassigned.
 - **CRC-N4** **Half of it shipped in #1381 and the half the criterion is named for did not.** The walker exists: the generated `ai-review-carry` step reads the ledger, searches each prior finding's file for the recorded anchor TEXT at this commit (#1601 — it compared the text at the recorded LINE NUMBER until 2026-10-24, and an edit anywhere above a finding dropped it as resolved), and hands the reviewer the unresolved set under one of three readings that may not collapse — `AI_REVIEW_CARRY_READ`, `AI_REVIEW_CARRY_ABSENT`, `AI_REVIEW_CARRY_UNMEASURED`. It restates `readLedger → priorFindings → carryForward` in bash and is bound to the library over one matrix by `test/ai-review-carry-forward.test.ts`, because `lib/scaffold/ai-review-step.ts` may not import: the step is deliberately import-free so that the 27 suites copying it into a temp directory can build mutants that load. What remained was **suppression**, and #1586 built it: `lib/ai-review-suppression.ts` turns the carry step's state file and a ledger snapshot into the prior key set, and `scripts/ai-review-findings.ts` hands the adjudicator a gate over it. Three things keep this criterion unticked. **It is dormant** — the generated job runs `bunx rungate@<pinned>`, so this reaches CI only when the pin moves, and a tick is read as *running*. **It is advisory-only by declared deviation** — a blocking repeat is re-reported and still blocks; see the deviations table. **The key symmetry is new** — before #1586 the adjudicator formed `n:<line>` keys and the ledger held `t:<text>` keys, so a dedupe built on it would have matched nothing while reporting cleanly; `lineTextFor` reads the checkout and `test/ai-review-suppression.test.ts` AS-5 is the control that holds it.
 - **CRC-N5** Nothing runs review agents nightly over existing code.
 - **CRC-N6** **Named because it was measured, with nothing built.** Five consecutive rounds on #1614 re-raised one already-fixed defect: four consecutive rounds from a docblock that QUOTED the removed regex, and the FINAL round — after the quotation was deleted — from the PARAPHRASE that replaced it, reconstructing a regex literal that appears nowhere in the tree. CRC-N4's dedupe cannot absorb it, because the suppression key is `file \0 line-text \0 summary` and a regenerated finding carries a new summary: it is not a repeat, it is a new finding about code that does not exist. The near-miss is *"do not quote dead code in comments"*, which was applied and then defeated. The reading is in *Measured non-obvious facts*. **It is deliberately NOT a request for new machinery** — the prior-art section above found that a verification gate re-checking each finding against the real code at the cited line is the documented mitigation for the wider class it belongs to, and that gate is CRC-B4. This criterion names the case so a verifier can be held to it; it does not ask for a second mechanism beside one already planned.
