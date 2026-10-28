@@ -1,0 +1,60 @@
+{
+  "_what": "Judgements about (ticked criterion, open issue) pairs found by scripts/criterion-issue-census.ts. The census column is mechanical — an open issue NAMES this criterion. Everything in this file is a judgement somebody made, and carries who and when. An entry stops applying when the criterion's fingerprint moves; see lib/criterion-issue-census.ts.",
+  "_signing": "`by` is the actor who read the issue and decided, never the person who would own the fix. `rayford` is an agent.",
+  "adjudications": [
+    {
+      "criterion": "CRC-B7",
+      "issue": 1567,
+      "verdict": "contradicts",
+      "by": "rayford",
+      "collected": "2026-10-28",
+      "note": "The issue states it directly: 'NOT verified: that CRC-B7's demotion behaves correctly end to end. Only that its blocker is gone. Nobody has run a finding through the live path and observed a demotion.' The criterion is ticked and says surviving findings are sorted and tagged.",
+      "fingerprint": "1a1529dc"
+    },
+    {
+      "criterion": "CRC-M11",
+      "issue": 1592,
+      "verdict": "contradicts",
+      "by": "rayford",
+      "collected": "2026-10-28",
+      "note": "The issue's title is the contradiction: the metric counts run ATTEMPTS and the criterion reads it as ROUNDS, diverging by 1.39x. A retry appends a ledger entry carrying the same round number.",
+      "fingerprint": "789f156f"
+    },
+    {
+      "criterion": "SC-1757",
+      "issue": 523,
+      "verdict": "cites",
+      "by": "rayford",
+      "collected": "2026-10-28",
+      "note": "The issue AFFIRMS the criterion — 'SC-1757 does k=5 in milliseconds, in CI, every suite run' — and exists to ask a different question, whether discovery's OUTPUT is deterministic.",
+      "fingerprint": "e4fc6ef5"
+    },
+    {
+      "criterion": "SC-518",
+      "issue": 1585,
+      "verdict": "cites",
+      "by": "rayford",
+      "collected": "2026-10-28",
+      "note": "An earlier hand sweep called this one PLAUSIBLE-contradicting and reading it says otherwise: #1585 relies on SC-518 being TRUE — 'the scopes are not de-duplicated, so leaving both double-fires once the user entry exists' is the reason for a step it prescribes. Recorded because the sweep's classification was wrong and this is where that is visible.",
+      "fingerprint": "446b6c33"
+    },
+    {
+      "criterion": "SC-2547",
+      "issue": 1574,
+      "verdict": "cites",
+      "by": "rayford",
+      "collected": "2026-10-28",
+      "note": "The issue points at the criterion as the record of a measurement it does not want to restate: 'Recorded as SC-2547 with the measurement above' and 'Evidence lives in PR #1562 and SC-2547'.",
+      "fingerprint": "7ec97041"
+    },
+    {
+      "criterion": "SC-453",
+      "issue": 1162,
+      "verdict": "cites",
+      "by": "rayford",
+      "collected": "2026-10-28",
+      "note": "#1162 names SC-453 only inside a Related line pointing at #1161, 'SC-453 ticked without an implementation', and makes no claim of its own. BUT THAT IS THE INTERESTING PART: the contradiction is recorded in #1161, which is CLOSED, and this census reads open issues only — so a criterion contradicted by a closed issue is invisible to it. Whether SC-453's tick is still wrong is UNRESOLVED and this instrument cannot answer it.",
+      "fingerprint": "29505e39"
+    }
+  ]
+}
