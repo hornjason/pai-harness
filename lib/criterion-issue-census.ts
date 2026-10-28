@@ -57,7 +57,7 @@
  */
 
 import { criterionFingerprint, isIsoDay, parseCriteria } from "./spec-evidence";
-import { isAntiCriterion, isIssueShaped, oneScMentionPattern } from "./sc-ids";
+import { isAntiCriterion, isIssueShaped, isTemplateSpec, oneScMentionPattern } from "./sc-ids";
 
 /** An open issue, reduced to the two fields a name-match can read. */
 export interface IssueRef {
@@ -135,11 +135,14 @@ export function isAmbiguousId(id: string): boolean {
  * does, and it does not depend on how the example happens to be numbered.
  * Raised by the required reviewer on #1641.
  */
-export const EXCLUDED_SPECS: readonly string[] = ["SPEC-TEMPLATE.md"];
-
-function isExcludedSpec(file: string): boolean {
-  return EXCLUDED_SPECS.includes(file.split("/").pop() ?? file);
-}
+// `isTemplateSpec` from `./sc-ids` — the function `buildScRegistry` itself
+// calls — rather than a second list here. The first draft of this shipped its
+// own `EXCLUDED_SPECS` array while the comment above claimed it did what
+// `buildScRegistry` does; that is the "two deciders that agree" shape
+// `.claude/rules/checks-must-be-able-to-fail.md` names, and the failure is
+// silent — a mutation of either leaves the other holding every case up, so
+// both read as covered and nobody can see which one is dead. Raised by the
+// required reviewer on #1641, round 4.
 
 /**
  * Refuse an adjudication record this module cannot read, naming it.
@@ -254,7 +257,7 @@ export function censusRows(
   const rows: CensusRow[] = [];
 
   for (const spec of specs) {
-    if (isExcludedSpec(spec.file)) continue;
+    if (isTemplateSpec(spec.file)) continue;
     for (const c of parseCriteria(spec.content)) {
       if (!c.ticked) continue;
       if (isAmbiguousId(c.id)) continue;
