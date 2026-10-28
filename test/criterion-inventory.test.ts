@@ -15,16 +15,23 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   CODE_DIRS,
   STATES,
   changedCode,
   classify,
+  collectTestFiles,
   inventory,
+  waiverProblem,
   type Snapshot,
   type Tracked,
 } from "../scripts/criterion-inventory";
+
+const TODAY = "2026-10-28";
 
 const SPEC = [
   "---",
@@ -53,14 +60,14 @@ describe("a spec revision is not work on the criteria it names", () => {
   const namesZ2 = [pr(900, "CRC-Z2 is restated")];
 
   test("a pull request that touched only prose puts the criterion in DOCUMENT ONLY", () => {
-    const rows = inventory(SPEC, snapshot({ prs: namesZ2, prChangedCode: { 900: false } }), []);
+    const rows = inventory(SPEC, snapshot({ prs: namesZ2, prChangedCode: { 900: false } }), [], TODAY);
     expect(rows.find(r => r.id === "CRC-Z2")!.state).toBe("DOCUMENT ONLY");
   });
 
   test("the SAME pull request having touched code puts it in TOUCHED", () => {
     // The control. One variable differs — the changed-file reading — so the
     // row above measured the classification and not the fixture.
-    const rows = inventory(SPEC, snapshot({ prs: namesZ2, prChangedCode: { 900: true } }), []);
+    const rows = inventory(SPEC, snapshot({ prs: namesZ2, prChangedCode: { 900: true } }), [], TODAY);
     expect(rows.find(r => r.id === "CRC-Z2")!.state).toBe("TOUCHED");
   });
 
@@ -69,7 +76,7 @@ describe("a spec revision is not work on the criteria it names", () => {
     // changed code, and a reading nobody took cannot support it — so the
     // unmeasured case falls to the weaker column and the script reports the
     // numbers it could not classify.
-    const rows = inventory(SPEC, snapshot({ prs: namesZ2, prChangedCode: {} }), []);
+    const rows = inventory(SPEC, snapshot({ prs: namesZ2, prChangedCode: {} }), [], TODAY);
     expect(rows.find(r => r.id === "CRC-Z2")!.state).toBe("DOCUMENT ONLY");
   });
 });
@@ -96,6 +103,7 @@ describe("the ladder is ordered, and a stronger reading wins", () => {
       SPEC,
       snapshot({ prs: [pr(901, "CRC-Z1 again")], prChangedCode: { 901: true } }),
       [],
+      TODAY,
     );
     expect(rows.find(r => r.id === "CRC-Z1")!.state).toBe("DONE");
   });
@@ -103,12 +111,12 @@ describe("the ladder is ordered, and a stronger reading wins", () => {
   test("a test naming an unticked criterion beats any pull request reading", () => {
     const rows = inventory(SPEC, snapshot({ prs: namesNothing(), prChangedCode: {} }), [
       { file: "z2.test.ts", content: "// covers CRC-Z2" },
-    ]);
+    ], TODAY);
     expect(rows.find(r => r.id === "CRC-Z2")!.state).toBe("BOUND");
   });
 
   test("nothing naming it at all is NOT STARTED", () => {
-    const rows = inventory(SPEC, snapshot({}), []);
+    const rows = inventory(SPEC, snapshot({}), [], TODAY);
     expect(rows.find(r => r.id === "CRC-Z2")!.state).toBe("NOT STARTED");
   });
 
@@ -121,7 +129,7 @@ describe("the ladder is ordered, and a stronger reading wins", () => {
         "      waived-by: rayford (agent; not countersigned by jason)\n" +
         "      waived-until: 2026-12-31\n",
     );
-    const rows = inventory(waived, snapshot({}), []);
+    const rows = inventory(waived, snapshot({}), [], TODAY);
     expect(rows.find(r => r.id === "CRC-Z1")!.state).toBe("WAIVED");
     expect(new Set(STATES).size).toBe(6);
   });
@@ -137,8 +145,92 @@ describe("the match is on a word boundary", () => {
       SPEC,
       snapshot({ prs: [pr(903, "CRC-Z22 is broken")], prChangedCode: { 903: true } }),
       [],
+      TODAY,
     );
     expect(rows.find(r => r.id === "CRC-Z2")!.state).toBe("NOT STARTED");
+  });
+});
+
+describe("a waiver settles a criterion only when it actually stands", () => {
+  // All three raised by the required reviewer on #1642. Each is a state
+  // `lib/spec-evidence.ts` already calls a violation, and each would have
+  // reported here as the most flattering reading available: SETTLED.
+  const WAIVER = { reason: "nobody has run it on the live path", by: "rayford", until: "2026-12-31" };
+
+  test("a standing waiver on a ticked criterion settles it", () => {
+    // The baseline. Without it every case below could be failing for a reason
+    // the case did not introduce.
+    expect(waiverProblem({ ticked: true }, WAIVER, TODAY)).toBeNull();
+  });
+
+  test("a waiver on an UNTICKED criterion settles nothing", () => {
+    // `parseCriteria` records a waiver whenever any `waived-*` field appears,
+    // ticked or not, on purpose — "a half-written waiver on an unticked
+    // criterion is still a waiver nobody can act on".
+    expect(waiverProblem({ ticked: false }, WAIVER, TODAY)).toMatch(/unticked/);
+  });
+
+  test("an EXPIRED waiver settles nothing, at the day boundary", () => {
+    // The boundary itself is the case worth pinning: expiring TODAY still
+    // stands, expiring yesterday does not.
+    expect(waiverProblem({ ticked: true }, { ...WAIVER, until: TODAY }, TODAY)).toBeNull();
+    expect(waiverProblem({ ticked: true }, { ...WAIVER, until: "2026-10-27" }, TODAY)).toMatch(
+      /expired on 2026-10-27/,
+    );
+  });
+
+  test("an incomplete waiver, and one dated to a day that does not exist", () => {
+    expect(waiverProblem({ ticked: true }, { ...WAIVER, by: "  " }, TODAY)).toMatch(/missing: by/);
+    expect(waiverProblem({ ticked: true }, { ...WAIVER, until: "2026-02-30" }, TODAY)).toMatch(
+      /not a real day/,
+    );
+  });
+
+  test("a criterion whose waiver does not stand is NOT reported as WAIVED", () => {
+    const expired = SPEC.replace(
+      "      proved-by: test/nothing.test.ts\n      fingerprint: deadbeef\n",
+      "      waived-reason: nobody has run it on the live path\n" +
+        "      waived-by: rayford\n" +
+        "      waived-until: 2026-01-01\n",
+    );
+    const [row] = inventory(expired, snapshot({}), [], TODAY);
+    expect(row.state).not.toBe("WAIVED");
+    // And it must not fall into DONE either — a tick with an expired excuse
+    // behind it is the false tick this whole line of work exists to catch.
+    expect(row.state).not.toBe("DONE");
+    expect(row.waiverProblem).toMatch(/expired/);
+  });
+});
+
+describe("the test scan reaches every directory under test/", () => {
+  // The first draft used a flat `readdirSync`, so the 70 files under
+  // `test/unit/`, `test/helpers/` and `test/types/` were invisible and the
+  // criteria they bind read as unbound. Raised by the required reviewer on
+  // #1642.
+  test("it finds a nested test file, and skips fixtures", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-inventory-scan-"));
+    try {
+      mkdirSync(join(dir, "unit"), { recursive: true });
+      mkdirSync(join(dir, "fixtures", "deep"), { recursive: true });
+      writeFileSync(join(dir, "top.test.ts"), "// covers CRC-Z2");
+      writeFileSync(join(dir, "unit", "nested.test.ts"), "// covers CRC-Z2");
+      writeFileSync(join(dir, "fixtures", "deep", "planted.test.ts"), "// covers CRC-Z2");
+      writeFileSync(join(dir, "unit", "helper.ts"), "// covers CRC-Z2");
+
+      const found = collectTestFiles(dir).map(f => f.file).sort();
+      expect(found).toEqual(["top.test.ts", "unit/nested.test.ts"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a nested test is enough to make a criterion BOUND", () => {
+    // The property the flat read broke, asserted end to end rather than only
+    // on the walker.
+    const [, z2] = inventory(SPEC, snapshot({}), [
+      { file: "unit/nested.test.ts", content: "// covers CRC-Z2" },
+    ], TODAY);
+    expect(z2.state).toBe("BOUND");
   });
 });
 
@@ -155,12 +247,17 @@ describe("classify is the single decider", () => {
       closedIssues: [],
       mergedPrs: [],
       tests: [],
+      waiverProblem: null,
     };
     expect(classify(base, {})).toBe("NOT STARTED");
     expect(classify({ ...base, openIssues: [1] }, {})).toBe("DOCUMENT ONLY");
     expect(classify({ ...base, mergedPrs: [7] }, { 7: true })).toBe("TOUCHED");
     expect(classify({ ...base, tests: ["a.test.ts"] }, {})).toBe("BOUND");
-    expect(classify({ ...base, ticked: true }, {})).toBe("DONE");
+    expect(classify({ ...base, ticked: true, provedBy: "test/x.test.ts" }, {})).toBe("DONE");
+    // A tick with no proof behind it is NOT done. It falls through on its
+    // other evidence and the script names it as a false tick — the two we
+    // found in this repo today were exactly this shape.
+    expect(classify({ ...base, ticked: true }, {})).toBe("NOT STARTED");
     expect(classify({ ...base, ticked: true, waived: true }, {})).toBe("WAIVED");
   });
 });

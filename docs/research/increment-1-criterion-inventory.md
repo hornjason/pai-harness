@@ -8,17 +8,19 @@ governs: Increment 1 of the code-review convergence work — which criteria have
 
 # Increment 1 — what has actually been built, criterion by criterion
 
-Every criterion in `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`, with the issues and
-the pull requests that name it. This is the baseline for a board: one row is one
-card, and the state is the column it starts in.
+**Generated. Do not hand-edit** — `bun scripts/criterion-inventory.ts --snapshot <dir> --markdown`.
+That script's header states the commands that take a snapshot.
+
+Every criterion in `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`, with the issues and the pull
+requests that name it. This is the baseline for a board: one row is one card, and the state
+is the column it starts in.
 
 ## The headline
 
-Ten of sixty-one are ticked, and two of those ten are ticked against a waiver
-rather than a proof. Fifteen more have a test naming them and no tick. The
-remaining thirty-six divide into work that touched code, work that exists only
-as writing, and work nobody has started — and before this inventory all thirty-six
-looked identical, because a checkbox has two states.
+10 of 61 are ticked, and 2 of those are ticked against a waiver rather than a
+proof. 15 more have a test naming them and no tick. The remaining 36 divide into
+work that touched code, work that exists only as writing, and work nobody has started — and
+before this inventory all of them looked identical, because a checkbox has two states.
 
 ## How the state was derived
 
@@ -26,55 +28,31 @@ Mechanical, from the spec and the tracker only. No judgement is recorded here.
 
 | State | Rule |
 |---|---|
-| DONE | ticked, with a `proved-by:` naming what ran and a fingerprint of the wording it proved |
-| WAIVED | ticked, with a signed, dated, expiring waiver standing in for the proof |
+| DONE | ticked, **and** carrying a `proved-by:` naming what ran |
+| WAIVED | ticked, with a complete, signed, unexpired waiver |
 | BOUND | not ticked, and a file in `test/` names the id |
 | TOUCHED | not ticked, no test names it, and a merged pull request that changed code names it |
 | DOCUMENT ONLY | not ticked, and every pull request naming it changed only prose |
 | NOT STARTED | not ticked, and nothing in the tracker or `test/` names the id |
 
-A pull request counts as *changing code* when it touched any of `lib/`, `test/`,
-`scripts/`, `gates/`, `hooks/`, `bin/`, `workflows/`, `config/`, `evals/`,
-`prompts/` or `.github/`. Pull requests marked `*` below changed prose only.
+A pull request counts as *changing code* when it touched any of `lib/`, `test/`, `scripts/`, `gates/`, `hooks/`, `bin/`, `workflows/`, `config/`, `evals/`, `prompts/`, `.github/`. Pull requests marked `*` changed prose only.
+
+A tick alone never reaches DONE, and an expired or misplaced waiver never reaches WAIVED —
+both fall through onto whatever other evidence exists, and the script names them.
 
 ## What this cannot tell you
 
-Every column is a word-boundary name match, so a pull request naming an id may
-have *touched* the criterion rather than satisfied it, and a test naming an id may
-be citing it in a comment rather than claiming it. TOUCHED means *somebody has
-been here*, never *this is nearly done* — four of the nineteen are the
-*what stays human* criteria, where the only pull request naming them is the one
-that wrote them down.
+Every column is a word-boundary name match, so a pull request naming an id may have *touched*
+the criterion rather than satisfied it, and a test naming an id may be citing it in a comment
+rather than claiming it. TOUCHED means *somebody has been here*, never *this is nearly done*.
 
-Deciding which is which is a judgement, and a judgement belongs in a dated,
-attributed record rather than in a column anyone can set. That is the same rule
-the criterion/issue status view is being built on in #1641, for the same reason:
-a settable boolean asserting that something is true is the defect this whole line
-of work exists to escape, and a column holding one rebuilds it one level up.
+**The state cannot say how far along something is.** A criterion is a checkbox: done, or not
+done. Splitting a broad criterion into narrow ones that can each be proved is a change to the
+spec, and it is the main thing this inventory argues for.
 
-**The state column cannot say how far along something is.** A criterion is a
-checkbox: done, or not done. Thirty-six have real work behind them and no way to
-say so. Splitting a broad criterion into narrow ones that can each be proved is a
-change to the spec, and it is the main thing this inventory argues for.
-
-Issues and pull requests are every open and closed match in this repository on
-2026-10-28. **Open issues are bold.** Long criteria are cut to their first
-sentence; the spec carries the rest.
-
-## How to re-take this reading
-
-Nothing below is typed by hand. `scripts/criterion-inventory.ts` produces every
-row, and its header states the three `gh` commands that take the snapshot it
-reads. Run it against a fresh snapshot and the counts move with the repository:
-
-```bash
-bun scripts/criterion-inventory.ts --snapshot <dir>
-```
-
-Taken on 2026-10-28 over 776 issues and 865 pull requests, against the spec at
-`b496e52f`. Every merged pull request named below has a changed-file reading, so
-the split between TOUCHED and DOCUMENT ONLY is complete rather than a lower
-bound — the script says so itself when it is not.
+Taken 2026-10-28 over 777 issues and 866 pull requests.
+Every merged pull request named below has a changed-file reading, so the split between TOUCHED and DOCUMENT ONLY is complete rather than a lower bound.
+**Open issues are bold.** Long criteria are cut to their first sentence.
 
 ## DONE — ticked, and it names what proved it — 8 of 61
 
@@ -89,12 +67,12 @@ bound — the script says so itself when it is not.
 | **CRC-E4** | Owner-listed sensitive paths and **any CI workflow file** always require a human. … | test | `test/risk-tier.test.ts "CRC-E4: any CI workflow file, and any owner path, always needs a human" — 371 pass, 0 fail, 2026-10-28` | #1437 | #1640 #1505 #1439 #1340 |
 | **CRC-N1** | **A round cap.** After three rounds the reviewer asks the author to step back and reconsider the approach. … | test | `test/ai-review-rounds-step.test.ts (AC-S1..AC-S5) — 371 pass, 0 fail, 2026-10-28` | — | #1640 #1627 #1619 #1614 (+1) |
 
-## WAIVED — ticked against a signed, expiring excuse — 2 of 61
+## WAIVED — ticked against a signed, unexpired excuse — 2 of 61
 
 | Criterion | What it says | Needs | Test naming it | Issues | Merged PRs |
 |---|---|---|---|---|---|
-| **CRC-B7** | Surviving findings are **sorted by severity** and tagged **Important / Nit / Pre-existing**, so a pre-existing bug does not read as the author's fault. … | test | waiver, expires 2026-12-31 | **#1567** #1587 #1492 #1472 | #1640 #1598 #1596 #1593 (+6) |
-| **CRC-M11** | Rounds-to-pass is tracked alongside recall. … | measurement | waiver, expires 2026-12-31 | **#1592** #1586 #1498 #1492 (+3 closed) | #1640 #1638* #1633 #1632* (+13) |
+| **CRC-B7** | Surviving findings are **sorted by severity** and tagged **Important / Nit / Pre-existing**, so a pre-existing bug does not read as the author's fault. … | test | a waiver that still stands | **#1567** #1587 #1492 #1472 | #1641 #1640 #1598 #1596 (+7) |
+| **CRC-M11** | Rounds-to-pass is tracked alongside recall. … | measurement | a waiver that still stands | **#1592** #1586 #1498 #1492 (+3 closed) | #1641 #1640 #1638* #1633 (+14) |
 
 ## BOUND — a test names it, and the box is not ticked — 15 of 61
 
@@ -166,3 +144,4 @@ bound — the script says so itself when it is not.
 | **CRC-M13** | **Whether the reviewer READ anything is recorded, separately from whether it WROTE anything.** `lib/review-execution-reading.ts` already computes `toolCallsByName` and `N … | test | — | — | — |
 | **CRC-M14** | **Every reading names the published version it was taken under.** CI pins `bunx rungate@<version>`, so a merged change to `lib/` is dormant until a release while a merged … | test | — | — | — |
 | **CRC-H2** | Risky code — billing, auto-updater, CI workflows. | review | — | — | — |
+
