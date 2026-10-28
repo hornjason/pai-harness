@@ -18,7 +18,7 @@ import { writeSpec } from "../lib/write-spec";
 import { join } from "path";
 import { isMatchablePattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
 import { loadRegistry, type RegistryEntry } from "../lib/create-sc";
-import { localCalendarDay } from "../lib/local-calendar-day";
+import { renderSpecTemplate } from "../lib/spec-template";
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -125,39 +125,13 @@ if (scStatements.length > 0) {
 
 // ── Generate spec content ─────────────────────────────────────
 
-const today = localCalendarDay();
-
-// Build SC lines from validated --sc statements, or use placeholder
-let scSection: string;
-if (scStatements.length > 0) {
-  scSection = scStatements
-    .map((stmt, i) => `- [ ] SC-TODO-${i + 1}: ${stmt}`)
-    .join("\n");
-} else {
-  scSection = "- [ ] SC-TODO: [first criterion — atomic, verifiable, 8-12 words]";
-}
-
-const content = `---
-doc-type: spec
-status: draft
-owner: TODO
-created: ${today}
-updated: ${today}
-governs: ${governs}
-testable: true
-compliance: strict
----
-
-# ${title}
-
-## Context
-
-[Why this spec exists and what problem it solves]
-
-## Success Criteria
-
-${scSection}
-`;
+// The template lives in `lib/spec-template.ts`, not here. One site, because a
+// second emitter would drift from this one and no test that calls only one of
+// them could tell. It emits the increment/outcome/decision-criteria frame and
+// the `evidence: required` key that binds `lib/spec-evidence.ts` — a spec
+// created through this path is checked from its first commit, and every spec
+// that predates the key is untouched.
+const content = renderSpecTemplate({ title, governs, criteria: scStatements });
 
 // #1552: create-only, like `convert-spec.ts` — it refuses by name above when
 // the file exists. Routed through the chokepoint regardless; see there.

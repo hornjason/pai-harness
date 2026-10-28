@@ -26,6 +26,7 @@
     "scripts/sync-spec-tests.ts",
     "scripts/generate-code-map.ts",
     "scripts/audit-specs.ts",
+    "scripts/audit-spec-evidence.ts",
     "scripts/create-spec.ts",
     "scripts/create-success.ts",
     "scripts/create-sc.ts",

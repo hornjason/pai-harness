@@ -60,6 +60,12 @@
       "note": "#1384 - the gate-check audit's unit becomes the PATH, not the check body. Above every declared block, which is what the allocator hands an owner who has none; declared before any id is consumed rather than eyeballing headroom. Cannot be pushed to main ahead of the branch (main requires the `test` and `ai-review` checks with enforce_admins on), so it reaches main through this PR. Delete when the PR merges."
     },
     {
+      "owner": "rg/spec-evidence",
+      "from": 2560,
+      "to": 2599,
+      "note": "A ticked criterion must name what proved it. 2520-2539 is the highest declared SC block and SC-2547 is the highest id on main, so this sits above every declared block AND above every consumed id, which is what the allocator hands an owner who has none. Declared before any id is consumed rather than eyeballing headroom. Cannot be pushed to main ahead of the branch (main requires the `test` and `ai-review` checks with enforce_admins on), so it reaches main through this PR. Delete when the PR merges."
+    },
+    {
       "owner": "rg/1344",
       "from": 90,
       "to": 99,

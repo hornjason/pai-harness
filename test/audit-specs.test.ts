@@ -262,6 +262,55 @@ governs: test
       // SC-9430 should have a REVIEW comment since it's too ambiguous
       expect(content).toContain("<!-- REVIEW:");
     });
+
+    test("a criterion that names its own evidence is not marked unmatched", async () => {
+      // The marker's claim is "the matcher could not bind this criterion". A
+      // `proved-by:` line IS a binding, and a stronger one than the registry
+      // could have supplied — a pattern like "lib/x.ts contains CODE" is
+      // satisfied by a module that declares the code and never emits it.
+      //
+      // Both criteria below are equally unmatchable by the registry. They
+      // differ in ONE variable: whether evidence is named. If both came back
+      // marked, or neither did, the reading would be about ambiguity and not
+      // about evidence.
+      writeSpec("EVIDENCE-MARKER.md", `---
+doc-type: spec
+testable: true
+compliance: strict
+updated: 2026-09-23
+governs: test
+---
+
+# Evidence Marker
+
+## Success Criteria
+
+- [ ] SC-9440: the verdict is correct for every planted document
+      needs: test
+      proved-by: test/spec-evidence.test.ts "the mutant and the real module differ on a named input"
+- [ ] SC-9441: the verdict is correct for every planted document
+`);
+      const { auditSpecs } = await importAuditSpecs();
+      auditSpecs(FIXTURE_ROOT, { fix: true });
+
+      const content = readFileSync(join(FIXTURE_ROOT, "specs", "EVIDENCE-MARKER.md"), "utf-8");
+      const marked = content
+        .split("\n")
+        .filter(line => line.startsWith("<!-- REVIEW:"));
+
+      expect(
+        marked,
+        "exactly one marker is expected: the criterion with no evidence. Zero would " +
+          "mean the marker stopped firing at all and this case witnesses nothing; two " +
+          "would mean the evidence line is not being read.",
+      ).toHaveLength(1);
+      expect(content).toContain(
+        "- [ ] SC-9441: the verdict is correct for every planted document\n<!-- REVIEW:",
+      );
+      expect(content).toContain(
+        "- [ ] SC-9440: the verdict is correct for every planted document\n      needs: test",
+      );
+    });
   });
 
   // ── AC-7: Diff summary ──────────────────────────────────────

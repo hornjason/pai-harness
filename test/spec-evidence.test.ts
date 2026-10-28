@@ -1,0 +1,614 @@
+/**
+ * Covers SC-2560..SC-2569 (SPEC-AUTHORING-SPEC.md).
+ *
+ * `lib/spec-evidence.ts` is a check, so the thing worth asserting is not that
+ * it finds the planted defects — it is that **it can fail at all**. A guard
+ * that returns an empty violation list for every input passes every
+ * `toEqual([])` anyone writes against it and is indistinguishable from a
+ * satisfied one (`.claude/rules/checks-must-be-able-to-fail.md`, third shape).
+ *
+ * So every negative case below is run TWICE against one input: once through
+ * the real module, and once through a MUTANT copy with `evidenceViolations`
+ * short-circuited to `return []` on its first line. Real red, mutant green,
+ * same bytes in. That second assertion is the whole point — it is the
+ * removal of the refusal, performed and observed, so a case that later starts
+ * passing for an unrelated reason stops looking the same as a case that is
+ * genuinely caught.
+ *
+ * Four properties are asserted rather than left as conventions:
+ *
+ * - **The mutation anchor appears exactly once**, so no path through the
+ *   decider can survive by living at a second site.
+ * - **The module has no relative imports**, so the mutant loads from a temp
+ *   directory instead of dying on module resolution — a throw there would
+ *   read as the mutation having been rejected on the merits.
+ * - **The mutant and the real module are shown to differ on a named input
+ *   first.** A row of zeros and a mutation that never applied look identical.
+ * - **The parser's count is asserted before any verdict.** A parser that
+ *   silently reads zero criteria makes every violation count vacuously green,
+ *   and that is the shape that would make this entire file decorative.
+ *
+ * The positive control matters as much: a fully populated spec must produce
+ * ZERO violations. Without it, "everything is a violation" passes every
+ * negative case in the file.
+ */
+
+// SPEC-REF: SPEC-AUTHORING-SPEC.md § Success Criteria (SC-2560..SC-2569)
+
+import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+
+import { localCalendarDay } from "../lib/local-calendar-day.ts";
+
+import {
+  ANNOTATION_KEYS,
+  EVIDENCE_KINDS,
+  criterionFingerprint,
+  evidenceViolations,
+  parseCriteria,
+  specDeclaresEvidence,
+  type EvidenceViolation,
+} from "../lib/spec-evidence.ts";
+
+const MODULE = join(import.meta.dir, "..", "lib", "spec-evidence.ts");
+const source = readFileSync(MODULE, "utf-8");
+
+/** Pinned so the expiry case is a fact about the fixture, never about the clock. */
+const TODAY = "2026-10-28";
+
+/**
+ * The single site the mutation removes.
+ *
+ * Injecting the short-circuit at the decider's first line means the parser,
+ * the scope check and every violation push still EXIST in the mutant — only
+ * the answer is suppressed. A mutant that deleted the body instead would be
+ * measuring a damaged module rather than an absent refusal.
+ */
+const ANCHOR = "): EvidenceViolation[] {\n  if (!specDeclaresEvidence(content)) return [];";
+
+function occurrences(haystack: string, needle: string): number {
+  let n = 0;
+  let at = haystack.indexOf(needle);
+  while (at !== -1) {
+    n += 1;
+    at = haystack.indexOf(needle, at + needle.length);
+  }
+  return n;
+}
+
+const scratch = mkdtempSync(join(tmpdir(), "rungate-spec-evidence-mutant-"));
+afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+/**
+ * Build the mutant and import it.
+ *
+ * THROWS when the anchor is absent. A mutation harness that silently returns
+ * an unmutated copy reports green over a mutation that never happened, which
+ * is the exact failure this file exists to rule out one level down.
+ */
+async function loadMutant(): Promise<(c: string, t: string) => EvidenceViolation[]> {
+  if (occurrences(source, ANCHOR) !== 1) {
+    throw new Error(
+      `the mutation anchor occurs ${occurrences(source, ANCHOR)} times in lib/spec-evidence.ts, ` +
+        `expected exactly 1. Re-point ANCHOR in test/spec-evidence.test.ts at the decider's ` +
+        `first line; a battery that cannot find its target proves nothing.`,
+    );
+  }
+  const mutated = source.replace(
+    ANCHOR,
+    "): EvidenceViolation[] {\n  if (1 === 1) return [];\n  if (!specDeclaresEvidence(content)) return [];",
+  );
+  const path = join(scratch, "spec-evidence-mutant.ts");
+  writeFileSync(path, mutated);
+  const mod = await import(path);
+  return mod.evidenceViolations;
+}
+
+const mutantViolations = await loadMutant();
+
+/** Frontmatter that opts a fixture in. Everything below depends on it. */
+const BOUND = `---
+doc-type: spec
+status: draft
+owner: jason
+evidence: required
+testable: true
+---
+
+# Fixture
+
+## Success Criteria
+
+`;
+
+function codes(violations: EvidenceViolation[]): string[] {
+  return violations.map(v => v.code).sort();
+}
+
+/**
+ * One negative case, observed through both modules.
+ *
+ * `expectedCodes` is asserted by NAME and not by count: "two violations" is
+ * satisfied by any two, and only these two mean what the case claims.
+ */
+function bothWays(name: string, body: string, expectedCodes: string[]) {
+  test(name, async () => {
+    const content = BOUND + body;
+    const real = evidenceViolations(content, TODAY);
+    expect(codes(real), `real module on: ${name}`).toEqual([...expectedCodes].sort());
+    expect(
+      mutantViolations(content, TODAY),
+      `the mutant answered non-empty on: ${name}. The short-circuit did not take ` +
+        `effect, so the red above is not evidence the refusal is live.`,
+    ).toEqual([]);
+  });
+}
+
+describe("the decider can fail (mutation battery)", () => {
+  test("the module has no relative imports, so the mutant resolves from a temp dir", () => {
+    const relative = source.match(/^\s*import .* from ["']\.{1,2}\//gm) ?? [];
+    expect(
+      relative,
+      "a relative import makes the mutant die on module resolution, and a throw there " +
+        "reads as the mutation having been rejected on the merits. Keep lib/spec-evidence.ts " +
+        "import-free.",
+    ).toEqual([]);
+  });
+
+  test("the mutant and the real module differ on a named input", async () => {
+    const content = `${BOUND}- [x] SC-2560: the gate refuses an unsigned payload.\n      needs: test\n`;
+    expect(evidenceViolations(content, TODAY).length).toBeGreaterThan(0);
+    expect(mutantViolations(content, TODAY)).toEqual([]);
+  });
+
+  // covers SC-2560
+  bothWays(
+    "SC-2560: a ticked criterion with no proved-by line at all is a violation",
+    "- [x] SC-2560: the gate refuses an unsigned payload.\n      needs: test\n",
+    ["TICKED_WITHOUT_EVIDENCE"],
+  );
+
+  // covers SC-2561
+  bothWays(
+    "SC-2561: a ticked criterion whose proved-by is BLANK is a violation, not a pass",
+    "- [x] SC-2561: the loader throws on malformed JSON.\n      needs: test\n      proved-by:\n",
+    ["EVIDENCE_BLANK"],
+  );
+
+  // covers SC-2562
+  bothWays(
+    "SC-2562: a criterion that never says what would prove it is a violation",
+    "- [ ] SC-2562: the census names its denominator.\n",
+    ["NEEDS_MISSING"],
+  );
+
+  // covers SC-2563
+  bothWays(
+    "SC-2563: an evidence kind outside the closed set is a violation, not a pass",
+    "- [ ] SC-2563: the reviewer reads the diff.\n      needs: vibes\n",
+    ["NEEDS_UNKNOWN"],
+  );
+
+  // covers SC-2564
+  bothWays(
+    "SC-2564: a waiver with an empty reason is a violation — lobster's hole, closed",
+    "- [x] SC-2564: the tag is immutable.\n      needs: review\n      waived-reason:\n" +
+      "      waived-by: jason\n      waived-until: 2027-01-01\n",
+    ["WAIVER_INCOMPLETE"],
+  );
+
+  // covers SC-2565
+  bothWays(
+    "SC-2565: a waiver with no expiry is a violation",
+    "- [x] SC-2565: the tag is immutable.\n      needs: review\n" +
+      "      waived-reason: the registry is read-only this quarter\n      waived-by: jason\n",
+    ["WAIVER_INCOMPLETE"],
+  );
+
+  // covers SC-2566
+  bothWays(
+    "SC-2566: a waiver whose expiry has passed is a violation again",
+    "- [x] SC-2566: the tag is immutable.\n      needs: review\n" +
+      "      waived-reason: the registry is read-only this quarter\n      waived-by: jason\n" +
+      "      waived-until: 2026-10-27\n",
+    ["WAIVER_EXPIRED"],
+  );
+
+  // covers SC-2575
+  bothWays(
+    "SC-2575: a ticked criterion with evidence and no fingerprint is a violation",
+    "- [x] SC-2575: the loader throws on malformed JSON.\n      needs: test\n" +
+      "      proved-by: test/config-loader.test.ts\n",
+    ["FINGERPRINT_MISSING"],
+  );
+
+  // covers SC-2580
+  bothWays(
+    "SC-2580: a complete, unexpired, signed waiver still owes a `needs:` line",
+    "- [x] SC-2580: the registry is read-only this quarter.\n" +
+      "      waived-reason: the Q1 migration has not landed\n      waived-by: jason\n" +
+      "      waived-until: 2027-01-01\n",
+    ["NEEDS_MISSING"],
+  );
+
+  // covers SC-2567
+  bothWays(
+    "SC-2567: evidence recorded against a different wording is stale",
+    "- [x] SC-2567: the loader throws on malformed JSON.\n      needs: test\n" +
+      '      proved-by: test/config-loader.test.ts "refuses malformed"\n' +
+      "      fingerprint: deadbeef\n",
+    ["EVIDENCE_STALE"],
+  );
+});
+
+describe("the controls — what must NOT fire", () => {
+  test("SC-2568: a fully populated criterion produces zero violations", () => {
+    const text = "the loader throws on malformed JSON.";
+    const content =
+      `${BOUND}- [x] SC-2568: ${text}\n      needs: test\n` +
+      '      proved-by: test/config-loader.test.ts "refuses malformed"\n' +
+      `      fingerprint: ${criterionFingerprint(text)}\n`;
+    expect(
+      evidenceViolations(content, TODAY),
+      "the positive control is the one that separates a check from a refusal of everything. " +
+        "Without it, every negative case above is satisfied by a decider that always refuses.",
+    ).toEqual([]);
+  });
+
+  test("an unticked criterion that declares its needs is not yet owed evidence", () => {
+    const content = `${BOUND}- [ ] SC-2569: the census names its denominator.\n      needs: measurement\n`;
+    expect(evidenceViolations(content, TODAY)).toEqual([]);
+  });
+
+  test("a complete, unexpired waiver clears", () => {
+    const content =
+      `${BOUND}- [x] SC-2569: the tag is immutable.\n      needs: review\n` +
+      "      waived-reason: the registry is read-only until the Q1 migration lands\n" +
+      "      waived-by: jason\n      waived-until: 2027-01-01\n";
+    expect(evidenceViolations(content, TODAY)).toEqual([]);
+  });
+
+  test("SC-2569: the SAME broken content is clean when the spec has not opted in", () => {
+    const broken = "- [x] SC-2569: the gate refuses an unsigned payload.\n";
+    const unbound = BOUND.replace("evidence: required\n", "") + broken;
+    expect(specDeclaresEvidence(unbound)).toBe(false);
+    expect(
+      evidenceViolations(unbound, TODAY),
+      "grandfathering must be observable, not asserted: this is the identical criterion " +
+        "that reddens under `evidence: required` above.",
+    ).toEqual([]);
+    // And the contrast is one variable. Same bytes, plus the opt-in, must redden —
+    // otherwise the clean reading measured the fixture and not the scope rule.
+    expect(evidenceViolations(BOUND + broken, TODAY).length).toBeGreaterThan(0);
+  });
+
+  test("every live spec in the tree is unaffected until it opts in", () => {
+    const { readdirSync } = require("fs") as typeof import("fs");
+    const dir = join(import.meta.dir, "..", "specs");
+    const bound = readdirSync(dir)
+      .filter(f => f.endsWith(".md"))
+      .filter(f => specDeclaresEvidence(readFileSync(join(dir, f), "utf-8")));
+    // The count is allowed to grow — this asserts the MECHANISM, not a ratchet:
+    // a spec is bound only by its own frontmatter, so no existing document can be
+    // dragged in by a change to this module.
+    for (const f of bound) {
+      const violations = evidenceViolations(readFileSync(join(dir, f), "utf-8"), TODAY);
+      expect(
+        violations.map(v => `${v.id}: ${v.message}`),
+        `specs/${f} declares \`evidence: required\` and does not satisfy it.`,
+      ).toEqual([]);
+    }
+  });
+});
+
+describe("the parser saw what it thinks it saw", () => {
+  test("it reads the criteria rather than silently reading zero", () => {
+    const content =
+      `${BOUND}- [x] SC-2560: one.\n      needs: test\n      proved-by: a\n` +
+      "- [ ] CRC-M12: two.\n      needs: measurement\n";
+    const parsed = parseCriteria(content);
+    expect(parsed.map(c => c.id)).toEqual(["SC-2560", "CRC-M12"]);
+    expect(parsed[0].ticked).toBe(true);
+    expect(parsed[1].ticked).toBe(false);
+    expect(parsed[1].needs).toBe("measurement");
+  });
+
+  test("a wrapped criterion hashes as one sentence, so a reflow is not a change", () => {
+    const oneLine = "- [ ] SC-2560: the gate refuses an unsigned payload outright.\n      needs: test\n";
+    const wrapped =
+      "- [ ] SC-2560: the gate refuses an unsigned\n      payload outright.\n      needs: test\n";
+    expect(criterionFingerprint(parseCriteria(BOUND + oneLine)[0].text)).toBe(
+      criterionFingerprint(parseCriteria(BOUND + wrapped)[0].text),
+    );
+  });
+
+  test("moving a clause into the wrap still changes the text it hashes", () => {
+    const a = parseCriteria(`${BOUND}- [ ] SC-2560: the gate refuses an unsigned payload.\n`)[0];
+    const b = parseCriteria(`${BOUND}- [ ] SC-2560: the gate ACCEPTS an unsigned payload.\n`)[0];
+    expect(criterionFingerprint(a.text)).not.toBe(criterionFingerprint(b.text));
+  });
+
+  test("an audit-specs REVIEW marker does not sever a criterion from its evidence", () => {
+    // `audit-specs --fix` writes this line, unindented, between the criterion
+    // and its annotations in any spec with `compliance: strict` whose wording
+    // matches no registry pattern — which is every criterion in
+    // SPEC-AUTHORING-SPEC.md. A parser that stopped here would report the
+    // whole document as evidence-free, and the reading would be identical to
+    // a document that genuinely recorded none.
+    const text = "the loader throws on malformed JSON.";
+    const content =
+      `${BOUND}- [x] SC-2560: ${text}\n` +
+      "<!-- REVIEW: unmatched (no registry pattern was close enough) -->\n" +
+      "      needs: test\n      proved-by: test/config-loader.test.ts\n" +
+      `      fingerprint: ${criterionFingerprint(text)}\n`;
+    const [parsed] = parseCriteria(content);
+    expect(parsed.needs).toBe("test");
+    expect(parsed.provedBy).toBe("test/config-loader.test.ts");
+    expect(evidenceViolations(content, TODAY)).toEqual([]);
+  });
+
+  test("a wrapped prose line that looks like `word: value` is text, not an annotation", () => {
+    // `[a-z-]+:` matched before the prose branch, so this clause was eaten
+    // as an annotation and dropped out of the hashed text — and a clause
+    // outside the hash is a clause whose edit does not invalidate the
+    // evidence, which is the staleness check failing where it is needed.
+    const content =
+      `${BOUND}- [ ] SC-2560: the gate refuses an unsigned payload, and\n` +
+      "      the reason: it cannot resolve the signer.\n" +
+      "      needs: test\n";
+    const [parsed] = parseCriteria(content);
+    expect(parsed.needs).toBe("test");
+    expect(parsed.text).toContain("the reason: it cannot resolve the signer.");
+    expect(parsed.recordedFingerprint).toBeNull();
+    // And the hash must move when that clause changes.
+    const edited = content.replace("it cannot resolve the signer", "the signer is unknown");
+    expect(criterionFingerprint(parseCriteria(edited)[0].text)).not.toBe(
+      criterionFingerprint(parsed.text),
+    );
+  });
+
+  test("a blank line ends the annotation block", () => {
+    // Walking past blank lines attached an annotation from further down the
+    // document to a criterion that carries none — reading a spec as having
+    // evidence it does not have, which is the one direction this module
+    // must never be wrong in.
+    const content =
+      `${BOUND}- [x] SC-2560: the gate refuses an unsigned payload.\n` +
+      "\n" +
+      "Some prose paragraph.\n" +
+      "\n" +
+      "      proved-by: test/somewhere-else.test.ts\n";
+    const [parsed] = parseCriteria(content);
+    expect(parsed.provedBy).toBeNull();
+    expect(evidenceViolations(content, TODAY).map(v => v.code).sort()).toEqual([
+      "NEEDS_MISSING",
+      "TICKED_WITHOUT_EVIDENCE",
+    ]);
+  });
+
+  test("an uppercase fingerprint is the same fingerprint", () => {
+    const text = "the loader throws on malformed JSON.";
+    const content =
+      `${BOUND}- [x] SC-2560: ${text}\n      needs: test\n` +
+      "      proved-by: test/config-loader.test.ts\n" +
+      `      fingerprint: ${criterionFingerprint(text).toUpperCase()}\n`;
+    expect(evidenceViolations(content, TODAY)).toEqual([]);
+  });
+
+  test("the annotation keys are a closed set the parser agrees with", () => {
+    expect([...ANNOTATION_KEYS]).toEqual([
+      "needs",
+      "proved-by",
+      "fingerprint",
+      "waived-reason",
+      "waived-by",
+      "waived-until",
+    ]);
+    // Every key the parser surfaces must be in the set — otherwise the set
+    // is documentation rather than the thing the parser consults.
+    const content =
+      `${BOUND}- [x] SC-2560: x.\n      needs: test\n      proved-by: a\n` +
+      "      fingerprint: deadbeef\n      waived-reason: r\n      waived-by: b\n" +
+      "      waived-until: 2027-01-01\n";
+    const [p] = parseCriteria(content);
+    expect(p.needs).toBe("test");
+    expect(p.provedBy).toBe("a");
+    expect(p.recordedFingerprint).toBe("deadbeef");
+    expect(p.waiver).toEqual({ reason: "r", by: "b", until: "2027-01-01" });
+  });
+
+  // covers SC-2581
+  test("SC-2581: every site that tells a reader to waive also names `needs:`", () => {
+    // Raised on #1639 round 6. The decider requires `needs:` on a waived
+    // criterion — deliberately, because a waiver carries an expiry and what
+    // it will take to prove this is exactly what you want recorded while
+    // deciding not to take it yet. Four independent copies of the waiver
+    // instruction named the three `waived-*` fields and not `needs:`, so an
+    // author who followed any of them literally produced a document the gate
+    // then refused, under prose saying waiving was the whole escape hatch.
+    //
+    // The repeated finding on this PR is not any one stale copy — it is that
+    // a fact gets corrected in one location while a second, independent copy
+    // is left stale. So this is a census over the population, not a repair of
+    // the sites: a fifth copy written tomorrow is red on the day it lands.
+    //
+    // SCOPE, stated, because an instrument that does not say what it covered
+    // cannot be read: the population is what a READER is told, not every
+    // occurrence of the field names. A first pass censused source blocks and
+    // matched `annotations.get("waived-reason")` — the parser, which names
+    // the fields because it reads them and instructs nobody. So the messages
+    // are taken from the DECIDER'S OUTPUT on planted documents rather than
+    // from its text, and the documents are read as documents.
+    const WAIVER_FIELDS = ["waived-reason", "waived-by", "waived-until"];
+    const namesAll = (s: string) => WAIVER_FIELDS.every(f => s.includes(f));
+
+    // 1. The messages a reader actually receives, produced by running it.
+    const planted: Array<[string, string]> = [
+      [
+        "TICKED_WITHOUT_EVIDENCE",
+        `${BOUND}- [x] SC-2581: the gate refuses an unsigned payload.\n      needs: test\n`,
+      ],
+      [
+        "WAIVER_INCOMPLETE",
+        `${BOUND}- [x] SC-2581: the tag is immutable.\n      needs: review\n` +
+          "      waived-reason: the Q1 migration has not landed\n      waived-by: jason\n",
+      ],
+    ];
+    const messages = planted.map(([code, content]) => {
+      const hit = evidenceViolations(content, TODAY).find(v => v.code === code);
+      // Anti-vacuity, per planted input: a case that produced no violation of
+      // the code it was written for asserts nothing about that message.
+      expect(hit, `the planted document produced no ${code} violation`).toBeDefined();
+      return { where: `${code} message`, body: hit!.message };
+    });
+
+    // 2. The documents, read as documents.
+    const docs = [
+      join(import.meta.dir, "..", "specs", "SPEC-AUTHORING-SPEC.md"),
+      join(import.meta.dir, "..", "lib", "spec-template.ts"),
+    ].flatMap(file =>
+      readFileSync(file, "utf-8")
+        .split(/\n\s*\n/)
+        .map((body, i) => ({ where: `${file} (block ${i})`, body }))
+        .filter(b => namesAll(b.body)),
+    );
+
+    const population = [...messages, ...docs].filter(b => namesAll(b.body));
+    // Anti-vacuity over the whole census. A guard that found nothing to look
+    // at reads exactly like a clean population.
+    expect(
+      population.map(b => b.where),
+      "the census is empty or short: every message and document block naming all three " +
+        "waiver fields should appear here. A reword must not be able to silently empty it.",
+    ).toHaveLength(4);
+
+    const silent = population.filter(b => !/\bneeds\b/.test(b.body)).map(b => b.where);
+    expect(
+      silent,
+      "these tell a reader how to waive a criterion and never mention `needs:`, which " +
+        "the decider requires anyway — so following them literally produces a document " +
+        "the gate refuses. A waiver replaces `proved-by:`, never `needs:`.",
+    ).toEqual([]);
+  });
+
+  // covers SC-2576
+  test("SC-2576: the audit's `today` is UTC, so two runners cannot disagree", () => {
+    // `c.waiver.until < today` compares a UTC-validated expiry against the
+    // `today` the caller hands in, and the caller used to hand the day the
+    // RUNNER was living in — so a waiver could read as expired in Sydney and
+    // live in London, which makes the gate's verdict a property of who ran
+    // it. Raised on #1639; the decider's own docblock claimed the comparison
+    // was already UTC on both sides.
+    //
+    // The pinned `TODAY` constant above cannot see this: it bypasses the
+    // derivation entirely. So this spawns the real instrument, and it spawns
+    // it in two zones 25 hours apart — Kiritimati (UTC+14) and Midway
+    // (UTC-11) are NEVER on the same calendar day, so a local-day derivation
+    // is red at every instant rather than for a few hours.
+    const script = join(import.meta.dir, "..", "scripts", "audit-spec-evidence.ts");
+    const read = (timeZone: string): string => {
+      const r = spawnSync("bun", [script, "--json"], {
+        encoding: "utf-8",
+        env: { ...process.env, TZ: timeZone },
+      });
+      // Exit code is deliberately not asserted: a bound spec that fails the
+      // rule exits non-zero and still prints the reading, and this case is
+      // about the stamp, not the verdict.
+      const parsed = JSON.parse(r.stdout);
+      return parsed.today;
+    };
+
+    const before = localCalendarDay(new Date(), "UTC");
+    const east = read("Pacific/Kiritimati");
+    const west = read("Pacific/Midway");
+    const after = localCalendarDay(new Date(), "UTC");
+
+    expect(
+      west,
+      `the audit stamped ${east} at UTC+14 and ${west} at UTC-11. A waiver ` +
+        `expiring on one of those days is expired for one runner and live for ` +
+        `the other, which is the non-determinism the expiry comparison exists ` +
+        `to not have. Anchor \`today\` in scripts/audit-spec-evidence.ts.`,
+    ).toBe(east);
+
+    // Anti-vacuity: agreement alone is satisfied by a constant, an empty
+    // string, or a stamp the script stopped deriving. It must be the real
+    // UTC day — either side of a tick over midnight while this ran.
+    expect([before, after], `the audit reported ${east}, which is no UTC day around now`).toContain(
+      east,
+    );
+  });
+
+  // covers SC-2578
+  test("SC-2578: the shipped command audits the tree it is pointed at, not the installed package", () => {
+    // `scripts/audit-spec-evidence.ts` defaults its root to its own location,
+    // which is right for `bun scripts/…` in this repo and catastrophic for a
+    // consumer: `bunx rungate audit-spec-evidence` would walk
+    // `node_modules/rungate/specs/`, report RUNGATE's compliance, and exit
+    // zero. A green answer about a tree the command never opened is worse
+    // than no command, and `lib/cli-commands.ts` records the identical
+    // defect having shipped once already for `create-spec` (#363).
+    //
+    // So this spawns the real dispatcher with a cwd that is NOT this repo,
+    // over a planted spec whose verdict this repo's own specs cannot produce.
+    const consumer = mkdtempSync(join(tmpdir(), "rungate-consumer-"));
+    try {
+      mkdirSync(join(consumer, "specs"), { recursive: true });
+      writeFileSync(
+        join(consumer, "specs", "CONSUMER-SPEC.md"),
+        `${BOUND}- [x] SC-9101: the consumer ticked something and named nothing\n      needs: test\n`,
+      );
+      const run = spawnSync("bun", [join(import.meta.dir, "..", "bin", "rungate.ts"), "audit-spec-evidence"], {
+        encoding: "utf-8",
+        cwd: consumer,
+        timeout: 60_000,
+      });
+      const out = `${run.stdout}${run.stderr}`;
+      expect(out, `the command did not read the consumer tree.\n${out}`).toContain(
+        "specs/CONSUMER-SPEC.md",
+      );
+      // The discriminating assertion. This repo has 23 specs; the consumer
+      // has one. A run that defaulted to the installed package would report
+      // the larger number and a clean verdict, and both readings print the
+      // same KIND of line — so the count is what separates them.
+      expect(out, `it read ${run.stdout.split("\n")[1]} — that is not the consumer's tree`).toContain(
+        "across 1 specs",
+      );
+      expect(out).toContain("SC-9101");
+      expect(run.status, "a bound consumer spec with no evidence must make the command refuse")
+        .not.toBe(0);
+    } finally {
+      rmSync(consumer, { recursive: true, force: true });
+    }
+  });
+
+  // covers SC-2579
+  test("SC-2579: an absent specs directory is UNMEASURED, not clean", () => {
+    // The control for the case above, and the one direction a report must
+    // never be wrong in. A consumer who points the command at the wrong
+    // directory gets no specs — and "nothing was read" and "nothing is
+    // wrong" print identically unless one of them says so.
+    const empty = mkdtempSync(join(tmpdir(), "rungate-empty-consumer-"));
+    try {
+      const run = spawnSync("bun", [join(import.meta.dir, "..", "bin", "rungate.ts"), "audit-spec-evidence"], {
+        encoding: "utf-8",
+        cwd: empty,
+        timeout: 60_000,
+      });
+      expect(`${run.stdout}${run.stderr}`).toContain("UNMEASURED");
+      expect(run.status, "an unreadable tree must not exit zero").not.toBe(0);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  test("the evidence kinds are a closed set and the message names them", () => {
+    expect([...EVIDENCE_KINDS]).toEqual(["test", "measurement", "run", "review"]);
+    const content = `${BOUND}- [ ] SC-2563: x.\n      needs: guesswork\n`;
+    const [v] = evidenceViolations(content, TODAY);
+    for (const kind of EVIDENCE_KINDS) expect(v.message).toContain(kind);
+  });
+});

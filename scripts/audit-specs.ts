@@ -21,6 +21,7 @@ import { parseScDeclarations } from "../lib/sc-ids";
 import { collectSpecFiles } from "../lib/spec-files";
 import { skipLine, type DerivedReading } from "../lib/derived-spec";
 import { maySpecBeWritten, writeSpec } from "../lib/write-spec";
+import { parseCriteria } from "../lib/spec-evidence";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -685,6 +686,22 @@ function followsWith(content: string, match: RegExpMatchArray, marker: string): 
   return content.slice(match.index! + match[0].length).startsWith(`\n${marker}`);
 }
 
+/**
+ * Whether this criterion carries a non-empty `proved-by:` line.
+ *
+ * One decider, borrowed rather than rebuilt: `parseCriteria` is the same
+ * parser `lib/spec-evidence.ts` gates on, so this function and the gate
+ * cannot disagree about what an evidence line is. A second reader here —
+ * even a one-line regex — would be a second decider over the same input,
+ * and a mutation of either would leave the other holding every case up.
+ */
+function criterionNamesItsEvidence(content: string, scId: string): boolean {
+  const criterion = parseCriteria(content).find(c => c.id === scId);
+  return criterion?.provedBy !== undefined
+    && criterion?.provedBy !== null
+    && criterion.provedBy.trim() !== "";
+}
+
 // ── Core audit function ───────────────────────────────────────
 
 export function auditSpecs(
@@ -807,6 +824,16 @@ export function auditSpecs(
         // is a coverage gap worth seeing — without the line itself losing
         // the file it names or the prose that says why it exists.
         if (decision.kind === "keep") {
+          // A criterion that names its own evidence is not an unbound
+          // criterion. The marker's claim is "the matcher could not bind
+          // this", and a `proved-by:` line is a stronger binding than any
+          // pattern the registry could have matched: a pattern like
+          // "lib/x.ts contains WAIVER_EXPIRED" is satisfied by a module
+          // that declares the code and never emits it, which is the
+          // decorative-check shape `specs/SPEC-AUTHORING-SPEC.md` exists to
+          // refuse. So the marker here would be false, not merely noisy.
+          if (criterionNamesItsEvidence(modified, usc.id)) continue;
+
           const marker = `<!-- REVIEW: unmatched (${decision.reason}) -->`;
           // #586: asked of THIS criterion's own next line, not of the whole
           // file. A file-wide `includes` meant that two criteria declined

@@ -165,7 +165,48 @@ const UNCLAIMED_RATCHET = 150;
 // vocabulary was declared in `lib/finding-jury.ts` and the deployed CI path
 // could not import it, so a matcher over the symbol would have ticked a
 // criterion nothing in CI could reach.
-const CLAIMED_UNBINDABLE = 96;
+// 96 -> 112 on 2026-10-28: SC-2560..SC-2575 of
+// SPEC-AUTHORING-SPEC.md, all sixteen ticked, all claimed by
+// `test/spec-evidence.test.ts` and `test/spec-template.test.ts`. Unbindable
+// because each is a claim about what `evidenceViolations` RETURNS for a
+// planted document — "a waiver whose expiry has passed is a violation again"
+// is a statement about a verdict, and no registered matcher reads one. The
+// available patterns would bind to `lib/spec-evidence.ts` existing or
+// containing `WAIVER_EXPIRED`, both of which are satisfied by a module that
+// declares the code and never emits it: the exact decorative-check shape
+// this spec exists to refuse. The real binding is the mutation battery in
+// `test/spec-evidence.test.ts`, which runs each case against the module and
+// against a copy with the decider short-circuited, and the document's own
+// `proved-by:` lines name it per criterion.
+// 112 -> 113 on 2026-10-28: SC-2576, same spec, same reason. "the audit's
+// `today` is anchored in UTC, so two runners cannot disagree" is a claim
+// about what one script STAMPS under two process timezones, and the only
+// honest matcher for it is running the script twice. A file-exists or
+// content-contains pattern would bind to the string `"UTC"` appearing in
+// `scripts/audit-spec-evidence.ts`, which is satisfied by the word sitting in
+// a comment above a call that does not pass it — which is exactly the state
+// the module was in when the reviewer found this on #1639.
+// 113 -> 116 on 2026-10-28: SC-2577, SC-2578, SC-2579, same spec, same
+// reason. Each is a claim about what a SPAWNED command does to a planted
+// tree — which document it reads, what it says when there is nothing to
+// read, whether the instruction it emits names something the reader has —
+// and no registered matcher pattern expresses a spawn. The available ones
+// would bind to `scripts/audit-spec-evidence.ts` appearing in
+// `package.json`, which is satisfied by the string sitting in a `files[]`
+// array while the command defaults its root to the installed package and
+// reports rungate's own compliance as the consumer's. That mutation was run:
+// removing `projectRootFlag` makes it answer "1494 of 1753 across 23 specs"
+// for a consumer holding one spec, and exit zero.
+// 116 -> 118 on 2026-10-28: SC-2580, SC-2581, same spec, same reason.
+// SC-2580 is a claim about one BRANCH ORDER inside the decider — that a
+// complete, unexpired, signed waiver still owes a `needs:` line — and the
+// registry has no pattern for "this function reports exactly this code and
+// no other on this input". SC-2581 is a census over two populations at once,
+// the decider's own emitted messages and two documents, and a matcher that
+// bound it would bind to the field names appearing somewhere, which is the
+// state that produced the finding: four copies named the three `waived-*`
+// fields and none named `needs:`.
+const CLAIMED_UNBINDABLE = 118;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });
