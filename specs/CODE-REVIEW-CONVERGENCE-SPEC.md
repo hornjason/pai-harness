@@ -982,6 +982,42 @@ at. Demanding a date and a command from those two classes asks the wrong
 question of them, and a guard that is wrong about most of what it fires on
 is routed around within a week.
 
+**A fourth variant was proposed on 2026-10-28 and is accepted as a class,
+deferred as an instrument, with the measurement here so the next round reads
+it rather than re-deriving it.** Round 9 of #1637 observed that the recurring
+defect across rounds 2 through 9 is one class: *a prose claim about something
+EXTERNAL to this document — another document's practice, what a named `lib/`
+module compares, whether a baseline carries a date — is asserted from memory
+and corrected only after a reviewer re-reads the source.* That is right, and
+it names four instances this document already records, including CRC-M15
+being wrong three times. Its proposed remedy is that such a claim should cite
+what it describes.
+
+The mechanism for that **already exists and is proven**: `lib/source-anchor.ts`
+resolves a citation written as a source path, an `@`, and a quoted snippet of
+the line meant, to exactly one site or it refuses — `ANCHOR_CITATION` is the
+pattern and `resolveCitation` the resolver. `specs/GATE-CONTRACTS-SPEC.md` is
+bound to it — where three of the four
+citations outside the guard were already wrong when it was built. So the
+generaliser is not a new instrument; it is giving that one something to
+resolve. Counted 2026-10-28 over this file: **73 backticked mentions of a
+source path, across 38 distinct files, every one of which exists on disk, and
+ZERO citations in the resolvable anchor form.** Pointing `citationFailures()`
+at this document today passes while reading nothing — a vacuous green, which
+is the shape this spec exists to refuse.
+
+**The cheap proxy was measured and is refused on its error rate**, which is
+why this is deferred rather than shipped in the round it was raised. Inferring
+the attribution instead of requiring it — charging every backticked identifier
+in a paragraph to the one source file that paragraph names — yields three
+claims here and **one false of the three**: `review_scope_for_round()` is a
+shell function in the generated `ai-review-carry` step and the sentence says
+so, but the same paragraph also names `lib/ai-review-rounds.ts`, so proximity
+charges it there. A guard wrong about a third of what it fires on is routed
+around within a week. The attribution has to be written by the author in the
+anchor form, which makes this a pass over 73 sentences — a piece of work, not
+a review round.
+
 That is also why the **section census** below is the right generaliser and a
 whole-body number scan is not: the census asks whether a section is
 ACCOUNTED FOR, so each section declares which class governs its numbers,
