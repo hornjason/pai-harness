@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  assertAdjudicationShape,
   censusRows,
   isAmbiguousId,
   issueNames,
@@ -171,6 +172,67 @@ describe("an absent store and an unreadable one are different facts", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("a malformed record is a refusal, not an absent judgement", () => {
+  // Raised by the required reviewer on #1641: the store is hand-maintained
+  // JSON and the lookup is a strict `===`, so one mistyped field makes a
+  // judgement that EXISTS report as UNADJUDICATED. Same corruption-as-absence
+  // as the file-level read, one level down.
+  const good = {
+    criterion: "SC-9101",
+    issue: 42,
+    verdict: "contradicts",
+    by: "rayford",
+    collected: "2026-10-28",
+    note: "",
+    fingerprint: "abcd1234",
+  };
+
+  test("the well-formed record this battery mutates is accepted", () => {
+    // The baseline row. Without it every mutation below could be throwing for
+    // a reason the mutation did not introduce.
+    expect(() => assertAdjudicationShape(good, "store[0]")).not.toThrow();
+  });
+
+  test.each([
+    ["issue as a string", { issue: "42" }, /issue/],
+    ["issue as a float", { issue: 4.2 }, /issue/],
+    ["an unknown verdict", { verdict: "probably" }, /verdict/],
+    ["a misspelled criterion field", { criterion: undefined }, /criterion/],
+    ["an empty signer", { by: "" }, /by/],
+    ["a date that is not a date", { collected: "yesterday" }, /collected/],
+    ["a null record", null, /not an object/],
+  ])("%s is refused by name", (_what, mutation, expected) => {
+    const record = mutation === null ? null : { ...good, ...mutation };
+    expect(() => assertAdjudicationShape(record, "store[0]")).toThrow(expected);
+  });
+});
+
+describe("the spec template is a worked example, not a claim", () => {
+  // Raised by the required reviewer on #1641. The template's ticked
+  // placeholder is excluded today only because `SC-2` is single-digit;
+  // renumber it and the boilerplate becomes a row.
+  test("a ticked criterion in SPEC-TEMPLATE.md is excluded by FILE, not by id shape", () => {
+    const template: SpecRef[] = [
+      {
+        file: "specs/SPEC-TEMPLATE.md",
+        // A non-ambiguous id on purpose: if the exclusion were still resting
+        // on `isAmbiguousId` this row would appear.
+        content: "---\ndoc-type: spec\n---\n\n- [x] SC-9101: [second criterion]\n      needs: test\n",
+      },
+    ];
+    expect(censusRows(template, [issue(42, "SC-9101 is wrong")], [])).toEqual([]);
+    // Control: the identical content under any other filename IS a row, so the
+    // empty reading above measured the filename and not the fixture.
+    expect(
+      censusRows(
+        [{ ...template[0], file: "specs/REAL-SPEC.md" }],
+        [issue(42, "SC-9101 is wrong")],
+        [],
+      ),
+    ).toHaveLength(1);
   });
 });
 

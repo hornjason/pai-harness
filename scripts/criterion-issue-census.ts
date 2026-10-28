@@ -24,6 +24,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  assertAdjudicationShape,
   censusRows,
   renderCensus,
   unadjudicated,
@@ -72,6 +73,11 @@ export function readAdjudications(root: string): Adjudication[] {
         `A store that cannot be read is a refusal, not an empty reading.`,
     );
   }
+  // Per RECORD, not just per file. The lookup downstream is a strict `===`, so
+  // one mistyped field makes a judgement that exists report as UNADJUDICATED.
+  parsed.adjudications.forEach((record: unknown, at: number) =>
+    assertAdjudicationShape(record, `${ADJUDICATIONS_FILE}[${at}]`),
+  );
   return parsed.adjudications as Adjudication[];
 }
 

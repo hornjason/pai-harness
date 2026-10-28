@@ -123,6 +123,71 @@ export function isAmbiguousId(id: string): boolean {
   return isIssueShaped(id) || isAntiCriterion(id);
 }
 
+/**
+ * The spec template is a worked example, not a document making claims.
+ *
+ * `specs/SPEC-TEMPLATE.md` ships `- [x] SC-2: [second criterion]` to show an
+ * author what a ticked line looks like. That placeholder stays out of the
+ * census today only because `SC-2` is single-digit and therefore ambiguous —
+ * renumber it to `SC-10` while leaving it ticked and the template's
+ * boilerplate becomes a row indistinguishable from a real contested
+ * criterion. Excluding the file by name is what `buildScRegistry` already
+ * does, and it does not depend on how the example happens to be numbered.
+ * Raised by the required reviewer on #1641.
+ */
+export const EXCLUDED_SPECS: readonly string[] = ["SPEC-TEMPLATE.md"];
+
+function isExcludedSpec(file: string): boolean {
+  return EXCLUDED_SPECS.includes(file.split("/").pop() ?? file);
+}
+
+/**
+ * Refuse an adjudication record this module cannot read, naming it.
+ *
+ * The store is hand-maintained JSON, so `"issue": "1567"` as a string is a
+ * plausible typo — and it would throw nowhere: the lookup in {@link
+ * censusRows} is a strict `===`, so the record simply never matches and the
+ * row reports UNADJUDICATED while a human's judgement sits in the file. That
+ * is the same corruption-as-absence the file-level read was fixed for, one
+ * level down. Raised by the required reviewer on #1641.
+ */
+export function assertAdjudicationShape(
+  record: unknown,
+  at: string,
+): asserts record is Adjudication {
+  if (record === null || typeof record !== "object") {
+    throw new Error(`${at} is not an object. A record this module cannot read is a refusal.`);
+  }
+  const r = record as Partial<Adjudication>;
+  const problems: string[] = [];
+  for (const key of ["criterion", "by", "fingerprint"] as const) {
+    if (typeof r[key] !== "string" || r[key]!.length === 0) {
+      problems.push(`\`${key}\` must be a non-empty string, got ${JSON.stringify(r[key])}`);
+    }
+  }
+  if (typeof r.note !== "string") {
+    problems.push(`\`note\` must be a string, got ${JSON.stringify(r.note)}`);
+  }
+  // Named rather than coerced. `"1567"` is a typo somebody should see, and
+  // silently accepting it teaches the store that either spelling works.
+  if (typeof r.issue !== "number" || !Number.isInteger(r.issue)) {
+    problems.push(`\`issue\` must be an integer, got ${JSON.stringify(r.issue)}`);
+  }
+  if (!["contradicts", "cites", "unrelated"].includes(r.verdict as string)) {
+    problems.push(
+      `\`verdict\` must be contradicts, cites or unrelated, got ${JSON.stringify(r.verdict)}`,
+    );
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(r.collected ?? "")) {
+    problems.push(`\`collected\` must be YYYY-MM-DD, got ${JSON.stringify(r.collected)}`);
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `${at} is malformed and would silently report as UNADJUDICATED: ${problems.join("; ")}.`,
+    );
+  }
+}
+
 /** Does this issue name this criterion, on a word boundary? */
 export function issueNames(issue: IssueRef, id: string): boolean {
   const pattern = oneScMentionPattern(id);
@@ -146,6 +211,7 @@ export function censusRows(
   const rows: CensusRow[] = [];
 
   for (const spec of specs) {
+    if (isExcludedSpec(spec.file)) continue;
     for (const c of parseCriteria(spec.content)) {
       if (!c.ticked) continue;
       if (isAmbiguousId(c.id)) continue;
