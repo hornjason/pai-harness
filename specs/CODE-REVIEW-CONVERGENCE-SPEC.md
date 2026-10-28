@@ -138,6 +138,22 @@ one pull request; none of them moves O3 or O4 alone.
 pivot rule the measurement selects, and scoping it now would commit the choice before the
 evidence.
 
+## Housekeeping — carried here so it is visible, but it is not criteria
+
+Three known items move none of this document's outcomes. They are written down because
+work nobody can see gets rediscovered, and left out of the criteria list because
+`CLAUDE.md` is right that cleanup should say it is cleanup rather than borrow urgency
+from something that is measured. **Nothing below gates an increment.**
+
+- [ ] Two rows are missing from `CENSUS_TRIGGERS` in `scripts/census-routing.ts`, so the
+      router under-reports which census tests a diff can trip.
+- [ ] The `Cited` table in this document is hand-maintained and should be rendered from
+      data, like the routing table in `.claude/rules/self-referential-tests.md` already is.
+- [ ] Three scare quotes are silently dropped in the generated `.github/workflows/ai-review.yml`.
+      The advisory reviewer reported this as breaking the shell string early; **that claim
+      was checked by running both lines and is false** — exit 0, no stderr, full sentence
+      emitted. What remains is cosmetic.
+
 ## Success criteria
 
 Criteria are grouped by the source's own layers. Each states the mechanism, not the
