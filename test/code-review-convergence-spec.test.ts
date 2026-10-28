@@ -920,11 +920,21 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every criterion has exactly one
   // missed three that Phase 5 writes as one slash-joined run headed by CRC-M1,
   // in which they never appear whole. Two errors in opposite directions, one
   // believable total.
-  const rows = (): { placement: string; ids: string[] }[] => {
-    const at = body!.indexOf(HEADING);
+  //
+  // It takes the document rather than closing over it, so the staged case at
+  // the bottom runs the REAL heading-lookup, section-slice and cell-split over
+  // a planted table. A staged case that reimplements the parse proves
+  // `Array.filter` works and nothing about this parser — if `rows()` ever
+  // de-duplicated while reading `cells[2]`, the duplicate check would pass
+  // vacuously and a reimplemented control would pass with it, which is the
+  // *two deciders that agree* shape in
+  // `.claude/rules/checks-must-be-able-to-fail.md`. Raised by the reviewer on
+  // #1647 and it was right.
+  const rows = (src: string): { placement: string; ids: string[] }[] => {
+    const at = src.indexOf(HEADING);
     expect(at, `the placement section is gone or renamed — rename it here too`).toBeGreaterThan(-1);
-    const ends = [body!.indexOf("\n### ", at + 1), body!.indexOf("\n## ", at + 1)].filter(i => i > 0);
-    const section = body!.slice(at, ends.length > 0 ? Math.min(...ends) : body!.length);
+    const ends = [src.indexOf("\n### ", at + 1), src.indexOf("\n## ", at + 1)].filter(i => i > 0);
+    const section = src.slice(at, ends.length > 0 ? Math.min(...ends) : src.length);
     return section
       .split("\n")
       .filter(l => l.startsWith("| ") && !l.startsWith("|---") && !l.startsWith("| Placement"))
@@ -939,7 +949,7 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every criterion has exactly one
 
   test("the table parses and carries every placement value, so the cases below are not vacuous", () => {
     expect(body, `${SPEC} is missing`).not.toBeNull();
-    const parsed = rows();
+    const parsed = rows(body!);
     expect(parsed.length, "the placement table parsed no rows").toBeGreaterThan(5);
     // The value set is closed and three of the values are deliberately not
     // phases. A row that loses its ids, or a value nobody uses, is the way
@@ -958,7 +968,7 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every criterion has exactly one
     const declared = [...body!.matchAll(/^- \[([ xX])\] (CRC-[A-Z]?\d+):/gm)].map(m => m[2]);
     expect(declared.length, "no criteria parsed, so the partition below is over nothing")
       .toBeGreaterThan(40);
-    const placed = rows().flatMap(r => r.ids);
+    const placed = rows(body!).flatMap(r => r.ids);
 
     expect(
       declared.filter(id => !placed.includes(id)),
@@ -977,20 +987,57 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every criterion has exactly one
     // that no longer exists is a row nobody will ever clear.
     const declared = new Set([...body!.matchAll(/^- \[[ xX]\] (CRC-[A-Z]?\d+):/gm)].map(m => m[1]));
     expect(
-      rows().flatMap(r => r.ids).filter(id => !declared.has(id)),
+      rows(body!).flatMap(r => r.ids).filter(id => !declared.has(id)),
       `the placement table names criteria this spec does not declare. Either the id was ` +
         `renamed — fix the row — or the placement was invented.`,
     ).toEqual([]);
   });
 
   test("a missing and a duplicated placement are both caught, so the cases above can fail", () => {
-    // Driven over a planted body: the real table cannot be made wrong on
-    // demand, and a case that cannot be staged is a case that never ran.
-    const parse = (cell: string) => [...cell.matchAll(/CRC-[A-Z]?\d+/g)].map(m => m[0]);
+    // Driven over a PLANTED DOCUMENT through the real `rows()` — the heading
+    // lookup, the section slice and the cell split all run. The real table
+    // cannot be made wrong on demand, and a case that cannot be staged is a
+    // case that never ran.
+    const plant = (phase1: string, phase2: string) =>
+      [
+        "# planted",
+        "",
+        "- [ ] CRC-A1: one",
+        "- [ ] CRC-A2: two",
+        "- [ ] CRC-A3: three",
+        "",
+        HEADING,
+        "",
+        "| Placement | Criteria | What the value means |",
+        "|---|---|---|",
+        `| **Phase 1** | ${phase1} | first |`,
+        `| **Phase 2** | ${phase2} | second |`,
+        "",
+        "### Something else",
+      ].join("\n");
     const declared = ["CRC-A1", "CRC-A2", "CRC-A3"];
-    const missing = parse("CRC-A1, CRC-A2");
-    expect(declared.filter(id => !missing.includes(id))).toEqual(["CRC-A3"]);
-    const twice = parse("CRC-A1, CRC-A2, CRC-A3, CRC-A1");
+
+    // The positive control FIRST: a correct table is a clean partition, or
+    // the two negatives below could be red for a reason unrelated to the
+    // defect they name.
+    const ok = rows(plant("CRC-A1, CRC-A2", "CRC-A3")).flatMap(r => r.ids);
+    expect(ok.sort(), "the planted document did not parse as intended").toEqual(declared);
+    expect(declared.filter(id => !ok.includes(id))).toEqual([]);
+    expect(ok.filter((id, i) => ok.indexOf(id) !== i)).toEqual([]);
+
+    // Missing: CRC-A3 placed nowhere.
+    const short = rows(plant("CRC-A1, CRC-A2", "CRC-A2")).flatMap(r => r.ids);
+    expect(declared.filter(id => !short.includes(id))).toEqual(["CRC-A3"]);
+
+    // Duplicated: CRC-A1 placed under two phases. This is the one that goes
+    // vacuous if `rows()` ever de-duplicates while reading the cell, which is
+    // why it runs through `rows()` rather than beside it.
+    const twice = rows(plant("CRC-A1, CRC-A2", "CRC-A3, CRC-A1")).flatMap(r => r.ids);
     expect(twice.filter((id, i) => twice.indexOf(id) !== i)).toEqual(["CRC-A1"]);
+
+    // And the header row must not be read as a placement, or every count
+    // above is off by whatever the header happens to contain.
+    expect(rows(plant("CRC-A1, CRC-A2", "CRC-A3")).map(r => r.placement))
+      .toEqual(["Phase 1", "Phase 2"]);
   });
 });
