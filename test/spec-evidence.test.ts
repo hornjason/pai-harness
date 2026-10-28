@@ -294,6 +294,26 @@ describe("the controls — what must NOT fire", () => {
     // The count is allowed to grow — this asserts the MECHANISM, not a ratchet:
     // a spec is bound only by its own frontmatter, so no existing document can be
     // dragged in by a change to this module.
+    //
+    // But the loop below is vacuous over an empty list, and an empty list is
+    // exactly what a broken `readdirSync` path, a renamed directory or a
+    // frontmatter reader that stopped matching would produce — all of which read
+    // as "every bound spec is clean". So name the two documents that are bound
+    // today. This is a LOWER bound and not an equality: a third document opting
+    // in must not redden anything, while either of these quietly dropping out of
+    // the gate must.
+    for (const expected of [
+      "SPEC-AUTHORING-SPEC.md",
+      "CODE-REVIEW-CONVERGENCE-SPEC.md",
+    ]) {
+      expect(
+        bound,
+        `specs/${expected} declares \`evidence: required\` and the census did not see ` +
+          `it. Either it opted out — which is a decision, not housekeeping — or this ` +
+          `census stopped reading the directory, and the loop below reads a shrinking ` +
+          `population as a clean tree.`,
+      ).toContain(expected);
+    }
     for (const f of bound) {
       const violations = evidenceViolations(readFileSync(join(dir, f), "utf-8"), TODAY);
       expect(
@@ -301,6 +321,80 @@ describe("the controls — what must NOT fire", () => {
         `specs/${f} declares \`evidence: required\` and does not satisfy it.`,
       ).toEqual([]);
     }
+  });
+
+  test("a waiver in THIS repository is signed by a known actor, and an agent says so", () => {
+    // `lib/spec-evidence.ts` checks `waived-by` with `hasContent` and nothing
+    // more, which is correct for a published library: it cannot know who a
+    // consumer's people are, and a roster baked into the gate would refuse
+    // every tree but ours. The consequence is that the one safeguard a waiver
+    // has — somebody's name on it — is satisfied by any string, including a
+    // name belonging to a person who never saw the waiver. That is not
+    // hypothetical: both waivers in CODE-REVIEW-CONVERGENCE-SPEC.md were first
+    // written `waived-by: jason` by an agent while he was away, and every
+    // content check passed because every field carried content. A FALSE
+    // justification clears a gate built to catch an EMPTY one.
+    //
+    // So the roster lives here, where this repository does know who its actors
+    // are, and the published rule is left alone. Raised by the required
+    // reviewer on #1640, which was right that the prose fix restored no
+    // safeguard.
+    //
+    // WHAT THIS DOES NOT CATCH, MEASURED RATHER THAN ASSUMED. Setting both
+    // signatures back to `waived-by: jason` leaves this test GREEN. It catches
+    // a signer nobody can resolve, and an agent signature that does not declare
+    // itself uncountersigned. It cannot catch an agent typing a real person's
+    // name, and no check over a text file can: the agent commits under the same
+    // git identity, so there is no second channel to disagree with. The hole is
+    // narrowed, not closed, and a roster check that implied otherwise would be
+    // worse than none.
+    const PEOPLE = ["jason"];
+    const AGENTS = ["rayford"];
+    const { readdirSync } = require("fs") as typeof import("fs");
+    const dir = join(import.meta.dir, "..", "specs");
+
+    const signatures: Array<{ where: string; signature: string }> = [];
+    for (const f of readdirSync(dir).filter(n => n.endsWith(".md"))) {
+      const content = readFileSync(join(dir, f), "utf-8");
+      for (const c of parseCriteria(content)) {
+        if (!c.waiver) continue;
+        signatures.push({ where: `specs/${f} ${c.id}`, signature: c.waiver.by });
+      }
+    }
+    // Anti-vacuity: a census of waivers that finds none passes every assertion
+    // below while witnessing nothing, and "no waivers" is indistinguishable
+    // from "the parser stopped seeing them".
+    expect(
+      signatures.map(s => s.where),
+      "no waiver was found in specs/. Either every waiver was removed — which " +
+        "is a decision worth noticing — or this census stopped reading them, and " +
+        "the assertions below hold vacuously either way.",
+    ).not.toEqual([]);
+
+    const unknown = signatures.filter(
+      s => ![...PEOPLE, ...AGENTS].includes(s.signature.split(/\s+/)[0]),
+    );
+    expect(
+      unknown.map(s => `${s.where}: ${s.signature}`),
+      "a waiver is signed by somebody this repository does not know. Add the " +
+        "actor to PEOPLE or AGENTS in this test with why, or sign it with a name " +
+        "already there — a signature nobody can resolve is the same as no signature.",
+    ).toEqual([]);
+
+    // The half with teeth: an agent may sign, and may not let the signature
+    // read as a person's decision.
+    const unqualified = signatures.filter(
+      s =>
+        AGENTS.includes(s.signature.split(/\s+/)[0]) &&
+        !/not countersigned/i.test(s.signature),
+    );
+    expect(
+      unqualified.map(s => `${s.where}: ${s.signature}`),
+      "an agent signed a waiver without saying it is not countersigned. A waiver " +
+        "is an escape hatch whose only safeguard is that somebody accountable put " +
+        "their name on it, so an agent signature that does not say so reads as a " +
+        "person's decision.",
+    ).toEqual([]);
   });
 });
 
