@@ -6320,18 +6320,80 @@ export function buildReviewRunScript(version: string): string {
   // payload exists, so a review was attempted; nobody read it is a failure on
   // every tree, not an opt-in". A payload nobody WROTE is the same fact one
   // state earlier, and this is it.
-  const skippedRefusal =
+  const skippedRefusalHead =
     `The review action exited successfully WITHOUT writing a findings ` +
     `payload, so this pull request has no AI review. Failing rather than ` +
     `reporting a green check for a review that never ran: a required check ` +
     `that passes when the reviewer did not run is not a gate. This refusal ` +
     `does NOT consult ${AI_REVIEW_REQUIRE_VAR} — that flag is for a tree with ` +
     `no credential, where no review was ATTEMPTED; one was attempted here and ` +
-    `it produced nothing (#1180). If the reviewer declined because this pull ` +
+    `it produced nothing (#1180).`;
+
+  // #1478. THE REMEDY IS THE ROUTE'S, and until now it was a constant.
+  //
+  // The route block below already measures whether the reviewer executed, and
+  // on a run where it had, this refusal recommended the DECLINE's remedy
+  // anyway. Both annotations are on run `40046088628` (PR #1474), one after
+  // the other, from the same job:
+  //
+  //   warning  …the reviewer DID execute: the action wrote an execution file…
+  //   failure  …If the reviewer declined because this pull request edits
+  //            ai-review.yml…label the pull request 'ai-review-override'…
+  //
+  // #1478 records the cost: two people in a row reached for the wrong
+  // diagnosis. Every case in `test/ai-review-route-reading.test.ts` was green
+  // while it happened, because AC-B2 asserts the WARNING — stdout — and the
+  // refusal is `>&2`. One stream was covered and the contradicting sentence
+  // was on the other.
+  //
+  // THIS IS NOT A SECOND READING OF THE EXECUTION FILE. `remedy` is assigned
+  // in the same branches that assign `route`, off the same `-s` test, so the
+  // two are projections of one decision and cannot disagree — the shape
+  // `lib/review-execution-reading.ts` uses for `reading` and `reasons`. A
+  // fresh `[ -s ... ]` beside the refusal would be two deciders that agree
+  // (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape) and is
+  // exactly how this divergence would come back.
+  const declineRemedy =
+    `If the reviewer declined because this pull ` +
     `request edits ${AI_REVIEW_WORKFLOW_FILE}, which it refuses to review ` +
     `against a copy that differs from the default branch, label the pull ` +
     `request '${AI_REVIEW_OVERRIDE_LABEL}' to waive this ONE check on the ` +
     `record and have a human read the diff instead.`;
+
+  // Scoped to the route that RULED THE DECLINE OUT, and to no other. The
+  // named-but-unreadable route keeps `declineRemedy` deliberately: there the
+  // job cannot say which route it was, and withdrawing the remedy would be a
+  // default substituted for a reading, which is the thing this step exists to
+  // stop doing. `test/ai-review-route-reading.test.ts` AC-D2 and AC-D5 are
+  // the controls for both of those.
+  //
+  // It does NOT tell the reader to go and read the transcript. On a public
+  // repository the transcript is deliberately not kept —
+  // RUNGATE_UPLOAD_AI_REVIEW_TRANSCRIPT defaults off because turning it on
+  // publishes the reviewer's full output as a world-readable artifact — so
+  // advice to read it is advice nobody can take. Whatever the job read out of
+  // it is in the warning above this line, and that is the point of the
+  // warning.
+  //
+  // It does not name ${AI_REVIEW_WORKFLOW_FILE} either, and AC-D6 asserts the
+  // whole of the job's output on this route does not: a reader does not know
+  // which annotation came from which file descriptor, and the filename in
+  // either of them is the thing that sent two people at the wrong file.
+  const executedRemedy =
+    `The reviewer EXECUTED on this pull request — the action wrote an ` +
+    `execution transcript — so it did not decline before starting and the ` +
+    `workflow file is not worth checking. What the transcript did say is in ` +
+    `the warning above; it is not kept as an artifact, because keeping it ` +
+    `would publish the reviewer's full output on a public repository. A ` +
+    `re-run is not a remedy either: a re-run replays the same merge commit, ` +
+    `and on #1474 this state survived a freshly computed one too. The ` +
+    `'${AI_REVIEW_OVERRIDE_LABEL}' label still waives this check ` +
+    `mechanically, and on THIS route it would waive a review that ran and ` +
+    `wrote nothing rather than one that was never attempted — so the diff ` +
+    `has had no automated reading at all and a human has to give it one.`;
+
+  const skippedRefusalDeclined = `${skippedRefusalHead} ${declineRemedy}`;
+  const skippedRefusalExecuted = `${skippedRefusalHead} ${executedRemedy}`;
 
   // The waiver's own sentence: what was waived, and by what. A warning that
   // does not say what happened is a warning nobody can act on
@@ -6918,12 +6980,22 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
     exit ${AI_REVIEW_REQUIRED_EXIT}
   fi
 
-  # Which route, and nothing else. \`route\` is a string this block prints; no
-  # branch below reads it, and the exit code is identical whichever it holds
-  # (#826). A reading that changed the verdict would be the second decider the
-  # comment above declines to build.
+  # Which route, and nothing else. \`route\` and \`refusal\` are strings this
+  # block prints; no branch below reads either, and the exit code is identical
+  # whichever they hold (#826). A reading that changed the verdict would be the
+  # second decider the comment above declines to build.
+  #
+  # #1478: \`refusal\` is set HERE, in the same branches as \`route\`, and never
+  # from a second \`-s\` test beside the refusal itself. Two readings of one
+  # file are two deciders that agree, and the whole defect was the refusal
+  # contradicting the route one line later.
   route="${skipped}"
+  refusal="${skippedRefusalDeclined}"
   if [ -s "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ]; then
+    # Set once for all four sub-routes below: what separates them is WHAT the
+    # reviewer did, and every one of them has already established THAT it ran,
+    # which is the only thing the remedy turns on.
+    refusal="${skippedRefusalExecuted}"
     # A text read of a JSON document, deliberately: a runner is not
     # guaranteed \`jq\`, and the consequence of a false match here is a
     # different explanatory sentence rather than a different verdict.
@@ -6983,7 +7055,10 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
     exit 0
   fi
 
-  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${skippedRefusal}" >&2
+  # \`escape_annotation\`, as the warning above does, and for the same reason:
+  # this is now a shell variable rather than a literal spliced in by the
+  # generator, so it reaches \`echo\` the way \`route\` does.
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::$(escape_annotation "\${refusal}")" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
 

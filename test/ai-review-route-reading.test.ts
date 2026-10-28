@@ -240,6 +240,12 @@ function runReport(opts: {
   require?: boolean;
   /** #1180: the pull-request label that waives a no-payload refusal. */
   waive?: boolean;
+  /**
+   * Name an execution file and do not write it — the third state, which is
+   * neither `execution: null` (the action set no output) nor a readable file.
+   * A named path that does not resolve has NOT ruled the decline out.
+   */
+  executionMissing?: boolean;
   script?: string;
 }): Run {
   const dir = scratchDir();
@@ -259,7 +265,9 @@ function runReport(opts: {
     // cannot. A runner that omits it drives a script no runner ever runs.
     GITHUB_OUTPUT: join(dir, "github_output"),
   };
-  if (opts.execution !== null) {
+  if (opts.executionMissing) {
+    env[AI_REVIEW_EXECUTION_FILE_VAR] = join(dir, "gone.json");
+  } else if (opts.execution !== null) {
     const exec = join(dir, "claude-execution-output.json");
     writeFileSync(exec, opts.execution);
     env[AI_REVIEW_EXECUTION_FILE_VAR] = exec;
@@ -695,5 +703,155 @@ describe("AC-C (#1087, #1392): the annotation reads the denials list", () => {
         '"permission_denials_count"',
       );
     }
+  });
+});
+
+// ── AC-D: the REFUSAL's remedy is the route's, not a constant (#1478) ────
+
+/**
+ * The job contradicted itself in two consecutive annotations, and every case
+ * above was green while it did.
+ *
+ * Measured on run `40046088628`, PR #1474 — a +1/-1 comment-only change that
+ * wrote no findings payload three times. The two annotations the check-runs
+ * API returns for that job, in order:
+ *
+ *   warning  …the reviewer DID execute: the action wrote an execution file…
+ *   failure  …If the reviewer declined because this pull request edits
+ *            ai-review.yml…label the pull request 'ai-review-override'…
+ *
+ * So the route reading had already ruled the decline out, and the refusal one
+ * line later recommended the decline's remedy anyway. #1478 names the cost:
+ * "two people in a row reached for the wrong diagnosis."
+ *
+ * WHY AC-B2 DID NOT CATCH IT, which is the part worth keeping. AC-B2 asserts
+ * `r.out` — the WARNING, on stdout — does not name the guard, and it is right
+ * and it passes. The refusal is `echo … >&2`. One stream was asserted, the
+ * contradicting sentence was on the other, and the pair read as covered: the
+ * third shape in `.claude/rules/checks-must-be-able-to-fail.md`, a detector
+ * narrower than what it detects. AC-D6 below asserts the property over BOTH
+ * streams for that reason, rather than adding a second stderr-only case that
+ * would have the same blind spot pointing the other way.
+ *
+ * THE REMEDY IS A PROJECTION OF THE ROUTE AND NOT A SECOND READING OF THE
+ * EXECUTION FILE. `buildReviewRunScript` sets `remedy` in the same branches
+ * that set `route`, off the same `-s` test, which is what
+ * `lib/review-execution-reading.ts` means by "both projections of the same
+ * list computed here and nowhere else, so they cannot disagree". A second
+ * `[ -s ... ]` beside the refusal would be the fourth shape — two deciders
+ * that agree — and would let exactly this divergence back in.
+ *
+ * AC-D2 and AC-D5 are the controls. A scoped refusal needs a case proving
+ * where it must NOT fire: the decline remedy is still correct wherever the
+ * decline has not been ruled out, and deleting it everywhere is the cheapest
+ * wrong fix for AC-D1.
+ */
+describe("AC-D (#1478): the no-payload refusal does not recommend the decline's remedy to a reviewer that ran", () => {
+  const DECLINE_CLAUSE = "If the reviewer declined";
+  const refusalLine = (r: Run) => r.err.split("\n").find(l => l.includes("::error")) ?? "";
+
+  test("AC-D1: the reviewer EXECUTED — the refusal does not send the reader at the workflow file", () => {
+    const r = runReport({ payload: null, execution: EXECUTED });
+    expect(refusalLine(r), "the no-payload run printed no refusal").not.toBe("");
+    expect(
+      r.err,
+      "the route reading ruled the decline out and the refusal recommends its remedy anyway (#1478)",
+    ).not.toContain(DECLINE_CLAUSE);
+    // Positively, so the cheapest wrong fix — deleting the sentence and
+    // saying nothing — does not satisfy this case. A refusal with no route
+    // past it is an obstacle, not a check.
+    expect(
+      r.err,
+      "the refusal does not say the reviewer executed, so the reader has no diagnosis at all",
+    ).toContain("EXECUTED");
+  });
+
+  test("AC-D2 (control): no execution file — the decline's remedy is still the right one", () => {
+    // Where it must NOT fire. With no transcript the validation guard IS the
+    // usual cause, exactly as AC-B1 says of the warning.
+    const r = runReport({ payload: null, execution: null });
+    expect(
+      r.err,
+      "the decline remedy was removed from the route where the decline is the likely cause",
+    ).toContain(DECLINE_CLAUSE);
+    expect(r.err).toContain(AI_REVIEW_WORKFLOW_FILE);
+  });
+
+  test("AC-D3: the PAIR — one input varies, and the two refusals differ", () => {
+    // #585's discipline, the same as AC-B3 applies to the warning. Everything
+    // is held but whether the action set its execution_file output.
+    const declined = runReport({ payload: null, execution: null });
+    const executed = runReport({ payload: null, execution: EXECUTED });
+    expect(refusalLine(declined), "the declined run printed no refusal").not.toBe("");
+    expect(refusalLine(executed), "the executed run printed no refusal").not.toBe("");
+    expect(
+      refusalLine(declined) === refusalLine(executed),
+      "both routes refuse with the same sentence, so the reading is not reaching the refusal",
+    ).toBe(false);
+  });
+
+  test("AC-D4: the remedy decides the SENTENCE and never the exit code", () => {
+    // AC-B5 for the refusal. The route may not become a second decider of the
+    // verdict by the back door of the sentence it prints.
+    for (const require of [false, true]) {
+      const declined = runReport({ payload: null, execution: null, require });
+      const executed = runReport({ payload: null, execution: EXECUTED, require });
+      const exhausted = runReport({ payload: null, execution: EXHAUSTED, require });
+      const missing = runReport({ payload: null, executionMissing: true, execution: null, require });
+      expect(
+        [declined.code, executed.code, exhausted.code, missing.code],
+        `the remedy moved the exit code with ${AI_REVIEW_REQUIRE_VAR}=${require}`,
+      ).toEqual([declined.code, declined.code, declined.code, declined.code]);
+      expect(
+        declined.code,
+        "every route passed, so the equality above is satisfied by a script that cannot refuse",
+      ).not.toBe(0);
+    }
+    // And the waiver still waives on the route whose sentence changed, or
+    // AC-D1 has quietly turned the executed route into an unwaivable one.
+    expect(
+      runReport({ payload: null, execution: EXECUTED, waive: true }).code,
+      "the waiver stopped waiving on the executed route",
+    ).toBe(0);
+  });
+
+  test("AC-D5 (control): a named-but-unreadable execution file keeps the decline's remedy", () => {
+    // The route this job calls UNMEASURED about which route it was. The
+    // decline has NOT been ruled out, so removing its remedy here would be
+    // the reading substituted for a default — the thing this step exists to
+    // stop doing. AC-B7 asserts the same scoping for the warning.
+    const r = runReport({ payload: null, executionMissing: true, execution: null });
+    expect(
+      r.err,
+      "an unreadable transcript was treated as proof the reviewer ran",
+    ).toContain(DECLINE_CLAUSE);
+    expect(refusalLine(r) === refusalLine(runReport({ payload: null, execution: EXECUTED }))).toBe(
+      false,
+    );
+  });
+
+  test("AC-D6: on the executed route NEITHER stream names the workflow file", () => {
+    // The property AC-B2 states for one stream, over the whole of the job's
+    // output. A reader does not know which annotation came from which file
+    // descriptor; they see two sentences in one check and one of them was
+    // wrong.
+    //
+    // THE STRING IS THE FILENAME, not "workflow-validation guard", and the
+    // first draft of this case used the phrase. It was green against the
+    // live bug: the refusal names the file without ever using that phrase —
+    // "which it refuses to review against a copy that differs from the
+    // default branch" — so the case forbade a spelling the defect does not
+    // use. The pair below is what keeps that from recurring, because it
+    // fails outright if the declined route stops naming the file too.
+    const executed = runReport({ payload: null, execution: EXECUTED });
+    const declined = runReport({ payload: null, execution: null });
+    expect(
+      `${declined.out}\n${declined.err}`,
+      "the declined route stopped naming the workflow file, so the assertion below is vacuous",
+    ).toContain(AI_REVIEW_WORKFLOW_FILE);
+    expect(
+      `${executed.out}\n${executed.err}`,
+      "the job's output still sends a reader whose reviewer ran at the workflow file",
+    ).not.toContain(AI_REVIEW_WORKFLOW_FILE);
   });
 });
