@@ -76,6 +76,25 @@ export const EVIDENCE_KINDS = ["test", "measurement", "run", "review"] as const;
 
 export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
 
+/**
+ * The only `key: value` lines beneath a criterion that are annotations.
+ *
+ * Closed, and that is what makes the parser safe on prose: a wrapped
+ * criterion line starting with an ordinary word and a colon is text, not a
+ * field. An open `[a-z-]+:` pattern swallowed such lines and dropped them
+ * out of the hashed criterion text — so the fingerprint would not move when
+ * the dropped clause was edited, which defeats the staleness check in
+ * exactly the place it is load-bearing.
+ */
+export const ANNOTATION_KEYS = [
+  "needs",
+  "proved-by",
+  "fingerprint",
+  "waived-reason",
+  "waived-by",
+  "waived-until",
+] as const;
+
 /** A criterion as parsed out of a spec, before any judgement about it. */
 export interface ParsedCriterion {
   /** `SC-640`, `CRC-M12` — whatever the id column held. */
@@ -228,8 +247,16 @@ export function parseCriteria(content: string): ParsedCriterion[] {
       // which reads exactly like a spec that never recorded any.
       if (/^\s*<!--/.test(next)) continue;
 
+      // The key must be one of {@link ANNOTATION_KEYS}, not any `word:`.
+      // A general `[a-z-]+:` was tried before the prose branch below, so a
+      // wrapped criterion line beginning with an ordinary lowercase word and
+      // a colon — "the gate: refuses an unsigned payload" — was eaten as an
+      // annotation and silently dropped out of the hashed text. Raised on
+      // #1639 by the required reviewer. A closed set is the fix that cannot
+      // be wrong about prose, because prose is everything the set does not
+      // name.
       const kv = next.match(/^\s{2,}([a-z-]+):\s*(.*)$/);
-      if (kv) {
+      if (kv && (ANNOTATION_KEYS as readonly string[]).includes(kv[1])) {
         annotations.set(kv[1], kv[2].trim());
         continue;
       }
@@ -240,7 +267,11 @@ export function parseCriteria(content: string): ParsedCriterion[] {
         text += ` ${next.trim()}`;
         continue;
       }
-      if (next.trim() === "") continue;
+      // A blank line ENDS this criterion's annotation block. Walking past it
+      // meant an annotation several paragraphs below was attached to a
+      // criterion that never carried one — so a document could be read as
+      // carrying evidence it does not have, which is the direction this
+      // module must never be wrong in. Also raised on #1639.
       break;
     }
 
@@ -405,7 +436,11 @@ export function evidenceViolations(
       continue;
     }
 
-    if (c.recordedFingerprint.trim() !== actual) {
+    // Compared case-insensitively: hex is hex, and a hand-typed `B73C6A2E`
+    // is the same fingerprint as `b73c6a2e`. Flagging it stale would be the
+    // check firing on a reformat, which is how a check becomes one people
+    // route around. Raised on #1639.
+    if (c.recordedFingerprint.trim().toLowerCase() !== actual) {
       out.push({
         id: c.id,
         line: c.line,

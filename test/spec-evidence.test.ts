@@ -41,6 +41,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import {
+  ANNOTATION_KEYS,
   EVIDENCE_KINDS,
   criterionFingerprint,
   evidenceViolations,
@@ -335,6 +336,76 @@ describe("the parser saw what it thinks it saw", () => {
     expect(parsed.needs).toBe("test");
     expect(parsed.provedBy).toBe("test/config-loader.test.ts");
     expect(evidenceViolations(content, TODAY)).toEqual([]);
+  });
+
+  test("a wrapped prose line that looks like `word: value` is text, not an annotation", () => {
+    // `[a-z-]+:` matched before the prose branch, so this clause was eaten
+    // as an annotation and dropped out of the hashed text — and a clause
+    // outside the hash is a clause whose edit does not invalidate the
+    // evidence, which is the staleness check failing where it is needed.
+    const content =
+      `${BOUND}- [ ] SC-2560: the gate refuses an unsigned payload, and\n` +
+      "      the reason: it cannot resolve the signer.\n" +
+      "      needs: test\n";
+    const [parsed] = parseCriteria(content);
+    expect(parsed.needs).toBe("test");
+    expect(parsed.text).toContain("the reason: it cannot resolve the signer.");
+    expect(parsed.recordedFingerprint).toBeNull();
+    // And the hash must move when that clause changes.
+    const edited = content.replace("it cannot resolve the signer", "the signer is unknown");
+    expect(criterionFingerprint(parseCriteria(edited)[0].text)).not.toBe(
+      criterionFingerprint(parsed.text),
+    );
+  });
+
+  test("a blank line ends the annotation block", () => {
+    // Walking past blank lines attached an annotation from further down the
+    // document to a criterion that carries none — reading a spec as having
+    // evidence it does not have, which is the one direction this module
+    // must never be wrong in.
+    const content =
+      `${BOUND}- [x] SC-2560: the gate refuses an unsigned payload.\n` +
+      "\n" +
+      "Some prose paragraph.\n" +
+      "\n" +
+      "      proved-by: test/somewhere-else.test.ts\n";
+    const [parsed] = parseCriteria(content);
+    expect(parsed.provedBy).toBeNull();
+    expect(evidenceViolations(content, TODAY).map(v => v.code).sort()).toEqual([
+      "NEEDS_MISSING",
+      "TICKED_WITHOUT_EVIDENCE",
+    ]);
+  });
+
+  test("an uppercase fingerprint is the same fingerprint", () => {
+    const text = "the loader throws on malformed JSON.";
+    const content =
+      `${BOUND}- [x] SC-2560: ${text}\n      needs: test\n` +
+      "      proved-by: test/config-loader.test.ts\n" +
+      `      fingerprint: ${criterionFingerprint(text).toUpperCase()}\n`;
+    expect(evidenceViolations(content, TODAY)).toEqual([]);
+  });
+
+  test("the annotation keys are a closed set the parser agrees with", () => {
+    expect([...ANNOTATION_KEYS]).toEqual([
+      "needs",
+      "proved-by",
+      "fingerprint",
+      "waived-reason",
+      "waived-by",
+      "waived-until",
+    ]);
+    // Every key the parser surfaces must be in the set — otherwise the set
+    // is documentation rather than the thing the parser consults.
+    const content =
+      `${BOUND}- [x] SC-2560: x.\n      needs: test\n      proved-by: a\n` +
+      "      fingerprint: deadbeef\n      waived-reason: r\n      waived-by: b\n" +
+      "      waived-until: 2027-01-01\n";
+    const [p] = parseCriteria(content);
+    expect(p.needs).toBe("test");
+    expect(p.provedBy).toBe("a");
+    expect(p.recordedFingerprint).toBe("deadbeef");
+    expect(p.waiver).toEqual({ reason: "r", by: "b", until: "2027-01-01" });
   });
 
   test("the evidence kinds are a closed set and the message names them", () => {
