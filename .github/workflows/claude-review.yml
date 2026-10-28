@@ -405,12 +405,36 @@ jobs:
       # condition — `assertion.repository_owner == 'hornjason'` — so a workflow
       # in any other account on GitHub presents a valid OIDC token and is
       # refused at the exchange. The IAM grant is narrower still: it names
-      # `attribute.repository/hornjason/pai-harness` specifically, and the only
+      # `attribute.repository/hornjason/rungate` specifically, and the only
       # role on it is `roles/aiplatform.user`.
       #
       # There is no service account in this chain at all. The federated identity
       # holds the Vertex role directly, so there is nothing to impersonate and
       # no key that could be created for it even by someone who wanted one.
+      #
+      # THE TWO LEVELS FAIL DIFFERENTLY, AND A RENAME SPLITS THEM (2026-10-28).
+      # The repository was renamed `hornjason/pai-harness` -> `hornjason/rungate`
+      # and this grant was not. The condition above is scoped to the OWNER, so
+      # the token exchange kept succeeding; the grant is scoped to the
+      # REPOSITORY, and GitHub's `repository` claim follows the current name, so
+      # the exchanged identity held no role. `auth` is green either way — the
+      # failure surfaces at the first Vertex call, several steps later, and the
+      # review job's own annotation misread it as the action's turn accounting.
+      #
+      # The reading that separated them was the DURATION: on run 40779361533
+      # the review step started at 22:21:54 and the reporting step logged at
+      # 22:22:12 — 18 seconds, and that is an UPPER bound on the review, since
+      # the reporting step cannot start before the review ends. A reviewer that
+      # had exhausted `--max-turns 80` cannot finish inside 18 seconds, so the
+      # turn explanation was arithmetically impossible and a denied call was not.
+      #
+      # If this job starts failing seconds after it starts, check the grant
+      # before the action:
+      #
+      #   gcloud projects get-iam-policy jhorn-pai \
+      #     --flatten="bindings[].members" \
+      #     --filter="bindings.role=roles/aiplatform.user" \
+      #     --format="value(bindings.members)"
       #
       # Verified 2026-10-19 on jhorn-pai: claude-sonnet-5 returned HTTP 200 from
       # `rawPredict` at location `global`.
