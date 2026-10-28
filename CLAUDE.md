@@ -52,6 +52,8 @@ If you skip any step, the session is invalid.
 
 - Council synthesis output: `~/.rungate/{slug}/council-synthesis.json`
 - Workflow invocation: always `Workflow({ scriptPath: "~/Projects/rungate/workflows/{name}.js" })`, never `Workflow({ name })` — cached snapshots miss edits
-- Issues and code both live on **hornjason/pai-harness** (this repo)
+- Issues and code both live on **hornjason/rungate** (this repo) — renamed from
+  `hornjason/pai-harness` on 2026-10-28; GitHub redirects the old name, and the
+  dated measurements in comments that name it are records, not stale references
 - See `specs/INSTRUCTION-COMPLIANCE-SPEC.md` for compliance testing system
 - Agent briefs only load when `agentType` matches `.claude/agents/{name}.md` filename (SC-249)

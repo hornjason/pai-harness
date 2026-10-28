@@ -90,6 +90,7 @@ import {
   type CommentTarget,
   type FilingLedgerRow,
 } from "../lib/issue-filing-gate";
+import { loadRungateConfig } from "../lib/config-loader";
 import { DROPPED_CATEGORIES } from "../lib/finding-jury";
 import type { ArbiterRefusal } from "../lib/finding-arbiter";
 import type { FilingAdjudication } from "../lib/issue-filing-gate";
@@ -1823,7 +1824,16 @@ describe("#1302 a document heredoc is not a filing", () => {
  * fix it in the same turn. A refusal somebody can act on is not a gag.
  */
 describe("FG-60..FG-65: the --repo parser differential", () => {
-  const SLUG = "hornjason/pai-harness";
+  /**
+   * DECLARED, not spelled. `corpusSlug(REPO, null)` resolves the slug from the
+   * project's git `origin` remote; this side reads the `repo` the project
+   * DECLARES in its config. Two independent sources, which is what makes the
+   * control below a control — a literal agrees with neither and goes stale
+   * silently, as this one did when the repository was renamed
+   * `hornjason/pai-harness` -> `hornjason/rungate` on 2026-10-28.
+   */
+  const SLUG = loadRungateConfig(REPO).repo ?? "";
+  expect(SLUG, "the project declares no `repo`, so these cases assert nothing").toMatch(/\S\/\S/);
 
   /** Spellings `gh` accepts and the API client's own validator throws on. */
   const HOST_BEARING = [

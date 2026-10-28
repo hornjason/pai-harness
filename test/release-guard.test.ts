@@ -32,6 +32,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { join } from "path";
 import { BUN_VERSION_FILE, declaredBunVersion, isPinnedBunVersion } from "../lib/bun-version";
+import { loadRungateConfig } from "../lib/config-loader";
 import {
   awaitRegistryServes,
   confirmCommand,
@@ -972,9 +973,20 @@ describe("#364 SC-832: the pipeline cannot report a release it did not make", ()
     // field was absent entirely — a publish-time failure with no local
     // symptom. Asserted here rather than in a packaging test because it is
     // the release that depends on it.
+    //
+    // The expected repository is the one the project DECLARES, not a literal.
+    // npm matches the OIDC `repository` claim — which GitHub derives from the
+    // repository's CURRENT name — against this field, so a rename invalidates
+    // a literal here with no local symptom until a publish fails. It did
+    // exactly that on 2026-10-28 (`hornjason/pai-harness` ->
+    // `hornjason/rungate`). The two sides stay independent: the manifest on
+    // one, `.claude/rungate/config.json` on the other.
+    const declared = loadRungateConfig(ROOT).repo ?? "";
+    expect(declared, "the project declares no `repo` to match the claim against")
+      .toMatch(/\S\/\S/);
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
     expect(pkg.repository?.url, "no repository.url — OIDC cannot match the claim").toBeTruthy();
-    expect(pkg.repository.url).toContain("github.com/hornjason/pai-harness");
+    expect(pkg.repository.url).toContain(`github.com/${declared}`);
   });
 
   test("the tag never reaches a shell as interpolated text", () => {

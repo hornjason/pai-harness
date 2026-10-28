@@ -50,6 +50,7 @@ import {
   type CrcReadingRow,
 } from "../lib/crc-reading.ts";
 import { AI_REVIEW_LEDGER_COMMENT_MARKER } from "../lib/ai-review-rounds.ts";
+import { tryLoadRungateConfig } from "../lib/config-loader.ts";
 import { localCalendarDay } from "../lib/local-calendar-day.ts";
 import { writeSpec } from "../lib/write-spec.ts";
 
@@ -62,7 +63,25 @@ import { writeSpec } from "../lib/write-spec.ts";
  */
 export const CRC_READING_REFUSED = 1;
 
-const DEFAULT_REPO = "hornjason/pai-harness";
+/**
+ * The repository this script reads is DECLARED, never spelled here.
+ *
+ * It was `const DEFAULT_REPO = "hornjason/pai-harness"` until 2026-10-28, when
+ * the repository was renamed to `hornjason/rungate`. Nothing failed: GitHub
+ * redirects the old name, so the literal kept resolving and the script went on
+ * reading the right tracker for the wrong reason. A fallback that survives
+ * being wrong is `.claude/rules/config-access.md`'s *Silent Default
+ * Substitution* — the next rename, or the first consumer who runs this against
+ * their own tree, gets our issue list with no error.
+ *
+ * So there is no default. `--repo` wins; otherwise the project's declared
+ * `repo` is used; and a project that declares neither is UNMEASURED, which
+ * refuses and says so rather than guessing.
+ */
+function declaredRepo(root: string): string | null {
+  const repo = tryLoadRungateConfig(root)?.repo;
+  return typeof repo === "string" && REPO_FORMAT.test(repo) ? repo : null;
+}
 
 /**
  * GitHub's own owner and repository character set, and nothing wider.
@@ -99,11 +118,14 @@ interface Args {
   writeSpec: string | null;
 }
 
-function parseArgs(argv: readonly string[]): Args | { error: string } {
+function parseArgs(argv: readonly string[], defaultRepo: string | null): Args | { error: string } {
+  let repoGiven = false;
   const out: Args = {
     lo: NaN,
     hi: NaN,
-    repo: DEFAULT_REPO,
+    // Empty rather than a literal. `--repo` overwrites it; if neither it nor
+    // the project's config supplied one the refusal below names that state.
+    repo: defaultRepo ?? "",
     page: DEFAULT_PAGE,
     from: null,
     save: null,
@@ -120,7 +142,15 @@ function parseArgs(argv: readonly string[]): Args | { error: string } {
     const next = () => argv[++i] ?? "";
     if (a === "--lo") out.lo = Number.parseInt(next(), 10);
     else if (a === "--hi") out.hi = Number.parseInt(next(), 10);
-    else if (a === "--repo") out.repo = next();
+    else if (a === "--repo") {
+      // Recorded separately from the value: `--repo ""` is a BAD FLAG and
+      // must keep saying so, while no flag at all with nothing declared is
+      // UNMEASURED. Both spell `out.repo === ""`, and they are different
+      // facts — conflating them is how the refusal below stopped naming the
+      // flag the caller actually typed.
+      repoGiven = true;
+      out.repo = next();
+    }
     else if (a === "--page") out.page = Number.parseInt(next(), 10);
     else if (a === "--from") out.from = next();
     else if (a === "--save") out.save = next();
@@ -147,7 +177,23 @@ function parseArgs(argv: readonly string[]): Args | { error: string } {
   // server rejects a document nobody wrote, and a value with no `/` makes
   // `name:"undefined"` — a repository that does not exist, a GraphQL error,
   // and a message about the query rather than about the flag.
-  if (!REPO_FORMAT.test(out.repo)) {
+  // Only a run that will FETCH needs a tracker. `--from <entries.json>` reads
+  // the rounds out of a file and never reaches the network, so requiring a
+  // repository there would be a new precondition on a path that has never had
+  // one — and it would fire before every later check, turning each of their
+  // cases into an assertion about this message instead.
+  if (!repoGiven && out.repo === "" && out.from === null) {
+    // UNMEASURED, and distinguishable from a malformed flag: nobody said
+    // which tracker to read and there is no literal left to fall back on.
+    return {
+      error:
+        "UNMEASURED: no repository. Pass --repo owner/name, or declare `repo` " +
+        "in this project's .claude/rungate/config.json. Nothing was read.",
+    };
+  }
+  // An empty `out.repo` here means a `--from` run that needs none. A `--repo`
+  // the caller actually typed is always validated, empty string included.
+  if ((repoGiven || out.repo !== "") && !REPO_FORMAT.test(out.repo)) {
     return { error: `--repo ${JSON.stringify(out.repo)} is not owner/name` };
   }
   // `--write-spec` renders the row THIS run computed, and `--record` is the
@@ -247,7 +293,7 @@ function readStore(path: string): CrcReadingRow[] {
 }
 
 export function main(argv: readonly string[]): number {
-  const args = parseArgs(argv);
+  const args = parseArgs(argv, declaredRepo(join(import.meta.dir, "..")));
   if ("error" in args) {
     process.stderr.write(
       `crc-reading: ${args.error}\n` +

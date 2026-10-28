@@ -32,6 +32,7 @@ import {
   type IssueRef,
   type SpecRef,
 } from "../lib/criterion-issue-census";
+import { tryLoadRungateConfig } from "../lib/config-loader";
 import { createGitHubClient, listOpenIssues } from "../lib/github";
 import { localCalendarDay } from "../lib/local-calendar-day";
 import { collectSpecFiles } from "../lib/spec-files";
@@ -41,7 +42,20 @@ export const EXIT_REFUSED = 1;
 
 export const ADJUDICATIONS_FILE = ".claude/criterion-issue-adjudications.json";
 
-const REPO_SLUG = "hornjason/pai-harness";
+/**
+ * The tracker this census reads is DECLARED by the project, never spelled here.
+ *
+ * It was `const REPO_SLUG = "hornjason/pai-harness"` until 2026-10-28, when the
+ * repository was renamed to `hornjason/rungate`. Nothing broke — GitHub
+ * redirects the old name — so the literal went on resolving to the right
+ * tracker for the wrong reason, which is the failure mode worth closing: this
+ * script already takes `--project-root`, and against any root but this one the
+ * literal censused OUR issues against THEIR criteria and said nothing.
+ */
+function declaredRepo(root: string): string | null {
+  const repo = tryLoadRungateConfig(root)?.repo;
+  return typeof repo === "string" && repo.includes("/") ? repo : null;
+}
 
 function flagValue(argv: readonly string[], name: string): string | undefined {
   const at = argv.indexOf(name);
@@ -99,7 +113,18 @@ async function main(): Promise<number> {
     return EXIT_REFUSED;
   }
 
-  const page = await listOpenIssues(createGitHubClient(), REPO_SLUG);
+  const repoSlug = declaredRepo(root);
+  if (repoSlug === null) {
+    console.error(
+      `UNMEASURED: ${root} declares no \`repo\` in .claude/rungate/config.json. ` +
+        "Nothing was read — a census against the wrong tracker reports every " +
+        "criterion as unnamed by any issue, which is indistinguishable from a " +
+        "clean result.",
+    );
+    return EXIT_REFUSED;
+  }
+
+  const page = await listOpenIssues(createGitHubClient(), repoSlug);
   if (page.truncated) {
     // A partial issue set makes every "no issue names this" row unreliable in
     // the one direction that matters, and silently.
