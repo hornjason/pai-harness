@@ -285,6 +285,27 @@ function measuredFactsSection(body: string): string | null {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
+/**
+ * The *Not done* remainder, which states measurements too.
+ *
+ * Added because round 6 of #1637 pointed out that the re-takeability rule is
+ * declared for every world-derived number in the document and was enforced
+ * over ONE section — so the rule's own examples sat outside its reader. That
+ * is the shape this file already names twice: a declared obligation whose
+ * reader covers less than the declaration.
+ *
+ * Widening it cost one bullet, measured before the scope moved: 1 of 33 here
+ * against 0 of 22 in *Measured non-obvious facts*. A scope change that
+ * reddened nothing would have been scope on paper, so the count is recorded.
+ */
+function notDoneSection(body: string): string | null {
+  const start = body.search(/^### Not done — the remainder/m);
+  if (start === -1) return null;
+  const rest = body.slice(start).replace(/^#{2,3} .*\n/, "");
+  const end = rest.search(/^#{2,3} /m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
 /** Bullets that state a measurement and give no way to take it again. */
 function unretakeableBullets(section: string): string[] {
   const out: string[] = [];
@@ -424,6 +445,91 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every measurement can be taken 
         "`unretakeableBullets` and in the spec rather than implied away.",
     ).toEqual([]);
   });
+
+  test("the *Not done* remainder is held to the same rule", () => {
+    // Round 6 of #1637: the document declares the re-takeability rule for
+    // every world-derived number and enforced it over one section, so the
+    // rule's own examples sat outside its reader. Same function, second
+    // section — the fix is the scope, not another regex.
+    const notDone = body === null ? null : notDoneSection(body);
+    expect(notDone, "'### Not done — the remainder' was not found").not.toBeNull();
+    const bullets = notDone!.split(/\n(?=- )/).filter(b => b.startsWith("- "));
+    expect(bullets.length, "no bullets parsed, so the assertion below is over nothing")
+      .toBeGreaterThan(10);
+    expect(
+      unretakeableBullets(notDone!),
+      "These *Not done* bullets state a number and name no date, run, commit or command. " +
+        "Same obligation, same scope note as the case above.",
+    ).toEqual([]);
+  });
+});
+
+/**
+ * The document counts its own criteria in prose, and prose drifts.
+ *
+ * Round 6 of #1637 found "this spec holds 56 criteria" off by five, in the
+ * same section whose own rule is that a document-derived number must be
+ * computed rather than typed. It was wrong in THREE places — the standing
+ * practice, the work-in-flight note and the readings-table rationale — which
+ * is the shape round 5 named: a fact corrected at one site while independent
+ * copies are left stale.
+ *
+ * So the count stops being hand-maintained. Each pattern below is also
+ * asserted to match at least once, because a reword that silently stops
+ * matching is a check that silently stops checking — and that is the failure
+ * mode of every text-scanning guard in this repository.
+ */
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its own counts are computed, not typed", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+
+  test("every stated criterion count equals the criteria actually declared", () => {
+    expect(body, `${SPEC} is missing`).not.toBeNull();
+    const declared = [...body!.matchAll(/^- \[([ xX])\] (CRC-[A-Z]?\d+):/gm)];
+    const total = declared.length;
+    const ticked = declared.filter(m => m[1].toLowerCase() === "x").length;
+    expect(total, "no criteria parsed, so every claim below would be compared to zero")
+      .toBeGreaterThan(40);
+    expect(ticked, "no criterion is ticked, so the ticked claims would be vacuous")
+      .toBeGreaterThan(0);
+
+    const claims: { what: string; pattern: RegExp; expected: number[] }[] = [
+      { what: "This spec holds N criteria", pattern: /This spec holds (\d+) criteria/g, expected: [total] },
+      {
+        what: "this spec's N criteria as T ticked and U unticked",
+        pattern: /this spec's\s+(\d+) criteria as (\d+) ticked and (\d+) unticked/g,
+        expected: [total, ticked, total - ticked],
+      },
+      { what: "N ticked of M", pattern: /(\d+) ticked of (\d+)/g, expected: [ticked, total] },
+    ];
+
+    const wrong: string[] = [];
+    for (const claim of claims) {
+      const hits = [...body!.matchAll(claim.pattern)];
+      // Anti-vacuity, per claim. A reworded sentence that no longer matches
+      // leaves the number unchecked while the suite stays green, which is
+      // worse than the drift this case was written for.
+      expect(
+        hits.length,
+        `no sentence in ${SPEC} matches "${claim.what}". Either the claim was removed — ` +
+          `then delete this row — or it was reworded and is now unchecked. A text guard ` +
+          `whose pattern stops matching stops guarding, silently.`,
+      ).toBeGreaterThan(0);
+      for (const hit of hits) {
+        claim.expected.forEach((want, i) => {
+          const got = Number(hit[i + 1]);
+          if (got !== want) wrong.push(`"${hit[0]}" — group ${i + 1} says ${got}, the file has ${want}`);
+        });
+      }
+    }
+
+    expect(
+      wrong,
+      `${SPEC} states a count of its own criteria that disagrees with the criteria it ` +
+        `declares. This is document-derived — the document's own table says such a number ` +
+        `"must be computed. A hand-typed one is a defect." Update the prose; do not raise ` +
+        `the number here.`,
+    ).toEqual([]);
+  });
 });
 
 describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
@@ -458,7 +564,7 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
   });
 
   test("every criterion is accounted for in exactly one bucket", () => {
-    // The audit section sorts all 56 criteria into five states, and the
+    // The audit section sorts every criterion into five states, and the
     // difference between them is the whole point of it: "nobody can observe
     // this", "this would measure a constant here", "somebody has to decide",
     // "we decided against it" and "nobody has built it" are four different

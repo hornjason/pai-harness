@@ -59,7 +59,7 @@ without making *not filing* the default has missed the point.
 
 ## How we open a new area of this spec
 
-**Standing practice, agreed 2026-10-28.** This spec holds 56 criteria. Picking one off
+**Standing practice, agreed 2026-10-28.** This spec holds 61 criteria. Picking one off
 the list and building it is how the work has gone so far, and it is why three of the
 figures in this document describe no system that exists. Criteria are not a queue.
 
@@ -338,12 +338,18 @@ unreadable rate exactly where it is.
       which published version produced it cannot be attributed to a configuration, and
       an unattributable reading is what O1 and O2 above are made of.
 - [ ] CRC-M15: **The staleness check reads contents, not a version string.**
-      `lib/distribution-standing.ts` compares the version the measurements were taken
-      against to `[registry.latest, registry.previous]`, so one release of lag is
-      permitted unconditionally. **It never reads the published artefact at all** — an
-      earlier draft of this criterion said it compared package SIZE, which was wrong
-      and was corrected on 2026-10-28 after the required reviewer flagged it and the
-      module was read. The gap is not the comparison it makes but the one it does not:
+      `lib/distribution-standing.ts` makes **two** comparisons on **two different
+      fields**, and neither reads an artefact. `standing.published` — the version a
+      consumer can install — is checked for membership in
+      `[registry.latest, registry.previous]`, so one release of lag is permitted
+      unconditionally. `standing.tree` — the version the measurements were taken
+      against — is checked for equality with `package.json`'s version, and never
+      against the registry at all. **It never reads the published artefact** — two
+      earlier drafts of this criterion got this wrong in two different ways: the
+      first said it compared package SIZE, the second said the measurement-baseline
+      field was the one compared to the registry. Both were corrected on 2026-10-28
+      after the required reviewer read the module, in rounds 5 and 6. The gap is not
+      the comparison it makes but the one it does not:
       a version match says nothing about whether the published tarball carries a `lib/`
       fix that is already merged, which is exactly how a merged change stays dormant
       behind a green check. Met when a package whose version is acceptable and whose
@@ -1311,7 +1317,16 @@ hand-types dozens of other tallies — *272 (finding, later round) pairs*,
 machine-verify them, or declare them exempt. **Machine-verifying them is not
 possible and would be wrong if it were.** The classes below are sorted by
 where the authority for a number lives, and only the first is a property of
-this document:
+this document.
+
+**Those four figures are citations, not readings taken here**, and round 6
+was right that nothing in the sentence said so. Each is stated with its
+date, its method and its controls in *Measured non-obvious facts* below —
+272 pairs and 147 parseable ledgers under the second-chance reading taken
+2026-10-24, 161 distinct rounds under the round-3 floor, 31 review threads
+under the fifteen-rounds draw — and is named up here only as an example of
+the class. A citation and a fresh reading are the same shape in prose, which
+is exactly why the rule below is about where the number is TAKEN.
 
 | Class | Example | Can a test recompute it? | Rule |
 |---|---|---|---|
@@ -1374,10 +1389,10 @@ instance of it.
 - **CRC-M6** One bucket of four is derived from evidence. The other three report UNMEASURED unless hand-declared, and `noiseRate` is `null`.
 - **CRC-M7** The control exists and counts `FIRED` on clean subjects. The criterion's own number — findings that *would have led to a harmful change* — is declared UNMEASURED by the control's README, because a finding carries no remedy anything can apply. A tripwire in `test/review-negative-control.test.ts` reds the day the contract grows one.
 - **CRC-M10** Nothing tracks revert or incident rates.
-- **CRC-M12** One bucket, not three. `lib/review-execution-reading.ts` already distinguishes `EXECUTION_FILE_ABSENT`, `NO_TOOL_CALLS`, `NO_REVIEW_POSTED`, `REVIEW_COUNT_UNAVAILABLE` and `DIFF_TRUNCATED` as reason codes, and `record-ai-review-unmeasured` (#1488) records a kind per round — but `no_payload`, the nothing-posted case and `DIFF_TRUNCATED` are not named failure modes in this spec, so nothing binds the recorded kinds to a criterion and the rate they roll up into is a single undifferentiated 45.8%.
+- **CRC-M12** One bucket, not three. `lib/review-execution-reading.ts` already distinguishes `EXECUTION_FILE_ABSENT`, `NO_TOOL_CALLS`, `NO_REVIEW_POSTED`, `REVIEW_COUNT_UNAVAILABLE` and `DIFF_TRUNCATED` as reason codes, and `record-ai-review-unmeasured` (#1488) records a kind per round — but `no_payload`, the nothing-posted case and `DIFF_TRUNCATED` are not named failure modes in this spec, so nothing binds the recorded kinds to a criterion and the rate they roll up into is a single undifferentiated 45.8% — read 2026-10-28 with `bun evals/ai-review-control/run.ts rounds` over #1573–#1634, 48 pull requests and 203 rounds, the denominator being ROUNDS.
 - **CRC-M13** The census is computed and unreachable where it matters. `toolCallsByName` and `NO_TOOL_CALLS` are wired into the advisory reviewer only (`.github/workflows/claude-review.yml`). The required reviewer is generated and runs in consumer repositories through `bunx rungate@<pin>`, which ships no `scripts/` directory, so there is no command for it to call. Nothing anywhere reports whether a no-payload round read a single file.
 - **CRC-M14** No reading names its published version. CI pins `bunx rungate@<pin>`, so a merged `lib/` change is dormant until a release while a merged generated workflow is live on merge — two different latencies behind one number, and the stored readings record neither.
-- **CRC-M15** `lib/distribution-standing.ts` compares `standing.taken` against `[registry.latest, registry.previous]`, so one release of lag is permitted unconditionally — and it never reads the published artefact at all. A tarball whose version is acceptable and whose contents differ from the tree passes, which is how an earlier increment stayed dormant behind a green check. An earlier draft of this bullet said it compared SIZE; that was wrong and was corrected on 2026-10-28 after the module was read. #1226 is adjacent and unassigned.
+- **CRC-M15** `lib/distribution-standing.ts` checks `standing.published` — the version a consumer can install — for membership in `[registry.latest, registry.previous]`, so one release of lag is permitted unconditionally, and checks `standing.tree` against `package.json`'s version only. Neither reads the published artefact. A tarball whose version is acceptable and whose contents differ from the tree passes, which is how an earlier increment stayed dormant behind a green check. Two earlier drafts of this bullet were wrong about which field is compared to what — the first said SIZE, the second named a field (`standing.taken`) the module does not have — both corrected on 2026-10-28 after the module was read, in review rounds 5 and 6. #1226 is adjacent and unassigned.
 - **CRC-N4** **Half of it shipped in #1381 and the half the criterion is named for did not.** The walker exists: the generated `ai-review-carry` step reads the ledger, searches each prior finding's file for the recorded anchor TEXT at this commit (#1601 — it compared the text at the recorded LINE NUMBER until 2026-10-24, and an edit anywhere above a finding dropped it as resolved), and hands the reviewer the unresolved set under one of three readings that may not collapse — `AI_REVIEW_CARRY_READ`, `AI_REVIEW_CARRY_ABSENT`, `AI_REVIEW_CARRY_UNMEASURED`. It restates `readLedger → priorFindings → carryForward` in bash and is bound to the library over one matrix by `test/ai-review-carry-forward.test.ts`, because `lib/scaffold/ai-review-step.ts` may not import: the step is deliberately import-free so that the 27 suites copying it into a temp directory can build mutants that load. What remained was **suppression**, and #1586 built it: `lib/ai-review-suppression.ts` turns the carry step's state file and a ledger snapshot into the prior key set, and `scripts/ai-review-findings.ts` hands the adjudicator a gate over it. Three things keep this criterion unticked. **It is dormant** — the generated job runs `bunx rungate@<pinned>`, so this reaches CI only when the pin moves, and a tick is read as *running*. **It is advisory-only by declared deviation** — a blocking repeat is re-reported and still blocks; see the deviations table. **The key symmetry is new** — before #1586 the adjudicator formed `n:<line>` keys and the ledger held `t:<text>` keys, so a dedupe built on it would have matched nothing while reporting cleanly; `lineTextFor` reads the checkout and `test/ai-review-suppression.test.ts` AS-5 is the control that holds it.
 - **CRC-N5** Nothing runs review agents nightly over existing code.
 - **CRC-N6** **Named because it was measured, with nothing built.** Five consecutive rounds on #1614 re-raised one already-fixed defect: four consecutive rounds from a docblock that QUOTED the removed regex, and the FINAL round — after the quotation was deleted — from the PARAPHRASE that replaced it, reconstructing a regex literal that appears nowhere in the tree. CRC-N4's dedupe cannot absorb it, because the suppression key is `file \0 line-text \0 summary` and a regenerated finding carries a new summary: it is not a repeat, it is a new finding about code that does not exist. The near-miss is *"do not quote dead code in comments"*, which was applied and then defeated. The reading is in *Measured non-obvious facts*. **It is deliberately NOT a request for new machinery** — the prior-art section above found that a verification gate re-checking each finding against the real code at the cited line is the documented mitigation for the wider class it belongs to, and that gate is CRC-B4. This criterion names the case so a verifier can be held to it; it does not ask for a second mechanism beside one already planned.
@@ -1661,9 +1676,9 @@ stops being told anything.
 
 **A row with no pull request is work this spec says is next and nobody has
 claimed.** That is the state worth seeing, and it is the one a tracker of
-merged work cannot show: `bun bin/rungate.ts audit-specs` reports 46 of this
-spec's 56 criteria unmatched and has no way to say which of them anybody is
-moving. Every row here, with or without a number, names criteria from the list
+merged work cannot show: `bun bin/rungate.ts audit-specs` reports this spec's
+61 criteria as 10 ticked and 51 unticked, and has no way to say which of them
+anybody is moving. Every row here, with or without a number, names criteria from the list
 below, and `test/code-review-convergence-spec.test.ts` fails on an id this
 spec does not declare — so a row cannot point at a criterion that does not
 exist, which is the cheapest way for a traceability table to go quietly wrong.
@@ -1679,8 +1694,8 @@ to observe it. This table says what WAS observed, and it is the only place a
 phase may be called done.
 
 **Why it is a second table and not a column.** `bun bin/rungate.ts
-audit-specs` already reports this spec's criteria — 10 ticked of 56 at the
-time of writing — and `scripts/sync-sc-status.ts` maintains that automatically.
+audit-specs` already reports this spec's criteria — 10 ticked of 61 — and
+`scripts/sync-sc-status.ts` maintains that automatically.
 It is a real tracker and it is not this one: it reports whether a criterion is
 **bound by a test**, and a phase exit is an **observation on a live pull
 request** that no unit test can name. Both are needed and conflating them is
