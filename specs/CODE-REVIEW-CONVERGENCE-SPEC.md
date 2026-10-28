@@ -139,12 +139,23 @@ merge gate.
 
 **Target outcomes.**
 
-| # | Outcome | Baseline | Target |
-|---|---|---|---|
-| O1 | Rounds to pass | 4.50 — **untrustworthy** | set at the end of this loop |
-| O2 | One-round pass rate | 26.1% — **untrustworthy** | set at the end of this loop |
-| O3 | Rounds ending unreadable | 45.8% | ≤5% |
-| O4 | A reading describing ONE configuration | does not exist (n=1) | n≥12, configuration named |
+Every baseline carries the day it was taken and the command that produced it.
+Step 2 of *How we open a new area of this spec* requires both, and an earlier
+revision of this table carried neither — caught by the required reviewer on
+2026-10-28, which is the document failing its own rule inside the section that
+states it.
+
+| # | Outcome | Baseline | Taken | Command | Target |
+|---|---|---|---|---|---|
+| O1 | Rounds to pass | 4.50 — **untrustworthy** | 2026-10-28 | `bun evals/ai-review-control/run.ts rounds` | set at the end of this loop |
+| O2 | One-round pass rate | 26.1% — **untrustworthy** | 2026-10-28 | `bun evals/ai-review-control/run.ts rounds` | set at the end of this loop |
+| O3 | Rounds ending unreadable | 45.8% | 2026-10-28 | `bun evals/ai-review-control/run.ts rounds` | ≤5% |
+| O4 | A reading describing ONE configuration | does not exist (n=1) | 2026-10-28 | the same reading, partitioned by configuration — no command produces it today, which is what O4 says | n≥12, configuration named |
+
+All three numeric baselines come from one reading over **#1573–#1634: 48 pull
+requests, 203 rounds**. The denominator for O2 and O3 is **rounds**, not pull
+requests. O4's cell has no command on purpose: the absence IS the baseline, and
+inventing one would be the vanity baseline this frame warns about.
 
 O1 and O2 carry no target **by decision**. Both were measured across #1573–#1634, which
 spans at least two mechanism changes (#1614 made the advisory reviewer run on every pull
@@ -170,23 +181,46 @@ has not produced a reading after that is **cancelled, not extended** — and its
 cancellation is itself a result about O4, because it would mean a single-configuration
 reading cannot be taken by this route.
 
-**Exit criteria — all four, or the increment is not done.**
+**Exit criteria — all five, or the increment is not done.**
 
 1. An unreadable round reports **which** named mode it was, not merely that it was unreadable.
 2. The share of unreadable rounds with zero tool calls is a recorded number.
 3. Every reading in the store names the published version it was taken under.
-4. One cohort row exists describing a single configuration, with that configuration named.
+4. A cohort row exists describing a single configuration, with that configuration
+   named, over **n≥12 rounds** — the same n the O4 target states. An earlier revision
+   wrote this as "one cohort row exists", which is satisfied at n=1 and would have
+   closed the increment on a reading too thin for the decision table below to read.
+   Caught by the required reviewer on 2026-10-28.
+5. O1 and O2 carry a target, **or** a written statement of why they still cannot. Their
+   Target column promises one at the end of this loop and criteria 1–4 never ask for it,
+   so without this row the promise is enforced by nothing. "Still untrustworthy, because
+   X" is a complete answer; silence is not.
 
 **Pre-specified decision criteria, committed before the measurement.** Each reading
 below selects exactly one next increment, so two readers of the same number reach the
 same decision.
 
-| Reading on the unreadable rounds | Selects | Next increment |
-|---|---|---|
-| **> 60%** have zero tool calls | H1 | reviewer reliability — a prompt A/B would be measuring the wording of an instruction nothing read |
-| **< 40%** have zero tool calls | H2 | the `REVIEW.md` A/B, testing the standing prediction (current ~1 finding/pass, coverage arm ≥2.5×) |
-| **40–60%** | both | H1 first, because it is the cheaper build |
-| fewer than **12** unreadable rounds recorded in one configuration | neither — **futility** | the instrument did not produce enough draws; cancel and re-scope rather than read a number this thin |
+**Rows are evaluated in order and the first match wins.** Without that sentence the
+futility row overlaps all three percentage rows — any n<12 reading also lands in one of
+them — and two readers could reach different decisions from one number, which is exactly
+the determinism test this section claims to pass. Caught by the required reviewer on
+2026-10-28, and it was right: a table whose rows are not disjoint is not a decision rule.
+
+| Order | Reading on the unreadable rounds | Selects | Next increment |
+|---|---|---|---|
+| 1 | fewer than **12** unreadable rounds recorded in one configuration | neither — **futility** | the instrument did not produce enough draws; cancel and re-scope rather than read a number this thin. Evaluated FIRST, so a thin reading never reaches a percentage row |
+| 2 | **> 60%** have zero tool calls | H1 | reviewer reliability — a prompt A/B would be measuring the wording of an instruction nothing read |
+| 3 | **< 40%** have zero tool calls | H2 | the `REVIEW.md` A/B, testing the standing prediction (current ~1 finding/pass, coverage arm ≥2.5×) |
+| 4 | **40–60%** inclusive of both endpoints | both | H1 first, because it is the cheaper build |
+
+**H3 is not selectable by this reading, and that is a decision rather than an
+oversight.** The table branches on one axis — whether the unreadable rounds called tools
+— and H3 is a claim about findings-per-round at constant diff size, which this
+increment's instruments do not measure. So no reading above can select it. H3 stays in
+the Options table as live and **unaddressed**, and if rows 2–4 all turn out to be wrong
+it is the first thing to instrument. Writing a fifth row for a hypothesis nothing here
+can test would be a decision criterion no measurement could trigger, which is worse than
+saying so.
 
 **Deviations record — to be written after the measurement, and empty until then.**
 Restate the table above verbatim and list every departure from it. If no reading was
