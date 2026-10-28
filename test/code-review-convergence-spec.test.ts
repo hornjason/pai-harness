@@ -908,3 +908,89 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
     expect(found.filter(p => !existsSync(join(REPO, p)))).toEqual(["evals/ai-review-controls/"]);
   });
 });
+
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every criterion has exactly one phase", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+  const HEADING = "### Phase placement — every criterion has exactly one home";
+
+  // The placement table's rows, as {placement, ids}. MEMBERSHIP IS THE SECOND
+  // CELL and nothing else — the same claim-vs-citation discipline the bucket
+  // partition above draws, and for the same measured reason: a scan of the
+  // phase prose reported four criteria placed that Phase 0 only mentions, and
+  // missed three that Phase 5 writes as one slash-joined run headed by CRC-M1,
+  // in which they never appear whole. Two errors in opposite directions, one
+  // believable total.
+  const rows = (): { placement: string; ids: string[] }[] => {
+    const at = body!.indexOf(HEADING);
+    expect(at, `the placement section is gone or renamed — rename it here too`).toBeGreaterThan(-1);
+    const ends = [body!.indexOf("\n### ", at + 1), body!.indexOf("\n## ", at + 1)].filter(i => i > 0);
+    const section = body!.slice(at, ends.length > 0 ? Math.min(...ends) : body!.length);
+    return section
+      .split("\n")
+      .filter(l => l.startsWith("| ") && !l.startsWith("|---") && !l.startsWith("| Placement"))
+      .map(l => {
+        const cells = l.split("|");
+        return {
+          placement: (cells[1] ?? "").replaceAll("*", "").trim(),
+          ids: [...(cells[2] ?? "").matchAll(/CRC-[A-Z]?\d+/g)].map(m => m[0]),
+        };
+      });
+  };
+
+  test("the table parses and carries every placement value, so the cases below are not vacuous", () => {
+    expect(body, `${SPEC} is missing`).not.toBeNull();
+    const parsed = rows();
+    expect(parsed.length, "the placement table parsed no rows").toBeGreaterThan(5);
+    // The value set is closed and three of the values are deliberately not
+    // phases. A row that loses its ids, or a value nobody uses, is the way
+    // this table goes quietly wrong.
+    for (const row of parsed) {
+      expect(row.ids.length, `the "${row.placement}" row lists no criteria`).toBeGreaterThan(0);
+    }
+    expect(
+      parsed.map(r => r.placement).filter(p => !/^Phase [0-6]$/.test(p)).sort(),
+      "the non-phase placement values changed. They are deliberate — see the section's " +
+        "second paragraph — so if one is gone, say where its criteria went.",
+    ).toEqual(["Blocked — needs a second person", "Done", "Not observable here"]);
+  });
+
+  test("every criterion this spec declares is placed exactly once", () => {
+    const declared = [...body!.matchAll(/^- \[([ xX])\] (CRC-[A-Z]?\d+):/gm)].map(m => m[2]);
+    expect(declared.length, "no criteria parsed, so the partition below is over nothing")
+      .toBeGreaterThan(40);
+    const placed = rows().flatMap(r => r.ids);
+
+    expect(
+      declared.filter(id => !placed.includes(id)),
+      `criteria with NO phase. The backlog is built from this document and an unplaced ` +
+        `criterion reads as finished. Add each to a row of the placement table — ` +
+        `"${HEADING.replace("### ", "")}".`,
+    ).toEqual([]);
+    expect(
+      placed.filter((id, i) => placed.indexOf(id) !== i),
+      "criteria placed TWICE. The placements are exclusive, so one of the two is wrong.",
+    ).toEqual([]);
+  });
+
+  test("the table places nothing this spec does not declare", () => {
+    // The other direction, and the one a rename breaks. A placement for an id
+    // that no longer exists is a row nobody will ever clear.
+    const declared = new Set([...body!.matchAll(/^- \[[ xX]\] (CRC-[A-Z]?\d+):/gm)].map(m => m[1]));
+    expect(
+      rows().flatMap(r => r.ids).filter(id => !declared.has(id)),
+      `the placement table names criteria this spec does not declare. Either the id was ` +
+        `renamed — fix the row — or the placement was invented.`,
+    ).toEqual([]);
+  });
+
+  test("a missing and a duplicated placement are both caught, so the cases above can fail", () => {
+    // Driven over a planted body: the real table cannot be made wrong on
+    // demand, and a case that cannot be staged is a case that never ran.
+    const parse = (cell: string) => [...cell.matchAll(/CRC-[A-Z]?\d+/g)].map(m => m[0]);
+    const declared = ["CRC-A1", "CRC-A2", "CRC-A3"];
+    const missing = parse("CRC-A1, CRC-A2");
+    expect(declared.filter(id => !missing.includes(id))).toEqual(["CRC-A3"]);
+    const twice = parse("CRC-A1, CRC-A2, CRC-A3, CRC-A1");
+    expect(twice.filter((id, i) => twice.indexOf(id) !== i)).toEqual(["CRC-A1"]);
+  });
+});

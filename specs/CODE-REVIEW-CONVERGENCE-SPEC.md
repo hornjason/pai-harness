@@ -1782,6 +1782,7 @@ every round is, arithmetically, an extra round.
 |---|---|
 | **CRC-N4** — no repeats | **a release.** #1586 gave the dedupe its production caller — `lib/ai-review-suppression.ts`, bound in `scripts/ai-review-findings.ts` — so the machinery is no longer uncalled in the source. It is still uncalled in CI: the generated job runs `bunx rungate@<pinned>`, so `lib/` and `scripts/` changes are dormant until the pin moves. The checkbox stays unticked until then, because a tick is read as *running* and the merge does not earn it. |
 | **CRC-B7** — Pre-existing tagging | *(cleared, #1587)* #1204 closed, #1354 merged and 0.8.3 shipped, so the changed-file list reaches the adjudicator |
+| **CRC-N3** — flag the class, not the line | **a denominator, not a mechanism.** `REVIEW.md` already asks for the class and #1614's round 12 is a real instance of the reviewer giving one. What is missing is a rate: one instance is not a reading. It is in this phase rather than Phase 3 because the cost it removes is the repeat — the author fixing one instance of a class while its siblings sit in the same file — which is what *The author-side half of CRC-N3 is unowned* below says nothing owns |
 | **CRC-N2** — diff-only re-review | *(no longer a deviation, #1600)* **an observation, not a merge and not a release.** The decision is in the generated `.github/workflows/ai-review.yml` rather than in `lib/`, so unlike CRC-N4 it is live the moment the workflow lands — no pin has to move. **The same sentence is why #1601's anchor fix is not on this list**: it is a change to the same generated bash, so it lands with the narrowing rather than after it, and the ordering concern — narrowing on top of a carry that drops findings — does not survive the merge. The library halves in `lib/ai-review-rounds.ts` ARE dormant until the pin moves; they are the binding the generated step is held to, not the decider CI runs. What this criterion is waiting for is the reading in *Measured non-obvious facts* below: a real narrowed round on which the reviewer's reads can be shown to have been confined. Until then the scope is a request, and the checkbox stays unticked because a tick is read as *working*. |
 
 CRC-N4 is the single highest-value item in this document and it is not a
@@ -1800,6 +1801,7 @@ blocking side.
 | **CRC-B4** — verifier quorum | the *recording* half is deployed (#1476): per-verifier votes and the disagreement flag reach the ledger for every blocking finding. The *deciding* half depends on `VERIFIER_GROUP_SIZE` separate review-action invocations with per-verifier writable directories, and on reading the base ref rather than the head checkout |
 | **CRC-B6** — A/B the filters | CRC-B4's recorded votes — which now accumulate — and a variance control that does not read zero by construction |
 | **CRC-B3** — parallel generation | CRC-B4, strictly. Without a quorum, N generators are N chances to block falsely, which is **worse than one** |
+| **CRC-N6** — a fixed defect stays fixed | nothing in Phase 1 or 2 — it is independent and small. It is here rather than in Phase 1 because a finding re-raised from text that merely *describes* the removed code is a **false** finding, not a duplicated true one, and the two have different fixes: dedupe cannot help, because the second raise has a different anchor |
 
 ### Phase 3 — what the reviewer is told
 
@@ -1814,7 +1816,9 @@ earns the right to do this one.
 
 CRC-A4 (flag a `CLAUDE.md` convention break — the obvious objection does not
 apply, see its entry), CRC-B2 (root cause on a bug fix), CRC-B9 (per-repo
-Quick/Standard/Deep), CRC-A7 (the summary clause).
+Quick/Standard/Deep), CRC-A7 (the summary clause), CRC-B1 (the diff read
+against the whole repo **and the PR's stated intent** — the intent half is
+text the reviewer is handed, which is what this phase is).
 
 **#1507 did the text half of CRC-A4 and CRC-B2 and ticked neither.** Both
 clauses are in `REVIEW.md` and CRC-A4 now has a planted subject to be
@@ -1840,10 +1844,86 @@ and a daily rescore), CRC-M7 (a finding carries no remedy, so the control's
 own number is UNMEASURED), CRC-E3 and CRC-E9 (a second classifier, and a
 ledger that carries a tier to loosen against).
 
+**Six more belong here and were unplaced until 2026-10-28.** CRC-M2 (the
+case set's cases are expert-confirmed — a human act, but one this repository
+can perform, unlike the approval criteria below), CRC-M8 (the priority order
+between catching bugs and cutting rounds, which cannot be *enforced* before
+both numbers exist), and the four readability criteria the reviewer itself
+cannot report on today: CRC-M12 (an unreadable round names its mode),
+CRC-M13 (whether the reviewer READ anything, recorded apart from whether it
+found anything), CRC-M14 (every reading names the published version it was
+taken under) and **CRC-M11**, which is ticked and **contradicted by #1592** —
+the counter counts run ATTEMPTS where the sentence says ROUNDS, so the tick
+records a binding and not a trustworthy number.
+
 ### Phase 6 — release and detection
 
 CRC-F3, CRC-F4, CRC-F5, CRC-N5, CRC-H2. Last because none of them moves
 rounds-to-pass, and CRC-F5 is a gap the source admits on its own side.
+
+**Four more join them, by that same test.** CRC-F2 (new behaviour ships
+behind a flag, internal users first) and CRC-M15 (the staleness check reads
+contents, not a version string) are release mechanics on their face.
+CRC-C1 and CRC-C2 are here for a less obvious reason and it is worth
+stating: their remaining work is **one piece** — bringing the security pass
+into repo CI — and it moves rounds-to-pass not at all. CRC-C2's
+bug-review half already holds (`test` and `ai-review` are required contexts
+with `enforce_admins` on, and `required_conversation_resolution` is `true`);
+what is missing is a security check to require, which is CRC-C1. Placing
+them earlier would order the plan by how important security sounds rather
+than by the criterion this plan's order actually uses.
+
+### Phase placement — every criterion has exactly one home
+
+Added 2026-10-28, because the phase sections above name some criteria and
+not others, and a criterion in no phase is unreadable as anything: *nobody
+has reached it*, *it cannot start*, and *it is finished* all render as
+absence, and the backlog is built from this document.
+
+**The count that prompted this, and the instrument that got it wrong twice.**
+Against `ccd62c7b`, a word-boundary scan of every id over the phase span
+(`### Phase 0` to `### Exit conditions`) reported **33 of 61** placed. Both
+halves of that reading were false and they nearly cancelled: it counted
+CRC-E5, CRC-E6, CRC-E7 and CRC-M9 as placed because Phase 0's prose *names*
+them while placing none of them — a citation, not a claim — and it missed
+CRC-M3, CRC-M4 and CRC-M5 because Phase 5 writes the four of them as one
+slash-joined run headed by CRC-M1, in which the last three ids never appear
+whole and no word-boundary match can see them. The true figure was **32 placed, 29
+unplaced**. A detector whose two errors point in opposite directions returns
+a believable number, which is why the table below is a declaring position
+with a test over it rather than another scan of the prose.
+
+Three of the values below are not phases, and that is deliberate. Forcing
+*"needs a second person"* or *"nothing here can observe it"* into a numbered
+phase would state a plan for work that cannot start, which is the failure
+CRC-E8's withdrawal from Phase 0 already records once.
+
+| Placement | Criteria | What the value means |
+|---|---|---|
+| **Phase 0** | CRC-C3, CRC-E8, CRC-F1 | settings, no engineering — and two of the three do not survive contact: E8 is withdrawn, F1 is contested |
+| **Phase 1** | CRC-B7, CRC-N2, CRC-N3, CRC-N4 | stop the repeats |
+| **Phase 2** | CRC-B3, CRC-B4, CRC-B6, CRC-N6 | stop the false findings |
+| **Phase 3** | CRC-A4, CRC-A7, CRC-B1, CRC-B2, CRC-B9 | what the reviewer is told |
+| **Phase 4** | CRC-A1, CRC-A2, CRC-A3, CRC-A8, CRC-B8 | findings get answered, repeats fixed at the source |
+| **Phase 5** | CRC-E3, CRC-E9, CRC-M1, CRC-M2, CRC-M3, CRC-M4, CRC-M5, CRC-M6, CRC-M7, CRC-M8, CRC-M10, CRC-M11, CRC-M12, CRC-M13, CRC-M14 | the instruments |
+| **Phase 6** | CRC-C1, CRC-C2, CRC-F2, CRC-F3, CRC-F4, CRC-F5, CRC-H2, CRC-M15, CRC-N5 | release and detection — nothing here moves rounds-to-pass |
+| **Done** | CRC-A5, CRC-A6, CRC-B5, CRC-C4, CRC-E1, CRC-E2, CRC-E4, CRC-N1 | ticked and bound. Not *no work ever again* — CRC-B7 and CRC-M11 are also ticked and are **not** here, because an open issue contradicts each |
+| **Blocked — needs a second person** | CRC-E5, CRC-E6, CRC-E7, CRC-M9 | one account plus `enforce_admins: true` means an approval cannot exist, so E6 and M9 are **vacuous rather than unbuilt** — there is nothing to count. The blocker is CRC-E8's withdrawal and it is named in Phase 0 |
+| **Not observable here** | CRC-H1, CRC-H3, CRC-H4, CRC-H5 | statements about human judgement. *A mechanism exists; this repository cannot observe it* above says why: nothing distinguishes them being honoured from them being ignored |
+
+**This table is the placement, and the phase sections above are its
+reasons.** Two spellings of one fact drift apart — this document says so
+about measurements and it is just as true of a list — so when they disagree,
+this table is wrong until it is fixed, not the other way round, and
+`test/code-review-convergence-spec.test.ts` refuses any criterion that is
+missing from it, listed twice, or listed under a value not in the first
+column above.
+
+**What it does NOT do is create 29 issues.** A placement is a label on work
+that already exists or is yet to be scoped; filing an issue per criterion
+would put this project at the three-to-one opened-against-closed ratio that
+rule 7 of `AGENTS.md` exists to prevent. The tracker gets an issue when
+somebody is about to do the work.
 
 ### Exit conditions — what must be OBSERVED before the next phase starts
 
