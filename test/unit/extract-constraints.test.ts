@@ -6,6 +6,7 @@ import {
   contentHash,
   loadExistingConstraints,
   unreadConstraintSection,
+  hardConstraintsSection,
 } from "../../scripts/extract-constraints";
 
 function createTempDir(): string {
@@ -246,16 +247,34 @@ describe("#1644: Hard Constraints is read as a list, in both markdown forms", ()
     expect(loadExistingConstraints(tmpDir)).toEqual(["the proof is a test, not a tick."]);
     rmSync(tmpDir, { recursive: true });
 
-    // Unindented text with no blank line before it also terminates: a
-    // paragraph break is not the only way somebody writes a footer.
-    tmpDir = plant("1. **Proof.** The proof is a test, not a tick.\nAgreed October 2026.");
+    // ...but an unindented line with NO blank line before it is a
+    // CommonMark *lazy continuation* and belongs to the item. The first
+    // terminator fix dropped it, which is the same defect pointing the
+    // other way — half a sentence missing instead of a paragraph gained.
+    // Raised by the required reviewer one round after the one above.
+    tmpDir = plant("1. **Proof.** The proof is a test,\nnot a tick.");
     expect(loadExistingConstraints(tmpDir)).toEqual(["the proof is a test, not a tick."]);
+    rmSync(tmpDir, { recursive: true });
+
+    // An INDENTED line after a blank line is a second paragraph of the
+    // same item, and still belongs to it.
+    tmpDir = plant("1. **Proof.** The proof is a test.\n\n   And it must fail.");
+    expect(loadExistingConstraints(tmpDir)).toEqual(["the proof is a test. and it must fail."]);
     rmSync(tmpDir, { recursive: true });
 
     // The control: a genuinely INDENTED continuation must still be joined,
     // or the terminator would have broken the wrap fix it sits beside.
     tmpDir = plant("1. **Proof.** The proof is a test,\n   not a tick.");
     expect(loadExistingConstraints(tmpDir)).toEqual(["the proof is a test, not a tick."]);
+  });
+
+  test("the reporter and the parser read the same section", () => {
+    // Both held a byte-identical copy of the section regex and nothing tied
+    // them together. A checker that can disagree with the thing it checks
+    // reports on a section that was never parsed.
+    tmpDir = plant("1. **Proof.** The proof is a test, not a tick.");
+    expect(hardConstraintsSection(tmpDir)).toContain("The proof is a test");
+    expect(hardConstraintsSection(createTempDir())).toBeNull();
   });
 
   test("the real AGENTS.md parses to all seven rules", () => {
