@@ -76,12 +76,17 @@ conversation:
    choose between them.
 4. **An increment** — the smallest set of criteria that together move one outcome.
    Several criteria, not one: a criterion that moves nothing on its own is not shippable
-   on its own. This is a **Minimum Marketable Feature** (Denne & Cleland-Huang, 2003),
-   not an MVP — an MVP buys learning, an MMF delivers value.
+   on its own. This is a **Minimum Marketable Feature** (Denne & Cleland-Huang, 2003)
+   — **UNVERIFIED, not read against the source; see the citation table below** — not an
+   MVP: an MVP buys learning, an MMF delivers value.
 5. **An appetite, and a circuit breaker.** A budget fixed before design. An increment
    that exceeds it is **cancelled by default** rather than extended by default; an
-   extension has to be argued for. MMF says what to ship and is silent on what happens
-   when it does not finish, which is the gap this closes.
+   extension has to be argued for. That is Shape Up's circuit breaker and it is
+   **VERIFIED 2026-10-28** against the book itself: *"If they don't finish, by default
+   the project doesn't get an extension"*, and its glossary gives the mechanism as
+   *"Cancel projects that don't ship in one cycle by default instead of extending them
+   by default"*. MMF says what to ship and is silent on what happens when it does not
+   finish, which is the gap this closes.
 6. **Exit criteria** — what must be true for the increment to be done, written before
    it starts.
 7. **Pre-specified decision criteria** — which hypothesis each possible reading selects,
@@ -121,14 +126,32 @@ rates are a different literature with different numbers, and this document is no
 standing on figures it has not read. The claim above survives on the headline result
 alone, which is weaker and checked.
 
-**Scope of that check, because the rest of this section's citations have not had it.**
-Round 11 of #1637 observed that five external claims here — GQM, ISO/IEC/IEEE 15939,
-MMF, Shape Up's appetite, and this one — rest on the same mechanism that produced the
-withdrawn Mobius attribution, and that nothing in this repository can check any of them.
-That is correct. One has now been read against its primary source, and reading it cost
-one withdrawal. **The other four are UNVERIFIED and are marked so here rather than left
-to read as checked** — which is the same rule this document applies to a measurement it
-could not take.
+### Every external citation in this section, and whether anybody read it
+
+Round 11 of #1637 observed that the external claims here rest on the same mechanism that
+produced the withdrawn Mobius attribution, and that nothing in this repository can check
+any of them. Round 12 then made the sharper point: a sentence *saying* the others are
+unverified, three paragraphs away from where they are asserted, is not a mark on any of
+them — a reader scanning the claims sees confident prose. Both are correct, and the
+round-11 census was **itself short by one**: it named five claims and missed Pre-SPEC
+entirely. A census of unchecked claims that is not itself complete reproduces the defect
+it records, so the population is enumerated here rather than counted.
+
+Each row is marked at its own claim site as well as in this table.
+
+| Citation | Status | What was actually read |
+|---|---|---|
+| van den Akker et al., *Preregistration in practice*, 2023 | **VERIFIED** 2026-10-28 | Publisher PDF; abstract quoted above. Cost two withdrawals. |
+| Shape Up, the circuit breaker | **VERIFIED** 2026-10-28 | `https://basecamp.com/shapeup/2.2-chapter-08` and the glossary; both quoted above. |
+| Pre-SPEC (Kahan, Forbes & Cro, 2020) | **VERIFIED** 2026-10-28 | Open-access full text; points 4 and 5 and the determinism definition quoted above. |
+| Open Practice Library / Mobius | **WITHDRAWN** | Practice page read; the *options pivot* URL returns HTTP 404. |
+| MMF (Denne & Cleland-Huang, 2003) | **UNVERIFIED** | Nothing. It is a book and no copy was consulted. |
+| GQM (Basili et al., NASA SEL) | **UNVERIFIED** | A search returned only a secondary method guide; no primary text. |
+| ISO/IEC/IEEE 15939:2017 | **UNVERIFIED** | Nothing — paywalled; ISO's browsing platform returned HTTP 403. |
+
+Three read, three not, one withdrawn. The three unread are the three that are hardest to
+reach, which is the honest reason and not a good one; what this table buys is that no
+reader has to guess which is which.
 
 ### Provenance, and one correction
 
@@ -143,11 +166,19 @@ decision rule. The two things this section most needed are precisely the two Mob
 not supply; they were invented here and credited to it.
 
 The honest lineage is older and testable. **GQM** (Basili et al., NASA SEL) writes its
-*interpretation model* alongside the questions, before any data. **ISO/IEC/IEEE
-15939:2017** makes *decision criteria* a defined term — thresholds fixed in advance that
-determine the need for action — and defines an analysis model as measures combined with
-them. The determinism test in step 7 is **Pre-SPEC** (Kahan et al., *BMC Medicine*,
-2020). Mobius is prior art here and nothing is inherited from it.
+*interpretation model* alongside the questions, before any data — **UNVERIFIED: no
+primary Basili or SEL text was read; a search on 2026-10-28 returned only a secondary
+method guide.** **ISO/IEC/IEEE 15939:2017** makes *decision criteria* a defined term —
+thresholds fixed in advance that determine the need for action — and defines an analysis
+model as measures combined with them: **UNVERIFIED, and not cheaply verifiable — the
+standard is paywalled and ISO's browsing platform returned HTTP 403 on 2026-10-28.** The
+determinism test in step 7 is **Pre-SPEC** (Kahan, Forbes & Cro, *BMC Medicine* 18:253,
+2020, `doi:10.1186/s12916-020-01706-7`), and this one is **VERIFIED 2026-10-28** from the
+open-access full text: its fifth point is *"adaptive analysis strategies should use
+deterministic decision rules"*, and it defines the test as *"A decision rule is
+deterministic if two different people are guaranteed to get the exact same result by
+following the rule"* — which is step 7's sentence, and the paraphrase was faithful.
+Mobius is prior art here and nothing is inherited from it.
 
 ## The current loop — Increment 1: make the verdict readable
 
