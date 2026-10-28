@@ -165,7 +165,20 @@ const UNCLAIMED_RATCHET = 150;
 // vocabulary was declared in `lib/finding-jury.ts` and the deployed CI path
 // could not import it, so a matcher over the symbol would have ticked a
 // criterion nothing in CI could reach.
-const CLAIMED_UNBINDABLE = 96;
+// 96 -> 104 on 2026-10-28: SC-2560..SC-2569 and SC-2574 of
+// SPEC-AUTHORING-SPEC.md, eight of which ticked, all claimed by
+// `test/spec-evidence.test.ts` and `test/spec-template.test.ts`. Unbindable
+// because each is a claim about what `evidenceViolations` RETURNS for a
+// planted document — "a waiver whose expiry has passed is a violation again"
+// is a statement about a verdict, and no registered matcher reads one. The
+// available patterns would bind to `lib/spec-evidence.ts` existing or
+// containing `WAIVER_EXPIRED`, both of which are satisfied by a module that
+// declares the code and never emits it: the exact decorative-check shape
+// this spec exists to refuse. The real binding is the mutation battery in
+// `test/spec-evidence.test.ts`, which runs each case against the module and
+// against a copy with the decider short-circuited, and the document's own
+// `proved-by:` lines name it per criterion.
+const CLAIMED_UNBINDABLE = 104;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });
