@@ -29,20 +29,29 @@
  *   gh pr view <n> --json number,files \
  *     -q '{number:.number,files:[.files[].path]}' >> <dir>/pr-files.jsonl
  *
- * then run it again. An **absent** `pr-files.jsonl` is the legitimate state
- * on the first pass — every merged pull request is simply unclassified and
- * the run says so — so it is read as empty rather than refused. The recipe
- * was circular before that: the file could only be populated from a reading
- * the script would not produce until the file existed. Raised by the required
- * reviewer on #1642, who also flagged the `-c` on that last command; `-c` is
- * `--comments` and does nothing beside `--json`. Measured: with and without
- * it, `gh pr view 1639 --json number,files -q '…'` emits exactly one line.
- * Removed as misleading, not as a fix to the output shape.
+ * then run it again.
  *
- * `issues.json` or `prs.json` missing IS a **refusal**, not a partial
- * reading: a pull-request list that silently came back empty would report
- * every criterion as NOT STARTED, which is the one direction that reads as
+ * ## Which absences are refusals, and which are the first pass
+ *
+ * `issues.json` or `prs.json` missing — or present and empty — is a
+ * **refusal**. Both are taken in one shot, so an empty reading means the
+ * fetch failed, and a pull-request list that silently came back empty would
+ * report every criterion as NOT STARTED: the one direction that reads as
  * good news.
+ *
+ * `pr-files.jsonl` missing is **not**. It is the normal state of the first
+ * pass, because it is populated from the UNCLASSIFIED numbers this script
+ * itself reports. Refusing on it made the recipe above circular — the file
+ * could only be filled from a reading that would not run until the file
+ * existed — so it is read as empty and every merged pull request is
+ * unclassified, which the run says by name.
+ *
+ * Both halves were raised by the required reviewer on #1642. The same round
+ * flagged a `-c` that used to sit on the `gh pr view` command, on the
+ * grounds that it broke the single-line output the `>>` append needs. It
+ * does not: measured, with and without it, that command emits exactly one
+ * line. It is gone anyway, because `-c` is `--comments` and is a no-op
+ * beside `--json` — removed as misleading, not as a fix.
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
