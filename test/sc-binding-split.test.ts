@@ -178,7 +178,15 @@ const UNCLAIMED_RATCHET = 150;
 // `test/spec-evidence.test.ts`, which runs each case against the module and
 // against a copy with the decider short-circuited, and the document's own
 // `proved-by:` lines name it per criterion.
-const CLAIMED_UNBINDABLE = 112;
+// 112 -> 113 on 2026-10-28: SC-2576, same spec, same reason. "the audit's
+// `today` is anchored in UTC, so two runners cannot disagree" is a claim
+// about what one script STAMPS under two process timezones, and the only
+// honest matcher for it is running the script twice. A file-exists or
+// content-contains pattern would bind to the string `"UTC"` appearing in
+// `scripts/audit-spec-evidence.ts`, which is satisfied by the word sitting in
+// a comment above a call that does not pass it — which is exactly the state
+// the module was in when the reviewer found this on #1639.
+const CLAIMED_UNBINDABLE = 113;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

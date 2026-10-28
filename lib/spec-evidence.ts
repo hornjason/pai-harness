@@ -191,18 +191,24 @@ export function specDeclaresEvidence(content: string): boolean {
 /**
  * `2026-10-28` → true only for a real calendar date in that exact shape.
  *
- * UTC-INTENTIONAL: a waiver expiry is a date somebody typed, not an instant,
- * and it is compared against the `today` this module is handed. Both sides
- * are read in UTC so the comparison cannot change answer with the reader's
- * timezone — a waiver that expires in Sydney and not in London would make
- * the gate's verdict a property of who ran it. The round-trip rejects
- * `2026-02-31`, which the regex alone accepts.
+ * UTC-INTENTIONAL: a waiver expiry is a date somebody typed, not an instant.
+ * This side is read in UTC, and the `today` this module is HANDED must be
+ * anchored the same way — a waiver that expires in Sydney and not in London
+ * makes the gate's verdict a property of who ran it. This module cannot
+ * enforce that: it must stay free of relative imports so its mutation battery
+ * can load a copy from a temp directory, so the anchoring lives at the one
+ * call site, `scripts/audit-spec-evidence.ts`, and `test/spec-evidence.test.ts`
+ * SC-2576 spawns that script under two zones 25 hours apart and refuses if
+ * they disagree. An earlier revision of this comment asserted both sides were
+ * already UTC while the caller passed a local day; raised on #1639.
+ *
+ * The round-trip rejects `2026-02-31`, which the regex alone accepts.
  */
 function isIsoDay(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const d = new Date(`${value}T00:00:00Z`);
-  // UTC-INTENTIONAL: both sides of a waiver-expiry comparison are read in UTC,
-  // so the gate's verdict cannot depend on who ran it. See the docblock above.
+  // UTC-INTENTIONAL: the expiry is validated against the UTC calendar, and the
+  // caller is required to hand `today` in UTC too. See the docblock above.
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
 }
 

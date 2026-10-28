@@ -180,6 +180,10 @@ the criterion later invalidates what proved it.
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2575: a ticked criterion with evidence and no fingerprint is a violation"
       fingerprint: 1073dc36
+- [x] SC-2576: the expiry comparison is anchored in UTC on both sides, so two runners cannot disagree
+      needs: test
+      proved-by: test/spec-evidence.test.ts "SC-2576: the audit's `today` is UTC, so two runners cannot disagree"
+      fingerprint: 1ba07da3
 - [x] SC-2574: the decider refuses nothing when short-circuited, and that is observed
       needs: test
       proved-by: test/spec-evidence.test.ts "the mutant and the real module differ on a named input"

@@ -56,7 +56,23 @@ function markdownFiles(dir: string): string[] {
 
 const root = join(import.meta.dir, "..");
 const specsDir = join(root, "specs");
-const today = localCalendarDay();
+// UTC, EXPLICITLY, and this is the one place the anchoring is decided.
+//
+// `localCalendarDay()` with no zone returns the day the runner is living in,
+// and `lib/spec-evidence.ts` validates `waived-until` in UTC — so the two
+// sides of `c.waiver.until < today` were anchored differently and a waiver
+// could read as expired in Sydney and live in London. A gate whose verdict is
+// a property of WHO RAN IT is the thing this whole rule exists to refuse, and
+// the decider's own docblock claimed the comparison was already UTC on both
+// sides. Raised on #1639 by the required reviewer; the claim was false for the
+// shipped path and is now true.
+//
+// The decider cannot enforce this itself: `lib/spec-evidence.ts` must stay
+// free of relative imports so its mutation battery can load a copy from a temp
+// directory, so it takes `today` as a parameter and this is its only caller.
+// `test/spec-evidence.test.ts` SC-2576 spawns this script under two zones 25
+// hours apart and refuses if they disagree.
+const today = localCalendarDay(new Date(), "UTC");
 const asJson = process.argv.includes("--json");
 const recordFingerprints = process.argv.includes("--record-fingerprints");
 

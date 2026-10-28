@@ -36,9 +36,12 @@
 // SPEC-REF: SPEC-AUTHORING-SPEC.md § Success Criteria (SC-2560..SC-2569)
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+
+import { localCalendarDay } from "../lib/local-calendar-day.ts";
 
 import {
   ANNOTATION_KEYS,
@@ -406,6 +409,54 @@ describe("the parser saw what it thinks it saw", () => {
     expect(p.provedBy).toBe("a");
     expect(p.recordedFingerprint).toBe("deadbeef");
     expect(p.waiver).toEqual({ reason: "r", by: "b", until: "2027-01-01" });
+  });
+
+  // covers SC-2576
+  test("SC-2576: the audit's `today` is UTC, so two runners cannot disagree", () => {
+    // `c.waiver.until < today` compares a UTC-validated expiry against the
+    // `today` the caller hands in, and the caller used to hand the day the
+    // RUNNER was living in — so a waiver could read as expired in Sydney and
+    // live in London, which makes the gate's verdict a property of who ran
+    // it. Raised on #1639; the decider's own docblock claimed the comparison
+    // was already UTC on both sides.
+    //
+    // The pinned `TODAY` constant above cannot see this: it bypasses the
+    // derivation entirely. So this spawns the real instrument, and it spawns
+    // it in two zones 25 hours apart — Kiritimati (UTC+14) and Midway
+    // (UTC-11) are NEVER on the same calendar day, so a local-day derivation
+    // is red at every instant rather than for a few hours.
+    const script = join(import.meta.dir, "..", "scripts", "audit-spec-evidence.ts");
+    const read = (timeZone: string): string => {
+      const r = spawnSync("bun", [script, "--json"], {
+        encoding: "utf-8",
+        env: { ...process.env, TZ: timeZone },
+      });
+      // Exit code is deliberately not asserted: a bound spec that fails the
+      // rule exits non-zero and still prints the reading, and this case is
+      // about the stamp, not the verdict.
+      const parsed = JSON.parse(r.stdout);
+      return parsed.today;
+    };
+
+    const before = localCalendarDay(new Date(), "UTC");
+    const east = read("Pacific/Kiritimati");
+    const west = read("Pacific/Midway");
+    const after = localCalendarDay(new Date(), "UTC");
+
+    expect(
+      west,
+      `the audit stamped ${east} at UTC+14 and ${west} at UTC-11. A waiver ` +
+        `expiring on one of those days is expired for one runner and live for ` +
+        `the other, which is the non-determinism the expiry comparison exists ` +
+        `to not have. Anchor \`today\` in scripts/audit-spec-evidence.ts.`,
+    ).toBe(east);
+
+    // Anti-vacuity: agreement alone is satisfied by a constant, an empty
+    // string, or a stamp the script stopped deriving. It must be the real
+    // UTC day — either side of a tick over midnight while this ran.
+    expect([before, after], `the audit reported ${east}, which is no UTC day around now`).toContain(
+      east,
+    );
   });
 
   test("the evidence kinds are a closed set and the message names them", () => {
