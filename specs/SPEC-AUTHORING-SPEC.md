@@ -125,34 +125,41 @@ the criterion later invalidates what proved it.
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2560: a ticked criterion with no proved-by line at all is a violation"
       fingerprint: b73c6a2e
-- [ ] SC-2561: a ticked criterion whose proved-by is blank is a violation
+- [x] SC-2561: a ticked criterion whose proved-by is blank is a violation
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2561: a ticked criterion whose proved-by is BLANK is a violation, not a pass"
-- [ ] SC-2562: a criterion that never declares what would prove it is a violation
+      fingerprint: d2c67601
+- [x] SC-2562: a criterion that never declares what would prove it is a violation
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2562: a criterion that never says what would prove it is a violation"
-- [ ] SC-2563: an evidence kind outside the closed set is a violation
+      fingerprint: 33d48939
+- [x] SC-2563: an evidence kind outside the closed set is a violation
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2563: an evidence kind outside the closed set is a violation, not a pass"
-- [ ] SC-2564: a waiver with an empty reason is a violation
+      fingerprint: 465cebd3
+- [x] SC-2564: a waiver with an empty reason is a violation
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2564: a waiver with an empty reason is a violation — lobster's hole, closed"
-- [ ] SC-2565: a waiver with no expiry date is a violation
+      fingerprint: 2ebeb40e
+- [x] SC-2565: a waiver with no expiry date is a violation
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2565: a waiver with no expiry is a violation"
-- [ ] SC-2566: a waiver whose expiry has passed is a violation again
+      fingerprint: a17e7ea6
+- [x] SC-2566: a waiver whose expiry has passed is a violation again
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2566: a waiver whose expiry has passed is a violation again"
-- [ ] SC-2567: evidence recorded against a different wording is stale
+      fingerprint: 5f97edb7
+- [x] SC-2567: evidence recorded against a different wording is stale
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2567: evidence recorded against a different wording is stale"
+      fingerprint: 9eb5b8f6
 - [x] SC-2568: a fully populated criterion produces zero violations
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
       needs: test

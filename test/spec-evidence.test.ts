@@ -160,30 +160,35 @@ describe("the decider can fail (mutation battery)", () => {
     expect(mutantViolations(content, TODAY)).toEqual([]);
   });
 
+  // covers SC-2560
   bothWays(
     "SC-2560: a ticked criterion with no proved-by line at all is a violation",
     "- [x] SC-2560: the gate refuses an unsigned payload.\n      needs: test\n",
     ["TICKED_WITHOUT_EVIDENCE"],
   );
 
+  // covers SC-2561
   bothWays(
     "SC-2561: a ticked criterion whose proved-by is BLANK is a violation, not a pass",
     "- [x] SC-2561: the loader throws on malformed JSON.\n      needs: test\n      proved-by:\n",
     ["EVIDENCE_BLANK"],
   );
 
+  // covers SC-2562
   bothWays(
     "SC-2562: a criterion that never says what would prove it is a violation",
     "- [ ] SC-2562: the census names its denominator.\n",
     ["NEEDS_MISSING"],
   );
 
+  // covers SC-2563
   bothWays(
     "SC-2563: an evidence kind outside the closed set is a violation, not a pass",
     "- [ ] SC-2563: the reviewer reads the diff.\n      needs: vibes\n",
     ["NEEDS_UNKNOWN"],
   );
 
+  // covers SC-2564
   bothWays(
     "SC-2564: a waiver with an empty reason is a violation — lobster's hole, closed",
     "- [x] SC-2564: the tag is immutable.\n      needs: review\n      waived-reason:\n" +
@@ -191,6 +196,7 @@ describe("the decider can fail (mutation battery)", () => {
     ["WAIVER_INCOMPLETE"],
   );
 
+  // covers SC-2565
   bothWays(
     "SC-2565: a waiver with no expiry is a violation",
     "- [x] SC-2565: the tag is immutable.\n      needs: review\n" +
@@ -198,6 +204,7 @@ describe("the decider can fail (mutation battery)", () => {
     ["WAIVER_INCOMPLETE"],
   );
 
+  // covers SC-2566
   bothWays(
     "SC-2566: a waiver whose expiry has passed is a violation again",
     "- [x] SC-2566: the tag is immutable.\n      needs: review\n" +
@@ -206,6 +213,7 @@ describe("the decider can fail (mutation battery)", () => {
     ["WAIVER_EXPIRED"],
   );
 
+  // covers SC-2567
   bothWays(
     "SC-2567: evidence recorded against a different wording is stale",
     "- [x] SC-2567: the loader throws on malformed JSON.\n      needs: test\n" +
