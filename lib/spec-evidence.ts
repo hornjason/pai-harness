@@ -361,7 +361,8 @@ export function evidenceViolations(
           code: "WAIVER_INCOMPLETE",
           message:
             `${at} is waived but its waiver is missing: ${missing.join(", ")}. All three of ` +
-            `\`waived-reason\`, \`waived-by\` and \`waived-until\` must carry content. ` +
+            `\`waived-reason\`, \`waived-by\` and \`waived-until\` must carry content, and ` +
+            `\`needs:\` stays beside them — a waiver replaces \`proved-by:\`, never \`needs:\`. ` +
             `BMW lobster accepts an empty justification string and that is the defect this ` +
             `rule exists to not reproduce: an escape hatch nobody signs or dates is a ` +
             `permanent silent pass.`,
@@ -398,7 +399,9 @@ export function evidenceViolations(
         message:
           `${at} is ticked and has no \`proved-by\` line at all. A tick records that somebody ` +
           `believed it; it is not a record of what was run. Add \`proved-by:\`, or waive it ` +
-          `explicitly with \`waived-reason\`, \`waived-by\` and \`waived-until\`.`,
+          `explicitly with \`waived-reason\`, \`waived-by\` and \`waived-until\` — and keep ` +
+          `\`needs:\` either way, because a waiver expires and what it will take to prove ` +
+          `this is exactly what you want recorded while deciding not to take it yet.`,
       });
       continue;
     }

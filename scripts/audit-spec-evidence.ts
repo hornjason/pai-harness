@@ -237,7 +237,9 @@ if (offending.length > 0) {
     console.error(
       `\n${offending.length} spec(s) declare \`evidence: required\` and do not satisfy it. ` +
         `Name what proved each ticked criterion in a \`proved-by:\` line, or waive it ` +
-        `explicitly with \`waived-reason\`, \`waived-by\` and \`waived-until\`.`,
+        `explicitly with \`waived-reason\`, \`waived-by\` and \`waived-until\`. Keep ` +
+        `\`needs:\` either way — a waiver expires, and a waived criterion still owes a ` +
+        `statement of what would prove it.`,
     );
   }
   process.exit(EVIDENCE_AUDIT_EXIT);

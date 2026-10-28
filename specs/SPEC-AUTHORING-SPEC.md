@@ -117,8 +117,11 @@ proof it takes — one of `test`, `measurement`, `run`, `review`. `proved-by:`
 names what actually ran, and **a ticked criterion with it blank fails the
 build** (`lib/spec-evidence.ts`). A criterion deliberately not being proved
 says so out loud instead, with `waived-reason`, `waived-by` and
-`waived-until`. `fingerprint:` binds the evidence to the wording, so rewording
-the criterion later invalidates what proved it.
+`waived-until` — and it keeps `needs:`, because a waiver carries an expiry and
+what kind of proof this will take is exactly what you want recorded while
+deciding not to take it yet. A waiver replaces `proved-by:`, never `needs:`.
+`fingerprint:` binds the evidence to the wording, so rewording the criterion
+later invalidates what proved it.
 
 - [x] SC-2560: a ticked criterion with no proved-by line is a violation
       needs: test
@@ -196,6 +199,14 @@ the criterion later invalidates what proved it.
       needs: test
       proved-by: test/spec-evidence.test.ts "SC-2579: an absent specs directory is UNMEASURED, not clean"
       fingerprint: 039f1df2
+- [x] SC-2580: a complete, unexpired, signed waiver still owes a needs line, and that is the behaviour
+      needs: test
+      proved-by: test/spec-evidence.test.ts "SC-2580: a complete, unexpired, signed waiver still owes a `needs:` line"
+      fingerprint: 3eb2f2f3
+- [x] SC-2581: every site telling a reader how to waive also names needs, over the whole population
+      needs: test
+      proved-by: test/spec-evidence.test.ts "SC-2581: every site that tells a reader to waive also names `needs:`"
+      fingerprint: dcd8262a
 - [x] SC-2574: the decider refuses nothing when short-circuited, and that is observed
       needs: test
       proved-by: test/spec-evidence.test.ts "the mutant and the real module differ on a named input"

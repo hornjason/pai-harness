@@ -225,6 +225,15 @@ describe("the decider can fail (mutation battery)", () => {
     ["FINGERPRINT_MISSING"],
   );
 
+  // covers SC-2580
+  bothWays(
+    "SC-2580: a complete, unexpired, signed waiver still owes a `needs:` line",
+    "- [x] SC-2580: the registry is read-only this quarter.\n" +
+      "      waived-reason: the Q1 migration has not landed\n      waived-by: jason\n" +
+      "      waived-until: 2027-01-01\n",
+    ["NEEDS_MISSING"],
+  );
+
   // covers SC-2567
   bothWays(
     "SC-2567: evidence recorded against a different wording is stale",
@@ -409,6 +418,80 @@ describe("the parser saw what it thinks it saw", () => {
     expect(p.provedBy).toBe("a");
     expect(p.recordedFingerprint).toBe("deadbeef");
     expect(p.waiver).toEqual({ reason: "r", by: "b", until: "2027-01-01" });
+  });
+
+  // covers SC-2581
+  test("SC-2581: every site that tells a reader to waive also names `needs:`", () => {
+    // Raised on #1639 round 6. The decider requires `needs:` on a waived
+    // criterion — deliberately, because a waiver carries an expiry and what
+    // it will take to prove this is exactly what you want recorded while
+    // deciding not to take it yet. Four independent copies of the waiver
+    // instruction named the three `waived-*` fields and not `needs:`, so an
+    // author who followed any of them literally produced a document the gate
+    // then refused, under prose saying waiving was the whole escape hatch.
+    //
+    // The repeated finding on this PR is not any one stale copy — it is that
+    // a fact gets corrected in one location while a second, independent copy
+    // is left stale. So this is a census over the population, not a repair of
+    // the sites: a fifth copy written tomorrow is red on the day it lands.
+    //
+    // SCOPE, stated, because an instrument that does not say what it covered
+    // cannot be read: the population is what a READER is told, not every
+    // occurrence of the field names. A first pass censused source blocks and
+    // matched `annotations.get("waived-reason")` — the parser, which names
+    // the fields because it reads them and instructs nobody. So the messages
+    // are taken from the DECIDER'S OUTPUT on planted documents rather than
+    // from its text, and the documents are read as documents.
+    const WAIVER_FIELDS = ["waived-reason", "waived-by", "waived-until"];
+    const namesAll = (s: string) => WAIVER_FIELDS.every(f => s.includes(f));
+
+    // 1. The messages a reader actually receives, produced by running it.
+    const planted: Array<[string, string]> = [
+      [
+        "TICKED_WITHOUT_EVIDENCE",
+        `${BOUND}- [x] SC-2581: the gate refuses an unsigned payload.\n      needs: test\n`,
+      ],
+      [
+        "WAIVER_INCOMPLETE",
+        `${BOUND}- [x] SC-2581: the tag is immutable.\n      needs: review\n` +
+          "      waived-reason: the Q1 migration has not landed\n      waived-by: jason\n",
+      ],
+    ];
+    const messages = planted.map(([code, content]) => {
+      const hit = evidenceViolations(content, TODAY).find(v => v.code === code);
+      // Anti-vacuity, per planted input: a case that produced no violation of
+      // the code it was written for asserts nothing about that message.
+      expect(hit, `the planted document produced no ${code} violation`).toBeDefined();
+      return { where: `${code} message`, body: hit!.message };
+    });
+
+    // 2. The documents, read as documents.
+    const docs = [
+      join(import.meta.dir, "..", "specs", "SPEC-AUTHORING-SPEC.md"),
+      join(import.meta.dir, "..", "lib", "spec-template.ts"),
+    ].flatMap(file =>
+      readFileSync(file, "utf-8")
+        .split(/\n\s*\n/)
+        .map((body, i) => ({ where: `${file} (block ${i})`, body }))
+        .filter(b => namesAll(b.body)),
+    );
+
+    const population = [...messages, ...docs].filter(b => namesAll(b.body));
+    // Anti-vacuity over the whole census. A guard that found nothing to look
+    // at reads exactly like a clean population.
+    expect(
+      population.map(b => b.where),
+      "the census is empty or short: every message and document block naming all three " +
+        "waiver fields should appear here. A reword must not be able to silently empty it.",
+    ).toHaveLength(4);
+
+    const silent = population.filter(b => !/\bneeds\b/.test(b.body)).map(b => b.where);
+    expect(
+      silent,
+      "these tell a reader how to waive a criterion and never mention `needs:`, which " +
+        "the decider requires anyway — so following them literally produces a document " +
+        "the gate refuses. A waiver replaces `proved-by:`, never `needs:`.",
+    ).toEqual([]);
   });
 
   // covers SC-2576

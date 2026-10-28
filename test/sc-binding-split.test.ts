@@ -197,7 +197,16 @@ const UNCLAIMED_RATCHET = 150;
 // reports rungate's own compliance as the consumer's. That mutation was run:
 // removing `projectRootFlag` makes it answer "1494 of 1753 across 23 specs"
 // for a consumer holding one spec, and exit zero.
-const CLAIMED_UNBINDABLE = 116;
+// 116 -> 118 on 2026-10-28: SC-2580, SC-2581, same spec, same reason.
+// SC-2580 is a claim about one BRANCH ORDER inside the decider — that a
+// complete, unexpired, signed waiver still owes a `needs:` line — and the
+// registry has no pattern for "this function reports exactly this code and
+// no other on this input". SC-2581 is a census over two populations at once,
+// the decider's own emitted messages and two documents, and a matcher that
+// bound it would bind to the field names appearing somewhere, which is the
+// state that produced the finding: four copies named the three `waived-*`
+// fields and none named `needs:`.
+const CLAIMED_UNBINDABLE = 118;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

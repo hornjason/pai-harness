@@ -161,13 +161,18 @@ Each criterion carries two lines. \`needs:\` says at authoring time what kind
 of proof this takes — one of \`test\`, \`measurement\`, \`run\`, \`review\`.
 \`proved-by:\` names what actually ran, and **a ticked criterion with it blank
 fails the build** (\`lib/spec-evidence.ts\`). If you are deliberately not
-proving one, say so out loud instead:
+proving one, say so out loud instead of leaving \`proved-by:\` blank:
 
 \`\`\`
+      needs: test
       waived-reason: [why, in a sentence that is still true next month]
       waived-by: [who decided]
       waived-until: YYYY-MM-DD
 \`\`\`
+
+A waiver replaces \`proved-by:\`, never \`needs:\`. It carries an expiry, so
+what kind of proof this will take is exactly what you want recorded while
+deciding not to take it yet.
 
 When you tick a criterion, record \`fingerprint:\` beside its evidence with
 \`rungate audit-spec-evidence --record-fingerprints\`, so that **rewording the
