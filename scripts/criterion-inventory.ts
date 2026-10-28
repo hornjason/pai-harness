@@ -493,8 +493,42 @@ function readSnapshot(dir: string): Snapshot {
     }
     return readFileSync(path, "utf-8");
   };
-  const issues: Tracked[] = JSON.parse(need("issues.json"));
-  const prs: Tracked[] = JSON.parse(need("prs.json"));
+
+  /**
+   * Parse a required reading, or refuse by name.
+   *
+   * `JSON.parse` straight into a `.length === 0` check let two shapes past.
+   * Truncated JSON threw an unhandled `SyntaxError` — a stack trace naming
+   * neither the snapshot nor the remedy, in place of the careful refusal
+   * this function produces for an empty read. And a JSON **object** — a
+   * `gh` error payload redirected into the file is the realistic case —
+   * has `length === undefined`, and `undefined === 0` is false, so the
+   * emptiness guard was silently SKIPPED and the run died later in
+   * `issues.filter is not a function`. A failed fetch reading as a
+   * measurement is the whole thing this guard exists to stop. Raised by
+   * the required reviewer on #1642.
+   */
+  const readList = (name: string): Tracked[] => {
+    const text = need(name);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      throw new Error(
+        `UNMEASURED: ${join(dir, name)} is not readable JSON (${(err as Error).message}). ` +
+          `A truncated or half-written snapshot is a failed fetch, not an empty tracker.`,
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(
+        `UNMEASURED: ${join(dir, name)} parsed to ${parsed === null ? "null" : typeof parsed}, not an array. ` +
+          `\`gh\` writes a JSON array here; an object is usually its error payload redirected into the file.`,
+      );
+    }
+    return parsed as Tracked[];
+  };
+  const issues = readList("issues.json");
+  const prs = readList("prs.json");
   if (issues.length === 0 || prs.length === 0) {
     throw new Error(
       `UNMEASURED: the snapshot holds ${issues.length} issue(s) and ${prs.length} pull ` +

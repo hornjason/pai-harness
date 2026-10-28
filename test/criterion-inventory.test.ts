@@ -528,3 +528,47 @@ describe("every free-text cell is escaped, not only the criterion text", () => {
     expect(cell(" a\n  b ")).toBe("a b");
   });
 });
+
+describe("a wrong-shaped snapshot is a failed fetch, not a measurement", () => {
+  // The emptiness guard exists so a failed fetch cannot read as an empty
+  // tracker — which would report every criterion NOT STARTED, the one
+  // direction that reads as good news. Two shapes walked around it:
+  // truncated JSON threw an unhandled SyntaxError, and a JSON OBJECT has
+  // `length === undefined`, so `undefined === 0` is false and the guard was
+  // SILENTLY SKIPPED. Raised by the required reviewer on #1642.
+  const ISSUES = JSON.stringify([{ number: 1, title: "x", body: "", state: "OPEN" }]);
+  const PRS = JSON.stringify([{ number: 9, title: "x", body: "", state: "MERGED", mergedAt: "2026-10-28T00:00:00Z" }]);
+
+  const run = (issues: string, prs: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-inv-shape-"));
+    const spec = join(dir, "s.md");
+    writeFileSync(spec, SPEC);
+    writeFileSync(join(dir, "issues.json"), issues);
+    writeFileSync(join(dir, "prs.json"), prs);
+    try {
+      return Bun.spawnSync(["bun", SCRIPT, "--snapshot", dir, "--spec", spec, "--json"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  test("truncated JSON refuses by name, not with a SyntaxError", () => {
+    const got = run('[{"number":1,', PRS);
+    expect(got.exitCode).not.toBe(0);
+    expect(got.stderr.toString()).toContain("issues.json is not readable JSON");
+  });
+
+  test("a JSON object refuses, naming the shape", () => {
+    // The one that slipped the guard rather than throwing — a `gh` error
+    // payload redirected into the file.
+    const got = run(ISSUES, '{"message":"Not Found","status":"404"}');
+    expect(got.exitCode).not.toBe(0);
+    expect(got.stderr.toString()).toContain("prs.json parsed to object, not an array");
+  });
+
+  test("a valid snapshot is unaffected", () => {
+    // The control: the guard was tightened, not turned into a refusal of
+    // everything.
+    expect(run(ISSUES, PRS).exitCode).toBe(0);
+  });
+});
