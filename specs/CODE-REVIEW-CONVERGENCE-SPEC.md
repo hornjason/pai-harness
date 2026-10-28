@@ -324,6 +324,14 @@ rather than silently carrying the claim across.
 | CRC-B7 | #1567: nobody has run a finding through the live path and observed a demotion, so the tagging is not verified end to end. | 2026-12-31 |
 | CRC-M11 | #1592: the metric counts run ATTEMPTS and the sentence says ROUNDS, so what is tracked is not what is claimed. | 2026-12-31 |
 
+**Both are signed `rayford`, which is an agent, and neither is countersigned.** The
+first draft of this section wrote `waived-by: jason`, and he did not sign them — an
+agent did, while he was away. A waiver is an escape hatch whose only safeguard is that
+somebody's name is on it, so signing it with the name of a person who never saw it
+removes the safeguard while leaving every field populated. That is the BMW lobster
+defect in its worst form: not an empty justification, a false one. Countersigning is a
+one-line edit and the expiry is the prompt to make it.
+
 Both keep their `needs:` line. A waiver replaces `proved-by:`, never `needs:` — it
 carries an expiry, so what it will take to prove is exactly what you want recorded while
 deciding not to take it yet. Both were found by a sweep of every ticked criterion in
@@ -380,7 +388,7 @@ check proving it can fail against this file and not against a fixture.
 - [x] CRC-B7: Surviving findings are **sorted by severity** and tagged **Important / Nit / Pre-existing**, so a pre-existing bug does not read as the author's fault. (shipped, #1587)
       needs: test
       waived-reason: #1567 records that nobody has run a finding through the live path and observed a demotion, so the tagging is NOT verified end to end
-      waived-by: jason
+      waived-by: rayford (agent; not countersigned by jason)
       waived-until: 2026-12-31
 - [ ] CRC-B8: **Every finding is answered** — fixed, or resolved with a stated reason. A finding is never silently dropped and never becomes a tracker item by default.
       needs: test
@@ -465,7 +473,7 @@ check proving it can fail against this file and not against a fixture.
 - [x] CRC-M11: Rounds-to-pass is tracked alongside recall. (shipped, #1441/#1448)
       needs: measurement
       waived-reason: #1592 records that the metric counts run ATTEMPTS while this sentence says ROUNDS, so what is tracked is not what is claimed
-      waived-by: jason
+      waived-by: rayford (agent; not countersigned by jason)
       waived-until: 2026-12-31
 
 Increment 1 of *The current loop* above. These four are a set: each one alone leaves the
