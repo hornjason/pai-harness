@@ -66,6 +66,36 @@ query($owner:String!,$name:String!,$states:[IssueState!],$after:String){
   }
 }`;
 
+/** One shape of the GraphQL page, so nothing below is inferred as `any`. */
+interface IssuePage {
+  pageInfo: { hasNextPage: boolean; endCursor: string };
+  nodes: {
+    number: number;
+    state: string;
+    milestone: { title: string } | null;
+    blockedBy: { nodes: { number: number }[] } | null;
+  }[];
+}
+
+/**
+ * `gh`, with `GH_TOKEN` unset.
+ *
+ * Deleted rather than set to `undefined`: spreading `process.env` and
+ * overwriting one key with `undefined` leaves the key PRESENT in the object
+ * Bun hands the child, and `gh` prefers `GH_TOKEN` to its own keychain
+ * whenever the variable exists at all.
+ */
+function gh(args: readonly string[]): string {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
+  delete env.GH_TOKEN;
+  const proc = Bun.spawnSync(["gh", ...args], { env });
+  if (proc.exitCode !== 0) {
+    throw new Error(new TextDecoder().decode(proc.stderr).trim().slice(0, 300));
+  }
+  return new TextDecoder().decode(proc.stdout);
+}
+
 async function liveReadIssues(
   _client: unknown,
   repo: string,
@@ -75,7 +105,7 @@ async function liveReadIssues(
   const out: DepIssue[] = [];
   let after: string | null = null;
   for (;;) {
-    const args = [
+    const raw = gh([
       "api",
       "graphql",
       "-f",
@@ -85,21 +115,16 @@ async function liveReadIssues(
       "-f",
       `name=${name}`,
       ...(includeClosed ? [] : ["-f", "states=OPEN"]),
-      ...(after ? ["-f", `after=${after}`] : []),
-    ];
-    const proc = Bun.spawnSync(["gh", ...args], {
-      env: { ...process.env, GH_TOKEN: undefined } as Record<string, string>,
-    });
-    if (proc.exitCode !== 0) {
-      throw new Error(`gh api graphql failed: ${new TextDecoder().decode(proc.stderr).slice(0, 300)}`);
-    }
-    const page = JSON.parse(new TextDecoder().decode(proc.stdout)).data.repository.issues;
+      ...(after === null ? [] : ["-f", `after=${after}`]),
+    ]);
+    const page = (JSON.parse(raw) as { data: { repository: { issues: IssuePage } } }).data
+      .repository.issues;
     for (const n of page.nodes) {
       out.push({
         number: n.number,
         state: n.state,
         milestone: n.milestone?.title ?? null,
-        blockedBy: (n.blockedBy?.nodes ?? []).map((b: { number: number }) => b.number),
+        blockedBy: (n.blockedBy?.nodes ?? []).map(b => b.number),
       });
     }
     if (!page.pageInfo.hasNextPage) return out;
@@ -114,12 +139,7 @@ async function liveAddBlockers(
 ): Promise<void> {
   const args = ["issue", "edit", String(blocked), "--repo", repo];
   for (const b of blockers) args.push("--add-blocked-by", String(b));
-  const proc = Bun.spawnSync(["gh", ...args], {
-    env: { ...process.env, GH_TOKEN: undefined } as Record<string, string>,
-  });
-  if (proc.exitCode !== 0) {
-    throw new Error(new TextDecoder().decode(proc.stderr).slice(0, 200));
-  }
+  gh(args);
 }
 
 const LIVE_GITHUB: PlanDepsGitHub = {
