@@ -11,7 +11,11 @@ import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { isRunDirectory } from '../../lib/active-workflow';
 
-const RUNGATE_WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.RUNGATE_WORK_DIR || join(process.env.HOME!, '.rungate');
+// `PAI_WORK_DIR` second, as every sibling resolves it — VerifyPhaseLock,
+// StaleTTLCleanup, AgentVerdictCapture and lib/issue-filing-gate.ts all read
+// the same three in the same order. This file read RUNGATE_WORK_DIR twice,
+// so a consumer still on the legacy variable silently got `~/.rungate`.
+const RUNGATE_WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
 
 interface WorkflowState {
   path: string;
