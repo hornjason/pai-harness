@@ -43,9 +43,14 @@ export function findWorkflowForIssue(issueNum?: string, phases?: string[], repo?
   try {
     // Hidden entries are the work dir's own bookkeeping, not runs — and
     // `Priority 3` below is an mtime fallback, so `.archive`'s newest state
-    // file outranks every live run. That is #1648, and this module is where
-    // it reaches IssueCloseGuard, AutoVerifyGate and CommitEnforcement.
-    // Both levels, for the reason in lib/active-workflow.ts.
+    // file outranks every live run. That is #1648. Both levels, for the
+    // reason in lib/active-workflow.ts.
+    //
+    // Blast radius, since an earlier version of this comment got it wrong:
+    // `CommitEnforcement.hook.ts` is the ONLY hook importing this module.
+    // `IssueCloseGuard` and `AutoVerifyGate` use `findWorkflowState` from
+    // `./utils`, a third implementation of this scan that is still
+    // unfiltered — #1668. Fixing this file does not reach them.
     const dirs = readdirSync(RUNGATE_WORK_DIR, { withFileTypes: true })
       .filter(d => d.isDirectory() && isRunDirectory(d.name));
 
