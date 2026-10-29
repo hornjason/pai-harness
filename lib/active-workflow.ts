@@ -30,6 +30,20 @@
  * own bookkeeping is what uses them. So the predicate is "not hidden" rather
  * than "not `.archive`": a list of one name has to be extended by whoever adds
  * the second kind of bookkeeping directory, and they will not know to.
+ *
+ * ## It has to guard BOTH readings
+ *
+ * The hook reads twice — `<run>/workflow-state.json` and
+ * `<run>/<sub>/workflow-state.json` — and the first version of this fix
+ * filtered only the outer one. That leaves the same defect one level deeper:
+ * a hidden bookkeeping directory INSIDE a live run is still read, and being
+ * written last it still outranks the live run by mtime.
+ *
+ * One filtered reading beside one unfiltered reading of the same question is
+ * the fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`. No
+ * behavioural case can tell them apart while the outer one is right, so the
+ * end-to-end suite plants `<run>/.archive` directly and the mutation that
+ * removes the inner guard reddens exactly that case and no other.
  */
 
 /**

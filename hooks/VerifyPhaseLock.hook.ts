@@ -61,13 +61,8 @@ function findActiveWorkflow(): { path: string; data: any } | null {
       try {
         for (const sub of readdirSync(nested, { withFileTypes: true })) {
           if (!sub.isDirectory()) continue;
-          // The same predicate as the outer loop, and for the same reason.
-          // Applying it to only one of the two readings leaves the defect
-          // intact one level deeper: a hidden bookkeeping directory INSIDE a
-          // live run still reaches `best` and still outranks it by mtime.
-          // Two readings of one question, one of them filtered — the fourth
-          // shape in .claude/rules/checks-must-be-able-to-fail.md. Raised on
-          // #1648 by the reviewer.
+          // Both readings, or the defect survives one level deeper — see
+          // lib/active-workflow.ts, which holds the reading and the why.
           if (!isRunDirectory(sub.name)) continue;
           const nestedWf = join(nested, sub.name, 'workflow-state.json');
           if (!existsSync(nestedWf)) continue;
