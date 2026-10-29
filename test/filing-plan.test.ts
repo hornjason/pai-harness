@@ -73,10 +73,23 @@ describe("plannedTitles reads the Outcome column and nothing else", () => {
     expect(plannedTitles(two).map(t => t.title)).toEqual(["right"]);
   });
 
-  test("a second table touching the first does not inherit its column index", () => {
-    // No blank line between them. `column` used to stay set from the table
-    // above, so the second table's own HEADER row was read as a data row —
-    // authorising the literal string `Files`, and then every path under it.
+  /**
+   * **Two "tables" with no blank line between them are ONE table.**
+   *
+   * Measured against GitHub's own renderer (`POST /markdown`, mode gfm) on
+   * 2026-10-29, not reasoned about. Only the SECOND line of a table is ever
+   * a delimiter; after that `| Criterion | Files |` renders as a row reading
+   * "Criterion, Files" and `| --- | --- |` as a row of dashes, both under
+   * the heading above them.
+   *
+   * These expectations are therefore what a reviewer SEES, which is the only
+   * thing this function may not disagree with. An earlier round of this PR
+   * took the opposite reading on a finding's say-so and keyed the header off
+   * a delimiter lookahead — which made a stray dash row silently delete
+   * every title after it. That is the same parser-versus-renderer class,
+   * introduced by the attempt to close it.
+   */
+  test("a run-on table keeps reading its first header's Outcome column", () => {
     const touching = [
       "| Criterion | Outcome |",
       "|---|---|",
@@ -85,22 +98,36 @@ describe("plannedTitles reads the Outcome column and nothing else", () => {
       "|---|---|",
       "| C1 | lib/x.ts |",
     ].join("\n");
-    expect(plannedTitles(touching).map(t => t.title)).toEqual(["fix bug X"]);
+    expect(plannedTitles(touching).map(t => t.title)).toEqual([
+      "fix bug X",
+      "Files",
+      "lib/x.ts",
+    ]);
   });
 
-  test("a second touching table that DOES have an Outcome column is read", () => {
-    // The control. Without it the row above passes against a parser that
-    // stops at the first table, and "ignored the second table" would be
-    // indistinguishable from "read it correctly".
+  test("a dash row mid-table does not end it, and nothing after it is lost", () => {
+    const strayDash = [
+      "| Criterion | Outcome |",
+      "|---|---|",
+      "| C1 | title A |",
+      "|---|---|",
+      "| C2 | title B |",
+    ].join("\n");
+    expect(plannedTitles(strayDash).map(t => t.title)).toEqual(["title A", "title B"]);
+  });
+
+  test("a run-on table whose FIRST header has no Outcome column authorises nothing", () => {
+    // The control for the two above. `Outcome` appearing further down as a
+    // DATA cell is not a heading, and a reviewer does not see one.
     const touching = [
       "| Criterion | Files |",
       "|---|---|",
       "| C1 | lib/x.ts |",
       "| Criterion | Outcome |",
       "|---|---|",
-      "| C1 | the second table's title |",
+      "| C1 | never authorised |",
     ].join("\n");
-    expect(plannedTitles(touching).map(t => t.title)).toEqual(["the second table's title"]);
+    expect(plannedTitles(touching)).toEqual([]);
   });
 
   test("a pipe table with no delimiter row is not a table, and authorises nothing", () => {

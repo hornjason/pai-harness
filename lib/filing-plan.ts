@@ -179,7 +179,11 @@ function uncommented(line: string, inComment: boolean): { text: string; commente
 export function plannedTitles(content: string): PlannedTitle[] {
   const lines = content.split("\n");
   const out: PlannedTitle[] = [];
-  let column: number | null = null;
+  /** The table we are inside, and where its `Outcome` column sits — `null`
+   * for neither. One variable, because "not in a table" and "in a table with
+   * no Outcome column" are different states that must reset together, and two
+   * flags that must agree are two places to forget one. */
+  let table: { column: number | null } | null = null;
   /** The opening run of a fence we are inside — `` ``` `` or `~~~` — or `null`. */
   let fence: string | null = null;
   /** Whether we are inside a `<!-- … -->` that spans lines. */
@@ -211,7 +215,7 @@ export function plannedTitles(content: string): PlannedTitle[] {
       ) {
         fence = null;
       }
-      column = null;
+      table = null;
       continue;
     }
 
@@ -224,7 +228,7 @@ export function plannedTitles(content: string): PlannedTitle[] {
     const line = uncommented(lines[i], commented);
     commented = line.commented;
     if (commented || line.text.trim() === "") {
-      column = null;
+      table = null;
       continue;
     }
     const text = line.text;
@@ -237,41 +241,45 @@ export function plannedTitles(content: string): PlannedTitle[] {
     // about must not be the one that authorises.
     if (f !== null) {
       fence = f[1];
-      column = null;
+      table = null;
       continue;
     }
     if (ind >= 4) {
       // An indented code block. A table legitimately indented this far under
       // a list item is not counted either — unindent it, or accept that the
       // strict reading denies rather than grants.
-      column = null;
+      table = null;
       continue;
     }
 
     if (!text.trimStart().startsWith("|")) {
-      // A non-table line ends the table. Without this a second table's rows
-      // are read against the first table's column index.
-      column = null;
+      // A non-table line ends the table — a blank line, prose, a fence, a
+      // comment. That is the ONLY thing that ends one.
+      table = null;
       continue;
     }
     if (DELIMITER.test(text)) continue;
     const cells = text.split("|").slice(1, -1).map(cell);
 
-    // **A row followed by a delimiter is a HEADER, always.** That is what
-    // starts a table in GFM, and keying off it is the only thing that sees a
-    // second table beginning on the line after the first one ends. Scanning
-    // for an `Outcome` cell only while `column` is unset does not: with no
-    // blank line between them the index from table one stays live, and table
-    // two's `| Criterion | Files |` is read as a data row — authorising the
-    // literal string `Files`, and then every path in that column. Reproduced
-    // on 2026-10-29; found by the AI review of this change.
-    if (DELIMITER.test(lines[i + 1] ?? "")) {
-      const at = cells.indexOf(TITLE_COLUMN);
-      column = at === -1 ? null : at;
+    // **Only the second line of a table is a delimiter.** Everything after
+    // it is a data row, however much it looks like a header or a delimiter
+    // — measured against GitHub's own renderer on 2026-10-29 rather than
+    // reasoned about, because a heuristic that disagrees with the renderer
+    // IS the defect class this function exists to close. `| --- | --- |`
+    // sitting mid-table renders as a row of dashes; a second
+    // `| Criterion | Files |` renders as a row reading "Criterion, Files",
+    // both under the heading above. So a table begins once and is a table
+    // until a non-table line, and the `Outcome` index is read from its
+    // header and never re-read.
+    if (table === null) {
+      // No delimiter under it means GFM renders a paragraph, not a table,
+      // and a reviewer never saw a table — so it authorises nothing.
+      const at = DELIMITER.test(lines[i + 1] ?? "") ? cells.indexOf(TITLE_COLUMN) : -1;
+      table = { column: at === -1 ? null : at };
       continue;
     }
-    if (column === null) continue;
-    const title = cells[column];
+    if (table.column === null) continue;
+    const title = cells[table.column];
     if (title !== undefined && title !== "") out.push({ title, line: i + 1 });
   }
   return out;
