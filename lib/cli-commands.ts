@@ -181,6 +181,25 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
     usage: "rungate criterion-inventory --snapshot <dir> --spec <path> [--json] [--markdown]",
     projectRootFlag: true,
   },
+  // Step 3 of ADR-003 made VISIBLE (#1647). The issue body declares which
+  // criteria the work serves and the board renders fields, not bodies, so the
+  // declaration was invisible without opening every issue in turn. This
+  // derives a text column from the bodies and writes it.
+  //
+  // The direction is load-bearing and stated in `lib/board-mirror.ts`: the
+  // body is the source, the column is a mirror. A project custom field cannot
+  // be read through `gh` at all, so nothing an agent acts on may live there.
+  //
+  // `projectRootFlag` for the same reason as its neighbours — the spec path
+  // resolves against the root, and without it a consumer would mirror
+  // RUNGATE's criteria onto their own board.
+  "board-mirror": {
+    script: "scripts/board-mirror.ts",
+    summary: "Show a spec's criteria, and what is ready to pick up, on the project board",
+    usage:
+      "rungate board-mirror --project <node-id> --spec <spec.md> [--field <name>] [--write] [--ready]",
+    projectRootFlag: true,
+  },
   "sync-spec-tests": {
     script: "scripts/sync-spec-tests.ts",
     summary: "Regenerate the conformity suite from the specs",
