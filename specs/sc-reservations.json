@@ -98,7 +98,7 @@
       "from": 180,
       "to": 199,
       "namespace": "FG",
-      "note": "The cap's second route: a filing named by a plan merged on origin/main. FG-100..119 is the highest declared block and FG-179 the highest id on main, so main has already moved past every declaration here and this sits above both. FG has no allocator, so this is the eyeballed-headroom method .claude/rules/parallel-sessions.md names, declared before the ids were consumed. NOT pushed to main ahead of the branch: main requires the `test` and `ai-review` status checks with enforce_admins on, so a reservation-only push is refused and the entry can only reach main through this PR. FG-180..184 are consumed. Delete when the PR merges."
+      "note": "The cap's second route: a filing named by a plan merged on origin/main. FG-100..119 is the highest declared block and FG-179 the highest id on main, so main has already moved past every declaration here and this sits above both. FG has no allocator, so this is the eyeballed-headroom method .claude/rules/parallel-sessions.md names, declared before the ids were consumed. NOT pushed to main ahead of the branch: main requires the `test` and `ai-review` status checks with enforce_admins on, so a reservation-only push is refused and the entry can only reach main through this PR. FG-180..186 are consumed — 185 and 186 were added later in the same PR, for the three-sites property, and an audit that reclaims the rest of the block must not hand those two to a later branch. FG-187..199 are free. Delete when the PR merges."
     }
   ]
 }
