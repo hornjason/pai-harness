@@ -87,6 +87,9 @@ function cell(text: string): string {
   return text.trim().replace(/^\*\*|\*\*$/g, "").replace(/^`|`$/g, "").trim();
 }
 
+/** A GFM table's second line — the thing that makes the line above it a header. */
+const DELIMITER = /^\s*\|[\s|:-]+\|\s*$/;
+
 /** Leading indentation in columns; a tab is four, as CommonMark counts it. */
 function indent(line: string): number {
   let n = 0;
@@ -237,13 +240,23 @@ export function plannedTitles(content: string): PlannedTitle[] {
       column = null;
       continue;
     }
-    if (/^\s*\|[\s|:-]+\|\s*$/.test(text)) continue;
+    if (DELIMITER.test(text)) continue;
     const cells = text.split("|").slice(1, -1).map(cell);
-    if (column === null) {
+
+    // **A row followed by a delimiter is a HEADER, always.** That is what
+    // starts a table in GFM, and keying off it is the only thing that sees a
+    // second table beginning on the line after the first one ends. Scanning
+    // for an `Outcome` cell only while `column` is unset does not: with no
+    // blank line between them the index from table one stays live, and table
+    // two's `| Criterion | Files |` is read as a data row — authorising the
+    // literal string `Files`, and then every path in that column. Reproduced
+    // on 2026-10-29; found by the AI review of this change.
+    if (DELIMITER.test(lines[i + 1] ?? "")) {
       const at = cells.indexOf(TITLE_COLUMN);
-      if (at !== -1) column = at;
+      column = at === -1 ? null : at;
       continue;
     }
+    if (column === null) continue;
     const title = cells[column];
     if (title !== undefined && title !== "") out.push({ title, line: i + 1 });
   }

@@ -73,6 +73,42 @@ describe("plannedTitles reads the Outcome column and nothing else", () => {
     expect(plannedTitles(two).map(t => t.title)).toEqual(["right"]);
   });
 
+  test("a second table touching the first does not inherit its column index", () => {
+    // No blank line between them. `column` used to stay set from the table
+    // above, so the second table's own HEADER row was read as a data row —
+    // authorising the literal string `Files`, and then every path under it.
+    const touching = [
+      "| Criterion | Outcome |",
+      "|---|---|",
+      "| C1 | fix bug X |",
+      "| Criterion | Files |",
+      "|---|---|",
+      "| C1 | lib/x.ts |",
+    ].join("\n");
+    expect(plannedTitles(touching).map(t => t.title)).toEqual(["fix bug X"]);
+  });
+
+  test("a second touching table that DOES have an Outcome column is read", () => {
+    // The control. Without it the row above passes against a parser that
+    // stops at the first table, and "ignored the second table" would be
+    // indistinguishable from "read it correctly".
+    const touching = [
+      "| Criterion | Files |",
+      "|---|---|",
+      "| C1 | lib/x.ts |",
+      "| Criterion | Outcome |",
+      "|---|---|",
+      "| C1 | the second table's title |",
+    ].join("\n");
+    expect(plannedTitles(touching).map(t => t.title)).toEqual(["the second table's title"]);
+  });
+
+  test("a pipe table with no delimiter row is not a table, and authorises nothing", () => {
+    // GFM renders this as a paragraph, so a reviewer never sees a table.
+    const noDelimiter = ["| Criterion | Outcome |", "| C1 | not a table at all |"].join("\n");
+    expect(plannedTitles(noDelimiter)).toEqual([]);
+  });
+
   test("an empty Outcome cell is not a title", () => {
     const blank = ["| Criterion | Outcome |", "|---|---|", "| CRC-C2 |  |"].join("\n");
     expect(plannedTitles(blank)).toEqual([]);
