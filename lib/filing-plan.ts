@@ -146,8 +146,30 @@ export function gitSource(root: string, ref: string = "origin/main"): PlanSource
     return r.stdout;
   };
   return {
+    /**
+     * **`:(top)` and `--full-name`, and neither is optional.**
+     *
+     * `root` is the gate's `projectRoot`, which is a session's cwd and need
+     * not be the checkout's top level — `runIdFor` says so in as many words,
+     * that `/wt/x` and `/wt/x/lib` are one run. A bare `docs/adr/` pathspec
+     * is resolved relative to the `-C` directory, so from `/wt/x/lib` git
+     * looks for `/wt/x/lib/docs/adr/` on the ref, finds nothing, and
+     * **exits 0 with empty output** — which is not a read failure and so is
+     * not `null`. The exemption would then be denied for every filing in
+     * every session not rooted exactly at the top level, silently, and the
+     * `why` would say the repository has no plans.
+     *
+     * `:(top)` makes the pathspec root-relative and finds them. On its own
+     * it is not enough: the paths it PRINTS are still relative to the cwd
+     * (`../../docs/adr/a.md` from two levels down), and `show` would then be
+     * handed `origin/main:../../docs/adr/a.md`. `--full-name` prints them
+     * from the root, which is the form `<ref>:<path>` wants. Measured both
+     * ways on 2026-10-29; found by the AI review of this change.
+     */
     list: () => {
-      const out = git(["ls-tree", "-r", "--name-only", ref, "--", `${PLAN_DIR}/`]);
+      const out = git([
+        "ls-tree", "-r", "--full-name", "--name-only", ref, "--", `:(top)${PLAN_DIR}/`,
+      ]);
       if (out === null) return null;
       return out.split("\n").map(s => s.trim()).filter(s => s.endsWith(".md"));
     },

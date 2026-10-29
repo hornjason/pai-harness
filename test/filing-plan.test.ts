@@ -210,6 +210,55 @@ describe("gitSource reads the merged ref, not the working tree", () => {
     }
   });
 
+  test("a projectRoot BELOW the top level still finds the plans", () => {
+    // The gate's `projectRoot` is a session's cwd and need not be the
+    // checkout root — `runIdFor` says `/wt/x` and `/wt/x/lib` are one run.
+    // With a bare pathspec `ls-tree` resolves `docs/adr/` against the `-C`
+    // directory, finds nothing, and exits 0, so the exemption is denied for
+    // every filing in every session one directory down and the reason reads
+    // as though the repository had no plans. Both tests above create `root`
+    // AS the repository, so neither could see it. Found by the AI review.
+    const root = mkdtempSync(join(tmpdir(), "rg-filing-plan-sub-"));
+    try {
+      const git = (...args: string[]) => {
+        const r = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8" });
+        if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr}`);
+      };
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "t@example.com");
+      git("config", "user.name", "t");
+      mkdirSync(join(root, PLAN_DIR), { recursive: true });
+      writeFileSync(join(root, PLAN_DIR, "ADR-009-plan.md"), PLAN);
+      const below = join(root, "lib", "nested");
+      mkdirSync(below, { recursive: true });
+      writeFileSync(join(below, "keep.ts"), "export const x = 1;\n");
+      git("add", "-A");
+      git("commit", "-q", "-m", "the reviewed plan, and a subdirectory to run from");
+      git("update-ref", "refs/remotes/origin/main", "HEAD");
+
+      // The control first: from the top level it has always worked, so a
+      // red below is about the subdirectory and not about the fixture.
+      expect(
+        plannedFiling("plan-deps refuses a single-phase reading", gitSource(root)).planned,
+        "the control: the same plan is found from the top level",
+      ).toBe(true);
+
+      const r = plannedFiling("plan-deps refuses a single-phase reading", gitSource(below));
+      expect(
+        r.planned,
+        "a session two directories down saw no plans — the pathspec is cwd-relative",
+      ).toBe(true);
+      if (r.planned) {
+        expect(
+          r.plan,
+          "and the path is root-relative, or `show` would be handed `<ref>:../../docs/...`",
+        ).toBe(`${PLAN_DIR}/ADR-009-plan.md`);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a root that is not a repository denies rather than throws", () => {
     const root = mkdtempSync(join(tmpdir(), "rg-filing-plan-norepo-"));
     try {
