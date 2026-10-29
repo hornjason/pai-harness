@@ -169,14 +169,54 @@ export function parseRepairPlan(content: string): RepairReading {
 export function annotatedBody(body: string, criteria: readonly string[]): string {
   const ids = criteria.join(", ");
   const section = `${CRITERIA_HEADING}\n\n${ids}\n`;
-  const at = body.indexOf(CRITERIA_HEADING);
-  if (at === -1) return `${body.replace(/\s*$/, "")}\n\n${section}`;
+  const found = headingOccurrences(body);
+  if (found.length === 0) return `${body.replace(/\s*$/, "")}\n\n${section}`;
+  const at = found[0];
   // Up to the next `## ` heading, or the end.
   const rest = body.slice(at + CRITERIA_HEADING.length);
   const nextAt = rest.search(/^## /m);
   return nextAt === -1
     ? `${body.slice(0, at)}${section}`
     : `${body.slice(0, at)}${section}\n${rest.slice(nextAt)}`;
+}
+
+/**
+ * Where `## Criteria this serves` opens a line, OUTSIDE any fenced block.
+ *
+ * The first version located it with `body.indexOf`, while the terminator
+ * below used an anchored `/^## /m`. Two different ideas of what a heading is,
+ * in one function: an unanchored match hits the string mid-sentence and
+ * inside a ``` fence, and these bodies quote shell and TypeScript constantly.
+ * A body saying *"add a `## Criteria this serves` section"* in prose would
+ * have had everything from that phrase to its next heading REPLACED — and
+ * what these issues carry between headings is the measurements the repair
+ * exists to preserve. Caught by the security review of this PR.
+ *
+ * Returns every occurrence, because more than one is a body
+ * {@link multiplyAnnotated} refuses rather than a first match to edit.
+ */
+export function headingOccurrences(body: string): number[] {
+  const out: number[] = [];
+  let fenced = false;
+  let at = 0;
+  for (const line of body.split("\n")) {
+    if (/^\s*```/.test(line)) fenced = !fenced;
+    else if (!fenced && line.trimEnd() === CRITERIA_HEADING) out.push(at);
+    at += line.length + 1;
+  }
+  return out;
+}
+
+/**
+ * True when a body carries the section more than once.
+ *
+ * Editing the first of two is a guess about which one the author meant, and
+ * the other keeps whatever stale ids it holds — so `criterion-inventory`
+ * goes on reading a criterion this repair was meant to move away from.
+ * Refuse and let a person look.
+ */
+export function multiplyAnnotated(body: string): boolean {
+  return headingOccurrences(body).length > 1;
 }
 
 /** True when the body already names every criterion the row asks for. */

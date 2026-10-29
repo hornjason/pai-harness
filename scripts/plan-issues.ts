@@ -31,7 +31,13 @@
 import { existsSync, readFileSync } from "fs";
 import { isAbsolute, join } from "path";
 import { parseArgs } from "util";
-import { alreadyAnnotated, annotatedBody, parseRepairPlan } from "../lib/issue-repair";
+import {
+  CRITERIA_HEADING,
+  alreadyAnnotated,
+  annotatedBody,
+  multiplyAnnotated,
+  parseRepairPlan,
+} from "../lib/issue-repair";
 import type { RepairRow } from "../lib/issue-repair";
 
 /**
@@ -57,11 +63,34 @@ export interface PlanIssuesGitHub {
   removeBlockedBy: (repo: string, blocked: number, blocker: number) => Promise<void>;
 }
 
-function gh(args: readonly string[]): string {
+/**
+ * `gh`, with `GH_TOKEN` unset and an optional stdin payload.
+ *
+ * `stdin` exists so a body never touches the filesystem. The first version
+ * wrote it to `join("/tmp", "rg-body-<n>-<pid>.md")` and handed `gh` the
+ * path, which was wrong twice over and the security review caught both:
+ *
+ * - **A predictable name in a world-writable directory.** Anyone on the box
+ *   can pre-create that path as a symlink and the write follows it. The pid
+ *   is not a secret and the issue number is public.
+ * - **`Bun.write` returns a promise and nothing awaited it**, while
+ *   `Bun.spawnSync` read the file immediately. The content reaching `gh` was
+ *   whatever had landed by then. It happened to be complete for all nine
+ *   live issues — verified byte lengths afterwards, 2,593 to 5,733 — but
+ *   that is luck, and a truncated body would have silently destroyed the
+ *   measurements the repair exists to preserve.
+ *
+ * `--body-file -` reads standard input, so there is no file, no path to
+ * race, and nothing to clean up.
+ */
+function gh(args: readonly string[], stdin?: string): string {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
   delete env.GH_TOKEN;
-  const proc = Bun.spawnSync(["gh", ...args], { env });
+  const proc = Bun.spawnSync(["gh", ...args], {
+    env,
+    ...(stdin === undefined ? {} : { stdin: new TextEncoder().encode(stdin) }),
+  });
   if (proc.exitCode !== 0) throw new Error(new TextDecoder().decode(proc.stderr).trim().slice(0, 300));
   return new TextDecoder().decode(proc.stdout);
 }
@@ -93,9 +122,7 @@ const LIVE_GITHUB: PlanIssuesGitHub = {
     };
   },
   setBody: async (repo, number, body) => {
-    const f = join("/tmp", `rg-body-${number}-${process.pid}.md`);
-    Bun.write(f, body);
-    gh(["issue", "edit", String(number), "--repo", repo, "--body-file", f]);
+    gh(["issue", "edit", String(number), "--repo", repo, "--body-file", "-"], body);
   },
   clearMilestone: async (repo, number) => {
     gh(["issue", "edit", String(number), "--repo", repo, "--remove-milestone"]);
@@ -117,7 +144,7 @@ const USAGE = `rungate plan-issues --repair <plan.md> --repo <owner/name> [--wri
 /** What one row would do, resolved against the issue's live state. */
 interface Action {
   row: RepairRow;
-  kind: "annotate" | "demote" | "unchanged";
+  kind: "annotate" | "demote" | "unchanged" | "refused";
   body?: string;
   /** For a demotion: every edge the demotion orphans. */
   edges: { blocked: number; blocker: number }[];
@@ -175,6 +202,17 @@ export async function main(argv: string[], gh2: PlanIssuesGitHub = LIVE_GITHUB):
   for (const row of reading.rows) {
     const live = await gh2.readIssue(repo, row.issue);
     if (row.kind === "annotate") {
+      // Two sections means editing the first is a guess, and the second keeps
+      // whatever stale ids it holds. Refuse the row by name.
+      if (multiplyAnnotated(live.body)) {
+        actions.push({
+          row,
+          kind: "refused",
+          edges: [],
+          note: `body carries "${CRITERIA_HEADING}" more than once — resolve it by hand`,
+        });
+        continue;
+      }
       if (alreadyAnnotated(live.body, row.criteria)) {
         actions.push({ row, kind: "unchanged", edges: [], note: `already names ${row.criteria.join(", ")}` });
         continue;
@@ -204,17 +242,30 @@ export async function main(argv: string[], gh2: PlanIssuesGitHub = LIVE_GITHUB):
   }
 
   if (values.json) {
-    const wrote = !values.write ? "not-requested" : refuseWrite ? "refused" : "yes";
-    console.log(JSON.stringify({ ...reading, actions, wrote }, null, 2));
-    if (values.write && !refuseWrite) await apply(gh2, repo, actions);
-    return refuseWrite ? REFUSAL_EXIT : 0;
+    // Apply FIRST, then report what happened. The first version printed
+    // `"wrote": "yes"` and only then called apply(), whose per-action catch
+    // swallowed every failure into a string nothing read — so a run that
+    // failed on all eleven rows emitted "yes" and exited 0. Fail-open status
+    // reporting, caught by the security review of this PR.
+    const results = values.write && !refuseWrite ? await apply(gh2, repo, actions) : [];
+    const failures = results.filter(r => r.startsWith("FAILED"));
+    const refusedRows = actions.filter(a => a.kind === "refused");
+    const wrote = !values.write
+      ? "not-requested"
+      : refuseWrite
+        ? "refused"
+        : failures.length > 0 || refusedRows.length > 0
+          ? "partial"
+          : "yes";
+    console.log(JSON.stringify({ ...reading, actions, results, wrote }, null, 2));
+    return refuseWrite || failures.length > 0 || refusedRows.length > 0 ? REFUSAL_EXIT : 0;
   }
 
   const edges = actions.reduce((n, a) => n + a.edges.length, 0);
   console.log(`${values.repair} — ${reading.rows.length} row(s)\n`);
   console.log(`ACTIONS`);
   for (const a of actions) {
-    const mark = { annotate: "ANNOTATE", demote: "DEMOTE  ", unchanged: "ok      " }[a.kind];
+    const mark = { annotate: "ANNOTATE", demote: "DEMOTE  ", unchanged: "ok      ", refused: "REFUSED " }[a.kind];
     console.log(`  ${mark}  #${a.row.issue}  ${a.note}`);
     if (a.edges.length > 0) {
       console.log(`            and remove ${a.edges.length} edge(s) the demotion orphans:`);
@@ -232,8 +283,22 @@ export async function main(argv: string[], gh2: PlanIssuesGitHub = LIVE_GITHUB):
     return 0;
   }
   console.log(`\nWRITING`);
-  for (const line of await apply(gh2, repo, actions)) console.log(`  ${line}`);
-  console.log(`\n  Re-run \`rungate plan-deps --repo ${repo}\` — a demotion changes the phase sizes.`);
+  const applied = await apply(gh2, repo, actions);
+  for (const line of applied) console.log(`  ${line}`);
+  const failed = applied.filter(r => r.startsWith("FAILED"));
+  const refusedRows = actions.filter(a => a.kind === "refused");
+  console.log(
+    `\n  Then re-run both, in this order — a demotion changes the phase sizes and\n` +
+      `  the board column is a mirror of the body, not a second source:\n` +
+      `    rungate plan-deps --repo ${repo} --write\n` +
+      `    rungate board-mirror --project <id> --spec <spec> --ready --write`,
+  );
+  if (failed.length > 0 || refusedRows.length > 0) {
+    console.error(
+      `\nplan-issues: ${failed.length} action(s) FAILED and ${refusedRows.length} row(s) were refused.`,
+    );
+    return REFUSAL_EXIT;
+  }
   return 0;
 }
 

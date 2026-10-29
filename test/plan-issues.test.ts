@@ -24,6 +24,8 @@ import {
   CRITERIA_HEADING,
   alreadyAnnotated,
   annotatedBody,
+  headingOccurrences,
+  multiplyAnnotated,
   parseRepairPlan,
 } from "../lib/issue-repair";
 import { REFUSAL_EXIT, main as planIssuesMain } from "../scripts/plan-issues";
@@ -137,6 +139,54 @@ describe("lib/issue-repair: the body edit is append-or-replace, never stack", ()
   });
 });
 
+/**
+ * The four findings from this PR's security review, each with the case that
+ * would have caught it. All four were real; none was dismissed.
+ */
+describe("lib/issue-repair: the heading locator is anchored and fence-aware", () => {
+  test("the phrase inside a ``` fence is NOT the section — the body survives", () => {
+    // These bodies quote shell and TypeScript constantly. An unanchored
+    // `indexOf` would treat this as the section and replace everything from
+    // it to the next heading, destroying the measurement below it.
+    const body = [
+      "## The measurement",
+      "",
+      "```md",
+      CRITERIA_HEADING,
+      "```",
+      "",
+      "Three runs disagreed: CLEAN, BLOCKED, CLEAN.",
+    ].join("\n");
+    const out = annotatedBody(body, ["CRC-B3"]);
+    expect(out).toContain("Three runs disagreed: CLEAN, BLOCKED, CLEAN.");
+    expect(out).toContain("```md");
+    // Appended at the end, not spliced over the fence.
+    expect(out.trimEnd().endsWith("CRC-B3")).toBe(true);
+    expect(headingOccurrences(body)).toEqual([]);
+  });
+
+  test("the phrase mid-sentence is not the section either", () => {
+    const body = `Someone should add a ${CRITERIA_HEADING} section here.\n\nAnd keep this.`;
+    const out = annotatedBody(body, ["CRC-B3"]);
+    expect(out).toContain("And keep this.");
+    expect(headingOccurrences(body)).toEqual([]);
+  });
+
+  test("a real heading at the start of a line IS found", () => {
+    // The pair: without it the two cases above pass against a locator that
+    // never matches anything at all.
+    const body = `Intro.\n\n${CRITERIA_HEADING}\n\nCRC-B3\n`;
+    expect(headingOccurrences(body)).toHaveLength(1);
+    expect(multiplyAnnotated(body)).toBe(false);
+  });
+
+  test("two sections are refused, not silently half-edited", () => {
+    const body = `${CRITERIA_HEADING}\n\nCRC-B3\n\n## Mid\n\n${CRITERIA_HEADING}\n\nCRC-B6\n`;
+    expect(headingOccurrences(body)).toHaveLength(2);
+    expect(multiplyAnnotated(body)).toBe(true);
+  });
+});
+
 describe("scripts/plan-issues --repair: what reaches GitHub", () => {
   function spy(state: Record<number, Partial<IssueState>>) {
     const calls: string[] = [];
@@ -236,6 +286,87 @@ describe("scripts/plan-issues --repair: what reaches GitHub", () => {
       REFUSAL_EXIT,
     );
     expect(s.calls).toEqual([]);
+  });
+
+  test("a FAILED action exits non-zero — status is derived from what happened", async () => {
+    // The first version printed the status BEFORE calling apply(), whose
+    // per-action catch swallowed every error into a string nothing read. A
+    // run that failed on every row reported "yes" and exited 0.
+    const calls: string[] = [];
+    const gh: PlanIssuesGitHub = {
+      readIssue: async (_r, number) => ({ number, body: "Body.", milestone: "Convergence Phase 5 — x", blockedBy: [], blocking: [] }),
+      setBody: async () => { throw new Error("gh refused"); },
+      clearMilestone: async (_r, n) => void calls.push(`milestone#${n}`),
+      removeBlockedBy: async () => {},
+    };
+    const dir = mkdtempSync(join(tmpdir(), "rg-fail-"));
+    try {
+      writeFileSync(join(dir, "PLAN.md"), plan([ANNOTATE]));
+      const code = await planIssuesMain(["--repair","PLAN.md","--repo","o/r","--project-root",dir,"--write"], gh);
+      expect(code, "a run whose only action FAILED reported success").toBe(REFUSAL_EXIT);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("--json reports `partial` when an action FAILED — not `yes`", async () => {
+    // The exit code and the printed status are two separate expressions. A
+    // mutant that fixes `wrote` at "yes" while leaving the return correct was
+    // green against every other case here: the refusal cases never reach
+    // apply(), so they exercise the `refused` branch and not this one.
+    const out: string[] = [];
+    const log = console.log;
+    console.log = (x: string) => void out.push(x);
+    const gh: PlanIssuesGitHub = {
+      readIssue: async (_r, number) => ({ number, body: "Body.", milestone: null, blockedBy: [], blocking: [] }),
+      setBody: async () => { throw new Error("gh refused"); },
+      clearMilestone: async () => {},
+      removeBlockedBy: async () => {},
+    };
+    const dir = mkdtempSync(join(tmpdir(), "rg-partial-"));
+    let code;
+    try {
+      writeFileSync(join(dir, "PLAN.md"), plan([ANNOTATE]));
+      code = await planIssuesMain(
+        ["--repair", "PLAN.md", "--repo", "o/r", "--project-root", dir, "--write", "--json"],
+        gh,
+      );
+    } finally {
+      console.log = log;
+      rmSync(dir, { recursive: true, force: true });
+    }
+    const json = JSON.parse(out.join("\n"));
+    expect(json.wrote, "a run whose only action FAILED printed a clean status").toBe("partial");
+    expect(json.results.join(" ")).toContain("FAILED");
+    expect(code).toBe(REFUSAL_EXIT);
+  });
+
+  test("a body with TWO sections is refused, and exits non-zero", async () => {
+    const twice = `${CRITERIA_HEADING}\n\nCRC-B3\n\n## Mid\n\n${CRITERIA_HEADING}\n\nCRC-B6\n`;
+    const s = spy({ 10: { body: twice } });
+    const code = await run([ANNOTATE], s.gh, ["--write"]);
+    expect(s.calls, "a body with two sections was edited anyway").toEqual([]);
+    expect(code).toBe(REFUSAL_EXIT);
+  });
+
+  test("the body reaches setBody whole — no file, no truncation", async () => {
+    // The first version wrote it to a predictable /tmp path with an
+    // unawaited Bun.write and handed gh the path. What gh read was whatever
+    // had landed. This asserts the full text crosses the seam.
+    const bodies: string[] = [];
+    const gh: PlanIssuesGitHub = {
+      readIssue: async (_r, number) => ({ number, body: "A".repeat(5000), milestone: null, blockedBy: [], blocking: [] }),
+      setBody: async (_r, _n, b) => void bodies.push(b),
+      clearMilestone: async () => {},
+      removeBlockedBy: async () => {},
+    };
+    const dir = mkdtempSync(join(tmpdir(), "rg-whole-"));
+    try {
+      writeFileSync(join(dir, "PLAN.md"), plan([ANNOTATE]));
+      await planIssuesMain(["--repair","PLAN.md","--repo","o/r","--project-root",dir,"--write"], gh);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].length).toBeGreaterThan(5000);
+    expect(bodies[0]).toContain("A".repeat(5000));
+    expect(bodies[0]).toContain("CRC-N2");
   });
 
   test("--json --write reports `yes`, and `refused` on an unreadable plan", async () => {
