@@ -200,6 +200,20 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
       "rungate board-mirror --project <node-id> --spec <spec.md> [--field <name>] [--write] [--ready]",
     projectRootFlag: true,
   },
+  // Step 5 of ADR-003. `plan-spec` turns the placement table into milestones;
+  // this turns the ORDER of those milestones into `blocked by` edges, which is
+  // AGENTS.md rule 4 — ordering is data, not prose. Until it existed the phase
+  // order reached the board only as the label a card sat in, and 196 live
+  // edges had been applied by a throwaway script.
+  //
+  // No `projectRootFlag`: it reads the tracker, not the tree. The phase is
+  // read off each issue's milestone title, so there is no spec path to
+  // resolve and nothing on disk it could resolve against the wrong root.
+  "plan-deps": {
+    script: "scripts/plan-deps.ts",
+    summary: "Write a spec's phase order onto the tracker as blocked-by edges",
+    usage: "rungate plan-deps --repo <owner/name> [--write] [--json] [--include-closed]",
+  },
   "sync-spec-tests": {
     script: "scripts/sync-spec-tests.ts",
     summary: "Regenerate the conformity suite from the specs",
