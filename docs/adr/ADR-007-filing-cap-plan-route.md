@@ -101,6 +101,19 @@ was already governed. It is the first row of the table and it is deliberately
 a separate change: this one adds a route, that one closes a hole, and putting
 them in one diff makes neither reviewable.
 
+**It has a precondition, and the precondition is the first half of that
+change.** The exemption is currently re-applied at three independent
+consumers of the same fact — the per-clause spend counter, the pre-read
+verdict, and the reservation stage — and the third was found only after the
+first two were already written. `FG-185` pins all three today, but a test can
+assert that three known sites agree; it cannot assert that a fourth, not yet
+written, will. `createIssue` is that fourth site. So before routing it:
+collapse the three into one function that answers *may this clause file*,
+folding the plan reading in, and make every consumer call it. One binding to
+mutate, which is the whole of `.claude/rules/checks-must-be-able-to-fail.md`
+on two deciders that agree. Raised by the AI review of the PR that added
+this, as an advisory finding.
+
 ## Consequences
 
 - A plan has to be merged before the issues it names can be filed. That is
