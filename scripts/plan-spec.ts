@@ -46,7 +46,12 @@ import {
   listOpenIssues,
   renameMilestone,
 } from "../lib/github";
-import { milestonePlan, placementReading, uncoveredByMilestone } from "../lib/spec-placement";
+import {
+  milestoneBody,
+  milestonePlan,
+  placementReading,
+  uncoveredByMilestone,
+} from "../lib/spec-placement";
 
 /**
  * THE one non-zero exit. One site, so `test/plan-spec.test.ts` can build a
@@ -54,6 +59,32 @@ import { milestonePlan, placementReading, uncoveredByMilestone } from "../lib/sp
  * (`.claude/rules/checks-must-be-able-to-fail.md`).
  */
 export const REFUSAL_EXIT = 1;
+
+/**
+ * The GitHub calls, injected so a test can watch whether any of them happened.
+ *
+ * **The point is the negative case.** This command's refusal on an unsound
+ * placement table used to be a non-zero exit computed AFTER the milestones
+ * were created and renamed — the writes went out and the exit code then said
+ * the run had been refused. Nothing that reads only an exit code can tell
+ * that apart from a refusal that stopped anything, so the case that matters
+ * asserts on the CALLS, and there has to be a seam to count them at.
+ */
+export interface PlanSpecGitHub {
+  createClient: typeof createGitHubClient;
+  listMilestones: typeof listMilestones;
+  listOpenIssues: typeof listOpenIssues;
+  createMilestone: typeof createMilestone;
+  renameMilestone: typeof renameMilestone;
+}
+
+const LIVE_GITHUB: PlanSpecGitHub = {
+  createClient: createGitHubClient,
+  listMilestones,
+  listOpenIssues,
+  createMilestone,
+  renameMilestone,
+};
 
 const USAGE = `rungate plan-spec <spec.md> --repo <owner/name> --prefix <name> [--write] [--json]
 
@@ -64,7 +95,7 @@ const USAGE = `rungate plan-spec <spec.md> --repo <owner/name> --prefix <name> [
   --write    create and rename milestones. Without it, nothing is mutated.
   --json     the whole reading, for something other than a person.`;
 
-export async function main(argv: string[]): Promise<number> {
+export async function main(argv: string[], gh: PlanSpecGitHub = LIVE_GITHUB): Promise<number> {
   let parsed;
   try {
     parsed = parseArgs({
@@ -138,13 +169,29 @@ export async function main(argv: string[]): Promise<number> {
     );
   }
 
+  // ── The write refusal, decided BEFORE anything is read from the network ──
+  //
+  // One expression, read by every path below, because this used to be three
+  // readings of `problems.length > 0` with the write between two of them: the
+  // `--json` return, the no-`--write` return, and a final return that ran
+  // AFTER `createMilestone` and `renameMilestone` had been called. That last
+  // one is the defect the AI review of PR #1647 named. A command that creates
+  // eight milestones and then exits non-zero has not refused anything, and the
+  // exit code is the only thing a caller sees — so the reading that says "do
+  // not write" has to happen before the loop, not after it.
+  //
+  // It is deliberately the WHOLE of `problems`, not a chosen subset. Every
+  // member means the table cannot be trusted to say which criteria a phase
+  // holds, and `milestoneBody` writes exactly that list into the description.
+  const refuseWrite = problems.length > 0;
+
   // ── Step 2: what the milestones should be ────────────────────────────────
-  const client = createGitHubClient();
-  const live = await listMilestones(client, repo);
+  const client = gh.createClient();
+  const live = await gh.listMilestones(client, repo);
   const { actions, unmanaged } = milestonePlan(content, live, prefix);
 
   // ── Step 3, reported not enforced: what no open issue names ──────────────
-  const open = await listOpenIssues(client, repo, 100);
+  const open = await gh.listOpenIssues(client, repo, 100);
   const bodies = open.issues.map(i => ({ number: i.number, text: `${i.title}\n${i.body ?? ""}` }));
   const coverage = uncoveredByMilestone(actions, bodies);
   // 100 is the API's per-page ceiling and `listOpenIssues` takes one page. A
@@ -154,8 +201,13 @@ export async function main(argv: string[]): Promise<number> {
   const truncated = open.issues.length + open.droppedRows.length >= 100;
 
   if (values.json) {
-    console.log(JSON.stringify({ reading, actions, unmanaged, coverage, problems }, null, 2));
-    return problems.length > 0 ? REFUSAL_EXIT : 0;
+    // `wrote` says which of the three states this run was in, because
+    // `--json --write` printed the same object whether it had written eight
+    // milestones or none and a consumer had no way to ask.
+    const wrote = !values.write ? "not-requested" : refuseWrite ? "refused" : "yes";
+    console.log(JSON.stringify({ reading, actions, unmanaged, coverage, problems, wrote }, null, 2));
+    if (values.write && !refuseWrite) await applyMilestones(gh, client, repo, actions);
+    return refuseWrite ? REFUSAL_EXIT : 0;
   }
 
   console.log(`${specArg} — ${reading.criteria.length} criteria, ${reading.rows.length} placements\n`);
@@ -168,9 +220,16 @@ export async function main(argv: string[]): Promise<number> {
 
   console.log(`MILESTONES`);
   for (const a of actions) {
-    const mark = { create: "CREATE  ", rename: "RENAME  ", unchanged: "ok      " }[a.action];
+    const mark = {
+      create: "CREATE  ",
+      rename: "RENAME  ",
+      update: "UPDATE  ",
+      unchanged: "ok      ",
+    }[a.action];
     console.log(`  ${mark}${a.title}  (${a.criteria.length} criteria)`);
     if (a.action === "rename") console.log(`            was: ${a.existing!.title}  (#${a.existing!.number})`);
+    if (a.action === "update")
+      console.log(`            #${a.existing!.number}, same name — its criteria list moved`);
   }
   if (unmanaged.length > 0) {
     console.log(`\n  Not derived from this spec, left alone:`);
@@ -204,35 +263,52 @@ export async function main(argv: string[]): Promise<number> {
         ? `\nNothing written. Re-run with --write to apply ${todo} milestone change(s).`
         : `\nNothing written, and nothing to write — the milestones already match.`,
     );
-    return problems.length > 0 ? REFUSAL_EXIT : 0;
+    return refuseWrite ? REFUSAL_EXIT : 0;
+  }
+
+  if (refuseWrite) {
+    console.error(
+      `\nREFUSING TO WRITE — ${problems.length} placement problem(s) above, and NOTHING was\n` +
+        `  created or renamed. A milestone's description is the phase's criteria list, so a\n` +
+        `  table that does not place every criterion exactly once cannot say what to write.\n` +
+        `  Fix the table in the spec, re-run without --write to confirm the reading, then write.`,
+    );
+    return REFUSAL_EXIT;
   }
 
   console.log(`\nWRITING`);
-  for (const a of actions) {
-    if (a.action === "create") {
-      const m = await createMilestone(client, repo, { title: a.title, description: milestoneBody(a.criteria) });
-      console.log(`  created  #${m.number} ${a.title}`);
-    } else if (a.action === "rename") {
-      await renameMilestone(client, repo, a.existing!.number, {
-        title: a.title,
-        description: milestoneBody(a.criteria),
-      });
-      console.log(`  renamed  #${a.existing!.number} -> ${a.title}`);
-    }
-  }
-  return problems.length > 0 ? REFUSAL_EXIT : 0;
+  for (const line of await applyMilestones(gh, client, repo, actions)) console.log(`  ${line}`);
+  return 0;
 }
 
 /**
- * What a milestone's description says.
+ * Create, rename and update, and say what happened — the ONE write site.
  *
- * The criteria, and where they came from. A milestone description is the one
- * place a person looking at the board can see what the phase is FOR without
- * opening the spec, and it is rewritten on every `--write`, so it cannot
- * drift from the table the way a typed title did.
+ * Both output paths call it, so `--json --write` cannot silently do nothing
+ * the way it did when the write lived below the `--json` return.
  */
-export function milestoneBody(criteria: string[]): string {
-  return `${criteria.length} criteria: ${criteria.join(", ")}\n\nDerived from the spec's Phase placement table by \`rungate plan-spec\`. Edit the table, not this.`;
+async function applyMilestones(
+  gh: PlanSpecGitHub,
+  client: ReturnType<typeof createGitHubClient>,
+  repo: string,
+  actions: Awaited<ReturnType<typeof milestonePlan>>["actions"],
+): Promise<string[]> {
+  const done: string[] = [];
+  for (const a of actions) {
+    const description = milestoneBody(a.criteria);
+    if (a.action === "create") {
+      const m = await gh.createMilestone(client, repo, { title: a.title, description });
+      done.push(`created  #${m.number} ${a.title}`);
+    } else if (a.action === "rename" || a.action === "update") {
+      await gh.renameMilestone(client, repo, a.existing!.number, { title: a.title, description });
+      done.push(
+        a.action === "rename"
+          ? `renamed  #${a.existing!.number} -> ${a.title}`
+          : `updated  #${a.existing!.number} ${a.title} — criteria list refreshed`,
+      );
+    }
+  }
+  return done;
 }
 
 if (import.meta.main) {

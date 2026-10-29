@@ -176,14 +176,51 @@ export interface MilestoneAction {
   phase: number;
   /** How many criteria the table places in this phase. */
   criteria: string[];
-  action: "create" | "rename" | "unchanged";
-  /** Set for `rename` and `unchanged`: the live milestone this matched. */
-  existing?: { number: number; title: string };
+  /**
+   * `rename` is a changed TITLE; `update` is the same title and a changed
+   * DESCRIPTION. Both write; they are separate values because the human
+   * output prints `was: <old title>` for a rename and that line is
+   * meaningless — and misleading — when the title did not move.
+   */
+  action: "create" | "rename" | "update" | "unchanged";
+  /** Set for everything but `create`: the live milestone this matched. */
+  existing?: { number: number; title: string; description: string | null };
 }
 
 export interface LiveMilestone {
   number: number;
   title: string;
+  /**
+   * **Read, and load-bearing.** `milestonePlan` used to call a phase
+   * `unchanged` on title equality alone, so a milestone whose criteria list
+   * changed while its heading text did not was never rewritten — and
+   * `milestoneBody`'s own docblock claimed the opposite, that a description
+   * "is rewritten on every `--write`, so it cannot drift from the table the
+   * way a typed title did". A comment asserting a property nothing checks is
+   * the reason nobody checks it. Found by the AI review of PR #1647.
+   *
+   * `null` is what the API returns for a milestone with no description, and
+   * it is a different fact from `""`.
+   */
+  description: string | null;
+}
+
+/**
+ * What a milestone's description says.
+ *
+ * The criteria, and where they came from. A milestone description is the one
+ * place a person looking at the board can see what the phase is FOR without
+ * opening the spec.
+ *
+ * **It lives here, beside the comparison that reads it**, and not in
+ * `scripts/plan-spec.ts` where it was written. The plan has to decide whether
+ * a live description already equals the derived one, and a deriver the plan
+ * cannot see is a plan that can only compare titles — which is exactly the
+ * defect above. Two places deriving this string would be two deciders over
+ * one question (`.claude/rules/checks-must-be-able-to-fail.md`).
+ */
+export function milestoneBody(criteria: string[]): string {
+  return `${criteria.length} criteria: ${criteria.join(", ")}\n\nDerived from the spec's Phase placement table by \`rungate plan-spec\`. Edit the table, not this.`;
 }
 
 /**
@@ -228,12 +265,20 @@ export function milestonePlan(
       const heading = headings.get(phase);
       const title = `${prefix} ${heading ? heading.heading : `Phase ${phase}`}`;
       const existing = liveByPhase.get(phase);
-      if (!existing) return { title, phase, criteria: byPhase.get(phase) ?? [], action: "create" };
+      const criteria = byPhase.get(phase) ?? [];
+      if (!existing) return { title, phase, criteria, action: "create" };
+      // Both halves of what `--write` would put there, so `unchanged` means
+      // the live milestone already IS the derived one rather than merely
+      // sharing its name. A title-only comparison leaves a stale criteria
+      // list on a phase whose heading text did not move — see
+      // `LiveMilestone.description`.
+      const titleMoved = existing.title !== title;
+      const bodyMoved = existing.description !== milestoneBody(criteria);
       return {
         title,
         phase,
-        criteria: byPhase.get(phase) ?? [],
-        action: existing.title === title ? "unchanged" : "rename",
+        criteria,
+        action: titleMoved ? "rename" : bodyMoved ? "update" : "unchanged",
         existing,
       };
     });
