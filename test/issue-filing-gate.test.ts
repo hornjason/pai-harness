@@ -5001,3 +5001,161 @@ describe("FG-143..FG-176: a numeric cap, which no argument defeats", () => {
     ]);
   });
 });
+
+/**
+ * FG-180..FG-184: the cap's second route — a filing a MERGED plan names.
+ *
+ * `FILINGS_PER_RUN` was calibrated against review findings. Decomposing a
+ * criterion into issues produces several in one run by design, so the cap does
+ * not slow that down, it forbids it. `lib/filing-plan.ts` is the other route
+ * and it is a COUNT, not a bar: the title has to appear verbatim in a file on
+ * `origin/main`, which no filer can arrange without getting a plan merged.
+ *
+ * Every row below holds the ALLOWANCE fixed — spent, in this run, in the
+ * window — and varies only what the plans say. That is the axis, so a row
+ * that went green because the allowance was never spent would fail FG-181.
+ */
+describe("FG-180..FG-184: a merged plan is the cap's second route", () => {
+  // `scratch` is minted in the file's own `beforeAll`, so this cannot be
+  // resolved while the describe body runs.
+  let dir: string;
+  const at = "2026-10-29T12:00:00.000Z";
+  const TITLE = "plan-deps refuses a single-phase reading";
+  const PLAN_PATH = "docs/adr/ADR-009-decomposition.md";
+  const PLAN_TEXT = [
+    "| Criterion | Outcome | Files |",
+    "|---|---|---|",
+    `| CRC-C2 | ${TITLE} | lib/spec-deps.ts |`,
+  ].join("\n");
+
+  /** A plan source naming TITLE, and one naming nothing. Neither touches git. */
+  const namesIt = { list: () => [PLAN_PATH], show: () => PLAN_TEXT };
+  const namesNothing = { list: () => [] as string[], show: () => null };
+
+  const filing = (title: string = TITLE, claim = " Claim 4.") =>
+    `gh issue create --title "${title}" --body "lib/spec-deps.ts reads one phase and reports an order.${claim} ${DECLARED}"`;
+
+  /** The allowance, spent. An INTENT row, because that is what the cap counts. */
+  const spent = () => [
+    {
+      at,
+      key: `b.1/${at}/0${INTENT_KEY_SUFFIX}`,
+      id: "new",
+      title: "already filed by this run",
+      symptomHash: "h",
+      category: "correctness" as const,
+      severity: null,
+      disposition: "ISSUE" as const,
+      refusal: null,
+      emitted: false,
+      withheldBy: INTENT_PENDING,
+      jury: null,
+      duplicateOf: [],
+      overridden: false,
+      refiledAfter: null,
+      exemption: "out-of-pr-diff" as const,
+      intent: true,
+      run: runIdFor(dir).run!,
+    },
+  ];
+
+  const run = (cmd: string, readPlan: { list: () => string[]; show: () => string | null },
+               readLedger: () => unknown = spent) =>
+    filingGate(cmd, {
+      projectRoot: dir,
+      now: at,
+      readExisting: async () => measuredCorpus([]),
+      readLedger: readLedger as never,
+      appendLedger: () => true,
+      readTarget: async () => ({ reading: "NO_PR", branch: "b" }) as never,
+      readPlan,
+    });
+
+  beforeAll(() => {
+    dir = join(scratch, "plan-route");
+    mkdirSync(dir, { recursive: true });
+  });
+
+  test("FG-180: a spent allowance does not refuse a filing a merged plan names", async () => {
+    const r = await run(filing(), namesIt);
+    expect(r.rows, "one clause").toHaveLength(1);
+    expect(r.rows[0].refusal, "the plan is the second route past the cap").toBeNull();
+    expect(r.refusal).toBeNull();
+    expect(
+      r.rows[0].plannedBy,
+      "and the row names the plan it rode in on — an exemption nobody can audit is no exemption",
+    ).toBe(`${PLAN_PATH}:3`);
+  });
+
+  test("FG-181 CONTROL: the SAME filing, same spent allowance, no plan — OVER_CAP", async () => {
+    // Without this, FG-180 passes against a gate whose allowance was never
+    // spent, and the exemption would be certified by a cap that never bound.
+    const r = await run(filing(), namesNothing);
+    expect(r.rows[0].refusal, "the allowance really is spent").toBe("OVER_CAP");
+    expect(r.rows[0].plannedBy, "and the column is present on an unplanned row too").toBeNull();
+  });
+
+  test("FG-182: the exemption is scoped to the CAP and waives nothing else", async () => {
+    // A planned filing that names no SUCCESS.md claim is still refused. If
+    // the plan short-circuited the adjudication rather than the cap, a merged
+    // plan would become a general override — which is the `arbiter-override`
+    // label with a longer lead time.
+    const r = await run(filing(TITLE, ""), namesIt);
+    expect(r.rows[0].refusal, "NO_CLAIM survives the plan route").toBe("NO_CLAIM");
+  });
+
+  test("FG-183: an UNREADABLE ledger refuses a planned filing too", async () => {
+    // `uncountable` and `spent >= FILINGS_PER_RUN` are two reasons for one No,
+    // and only the second is the wrong-population problem the plan route
+    // fixes. An exemption that cannot be RECORDED must not be granted.
+    const r = await run(filing(), namesIt, () => null);
+    expect(r.rows[0].refusal, "the plan does not exempt an unmeasurable cap").toBe("UNMEASURED_CAP");
+  });
+
+  test("FG-185: a planned clause does not spend the allowance for its SIBLING", async () => {
+    // Found by the AI review of this change, after two of the three sites
+    // were already guarded. The cap is consulted in THREE places — the
+    // in-process `spent` counter, the pre-read, and the reservation stage —
+    // and a guard missing from any one of them makes the exemption worse
+    // than useless: here the planned clause cleared, incremented `spent`,
+    // and the unplanned sibling was refused OVER_CAP, which blocks the whole
+    // command INCLUDING the clause that had just been exempted.
+    //
+    // One command, both clauses, a FRESH allowance — so the only thing that
+    // can spend it is the planned clause itself. That is why this row starts
+    // from an empty ledger while FG-180..184 start from a spent one: they
+    // vary the plan against a spent allowance, this varies the allowance
+    // against a plan.
+    const r = await run(`${filing()} && ${filing("a second finding nobody planned")}`, namesIt, () => []);
+    expect(r.rows, "two clauses").toHaveLength(2);
+    expect(
+      r.rows.map(x => x.plannedBy === null ? "unplanned" : "planned"),
+      "the premise: clause 0 is planned and clause 1 is not",
+    ).toEqual(["planned", "unplanned"]);
+    expect(
+      r.rows.map(x => x.refusal),
+      "the planned clause must not have spent the sibling's allowance",
+    ).toEqual([null, null]);
+    expect(r.refusal, "so the command is not blocked").toBeNull();
+  });
+
+  test("FG-186 CONTROL: an UNPLANNED clause still spends it, so the sibling IS capped", async () => {
+    // Without this, FG-185 passes against a gate whose `spent` counter never
+    // moves at all — which would delete the cap for every multi-clause
+    // command in the tree and look exactly like the exemption working.
+    const r = await run(
+      `${filing("a first finding nobody planned")} && ${filing("a second finding nobody planned")}`,
+      namesNothing,
+      () => [],
+    );
+    expect(r.rows.map(x => x.refusal), "clause 1 is capped by clause 0").toEqual([null, "OVER_CAP"]);
+  });
+
+  test("FG-184: a title the plan does not name is capped even when plans exist", async () => {
+    // Against "any plan file at all lifts the cap", which passes FG-180 and
+    // FG-181 and turns the first merged plan into a permanent bypass.
+    const r = await run(filing("something nobody planned"), namesIt);
+    expect(r.rows[0].refusal).toBe("OVER_CAP");
+    expect(r.rows[0].plannedBy).toBeNull();
+  });
+});

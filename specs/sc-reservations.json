@@ -92,6 +92,13 @@
       "to": 50,
       "namespace": "AR",
       "note": "#1536 - a bare integer is not a symptom key. AR-21..35 is the highest declared block and AR-26 the highest id on main, so this sits above every declared block. AR-36..39 are consumed. SAME OWNER as the FG entry above, deliberately: one branch holding a block in two namespaces is the normal case for work touching both test/issue-filing-gate.test.ts and test/finding-arbiter.test.ts, and .claude/rules/parallel-sessions.md records rg/filing-gate-four holding FG-45..59 and AR-20 as the incident the namespace field exists for. #1538 split this into a suffixed owner to get a red CI case green; that was contorting the data to fit a broken predicate and #1542 reverted it. Do not re-split it: with every owner unique, the live-store case in test/sc-reservation-store.test.ts cannot distinguish a correct reader from one that rewrites every namespace to SC, and this pair is what exercises it. Delete when the PR merges."
+    },
+    {
+      "owner": "rg/filing-plan-route",
+      "from": 180,
+      "to": 199,
+      "namespace": "FG",
+      "note": "The cap's second route: a filing named by a plan merged on origin/main. FG-100..119 is the highest declared block and FG-179 the highest id on main, so main has already moved past every declaration here and this sits above both. FG has no allocator, so this is the eyeballed-headroom method .claude/rules/parallel-sessions.md names, declared before the ids were consumed. NOT pushed to main ahead of the branch: main requires the `test` and `ai-review` status checks with enforce_admins on, so a reservation-only push is refused and the entry can only reach main through this PR. FG-180..186 are consumed — 185 and 186 were added later in the same PR, for the three-sites property, and an audit that reclaims the rest of the block must not hand those two to a later branch. FG-187..199 are free. Delete when the PR merges."
     }
   ]
 }

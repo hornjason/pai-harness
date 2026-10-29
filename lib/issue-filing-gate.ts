@@ -128,6 +128,7 @@ import {
   type Severity,
 } from "./finding-jury";
 import { clauses, createsIssue, flagValues, labelValues } from "./issue-create-override";
+import { gitSource, plannedFiling, type PlanSource } from "./filing-plan";
 
 /**
  * The label that waives this gate.
@@ -1128,6 +1129,21 @@ export interface FilingAdjudication {
  * chokepoint's own rows are unchanged and still write `null` for both.
  */
 export interface FilingLedgerRow {
+  /**
+   * The plan that authorised this filing — `<path>:<line>` on `origin/main` —
+   * or `null` for one no plan names.
+   *
+   * On EVERY row, not only the exempted ones, for the same reason
+   * `FilingAdjudication.exemption` is: the question the cap's second route
+   * raises is *how much of what we file is planned*, and that is a ratio. A
+   * column present only where the exemption fired can supply its numerator
+   * and never its denominator.
+   *
+   * It is also the audit trail for the exemption itself. An exemption that
+   * reaches the tracker without naming the merged plan it rode in on is
+   * indistinguishable from the cap not having been applied.
+   */
+  plannedBy?: string | null;
   at: string;
   /**
    * This row, told apart from every other row on a shared ledger (#1318).
@@ -2372,6 +2388,15 @@ export async function filingGate(
      * read can be driven — see `runIdFor`, where the default lives.
      */
     readRemote?: (worktreePath: string) => RemoteReading;
+    /**
+     * The merged plans, for the cap's second route (`lib/filing-plan.ts`).
+     *
+     * Injectable for the same reason `readExisting` is — the live one shells
+     * out to git. The DEFAULT is the only one that ships, and it reads
+     * `origin/main`: a caller that passed the working tree here would hand
+     * every agent the power to write its own exemption.
+     */
+    readPlan?: PlanSource;
   },
 ): Promise<FilingGateReading> {
   const attempts = filingAttempts(cmd);
@@ -2379,6 +2404,7 @@ export async function filingGate(
 
   const at = options.now ?? new Date().toISOString();
   const read = options.readExisting ?? openFindings;
+  const planSource = options.readPlan ?? gitSource(options.projectRoot);
   // Read once per TARGET TRACKER, not once per command and not once per
   // clause. Once per clause would adjudicate two creates against two
   // different snapshots; once per command would adjudicate a `--repo other/x`
@@ -2653,7 +2679,30 @@ export async function filingGate(
     // cannot be read" are two reasons for the same No, and splitting them
     // across two branches is how the first bypass got in.
     const wouldEmit = read2.outcome !== "REFUSE" || overrideOf(read2);
-    const capped = uncountable || spent >= FILINGS_PER_RUN;
+    // **The cap's second route: a filing a MERGED plan names** (`lib/filing-plan.ts`).
+    //
+    // The number above was calibrated against one population — a review
+    // finding filed mid-change. Decomposing a criterion into issues is the
+    // other one, and it produces several issues in one run BY DESIGN, so a
+    // cap of 1 does not slow it down, it forbids it.
+    //
+    // This is not a label and not a bar. The filer cannot argue into it and
+    // cannot nominate its own plan: the title has to appear verbatim in a
+    // file on `origin/main`, which means somebody merged it. That merged
+    // plan is the human reading the cap stands in for.
+    //
+    // **It exempts the SPENT arm only, never `uncountable`.** Those are two
+    // reasons for one No elsewhere in this function, and here they part: a
+    // spent allowance is the cap doing its job on the wrong population, and
+    // an unreadable ledger means this exemption cannot be RECORDED. An
+    // exemption nobody can audit is the thing the ledger exists to prevent,
+    // so it refuses with the rest.
+    //
+    // It exempts the cap and nothing else. A planned filing that duplicates
+    // an open issue is still `DUPLICATE`, and one that declares no reason is
+    // still `COMMENT_INSTEAD`; `read2` is untouched above.
+    const planned = plannedFiling(attempt.title, planSource);
+    const capped = uncountable || (spent >= FILINGS_PER_RUN && !planned.planned);
     const verdict: FilingAdjudication =
       wouldEmit && capped
         ? {
@@ -2700,6 +2749,7 @@ export async function filingGate(
       overridden,
       refiledAfter: prior?.at ?? null,
       exemption: verdict.exemption,
+      plannedBy: planned.planned ? `${planned.plan}:${planned.line}` : null,
       run,
     });
 
@@ -2716,8 +2766,31 @@ export async function filingGate(
     // allowance back. Reading `cleared` here is still right, because within
     // this command the clause is provisionally filing and a sibling must not
     // be allowed to file under the same allowance.
+    // **A planned clause does not spend the allowance — here either.**
+    //
+    // This is the THIRD consumer of one fact, and the AI review of this
+    // change found it after the first two were already written: a planned
+    // clause that cleared still incremented `spent`, so in a multi-clause
+    // command the next clause read the allowance as gone, was refused
+    // `OVER_CAP`, and the refusal blocked the whole command — including the
+    // exempt clause that had just cleared. The exemption would have made a
+    // two-clause planned filing WORSE than a one-clause one.
+    //
+    // Named as one property rather than three guards, because three sites
+    // answering one question is how a behavioural suite comes to catch only
+    // the last of them to regress (`.claude/rules/checks-must-be-able-to-fail.md`,
+    // the fourth shape): **a planned filing never touches the allowance — not
+    // this counter, not the pre-read, not the reservation queue.** All three
+    // read the one `planned` reading — this site and the pre-read read the
+    // local directly, the reservation stage reads the `plannedBy` it was
+    // written onto, because it runs after this loop. `FG-185` exercises all
+    // three in one command.
+    //
+    // `siblings` still gets the clause. That is the DEDUPE corpus, not the
+    // allowance: two planned clauses filing the same finding twice is still a
+    // duplicate, and the plan route exempts the cap alone.
     if (cleared) {
-      spent += 1;
+      if (!planned.planned) spent += 1;
       siblings.push({ ...finding, id: String(index) });
       siblingTitles.set(String(index), attempt.title);
     }
@@ -2811,6 +2884,29 @@ export async function filingGate(
     const reserved: FilingLedgerRow[] = [];
     for (const [index, row] of rows.entries()) {
       if (!row.emitted) continue;
+      // **A planned filing takes no position in the queue, because it is not
+      // in the cap's accounting at all.**
+      //
+      // This stage re-decides the cap — deliberately, so that a filing in
+      // flight in another process is visible — and `FG-153` records that it
+      // refuses an over-cap clause *"whatever the pre-read decided"*. That
+      // makes it the second consumer of one question, and the exemption has
+      // to reach both or the earlier one is dead code: without this line
+      // `FG-180` reads `OVER_CAP` with the pre-read having allowed it, which
+      // is the fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`
+      // pointed at my own change.
+      //
+      // It is not a second DECIDER. `plannedBy` was computed once, above, and
+      // written onto the row; this reads that value rather than asking
+      // `plannedFiling` again. A second call would be two deciders over one
+      // input, and a mutation of either would leave the other holding the
+      // case up.
+      //
+      // Reserving one and immediately releasing it would also work and is
+      // worse: it writes two rows per planned filing into the ledger the cap
+      // is measured from, so `intentsInRun` would count planned work against
+      // the population the number was calibrated on.
+      if (row.plannedBy != null) continue;
       const reading = reserveAllowance(row, run, { now: nowMs, append, readLedger: readAgain });
       if (reading.outcome === "WON") {
         reserved.push(reading.intent);
