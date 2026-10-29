@@ -198,12 +198,10 @@ export async function main(argv: string[], gh: PlanDepsGitHub = LIVE_GITHUB): Pr
   const refuseWrite = plan.reading === "UNMEASURED";
 
   if (values.json) {
-    // Apply FIRST, then report. The first version printed `"wrote": "yes"`
-    // and only then awaited applyEdges, whose per-group catch turns a failure
-    // into a string nothing read — so a run where every `gh issue edit` call
-    // failed emitted "yes" and exited 0. This is the identical defect the
-    // same PR fixed in `scripts/plan-issues.ts`, left unfixed in its sibling:
-    // naming a fix in one file is not sweeping for its shape in the others.
+    // Apply FIRST, then report: `wrote` and the exit code must both be
+    // computed from `results`, never before it exists. `applyEdges` turns a
+    // per-group failure into a string, so a status decided ahead of it would
+    // read "yes" on a run where every `gh issue edit` call failed.
     const results = values.write && !refuseWrite ? await applyEdges(gh, repo, plan.missing) : [];
     const failures = results.filter(r => r.includes("FAILED"));
     const wrote = !values.write
