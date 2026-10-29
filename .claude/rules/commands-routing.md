@@ -1,6 +1,6 @@
 ---
 description: Every command the rungate CLI exposes in this project, generated from its command registry
-generated-sha: 88ecb8ae31d68936
+generated-sha: f40fa710a3ef495a
 ---
 
 ## Command Routing
@@ -18,6 +18,9 @@ Run one as `bun bin/rungate.ts <command>`.
 | `convert-spec` | Convert an existing document into a testable spec |
 | `audit-specs` | Report which success criteria are matched, unmatched or uncovered |
 | `audit-spec-evidence` | Refuse a ticked criterion that does not name what proved it |
+| `plan-spec` | Derive a repository's milestones from a spec's Phase placement table |
+| `criterion-inventory` | Trace every criterion to the tests, issues and pull requests that name it |
+| `board-mirror` | Show a spec's criteria, and what is ready to pick up, on the project board |
 | `sync-spec-tests` | Regenerate the conformity suite from the specs |
 | `generate-code-map` | Regenerate CODE-MAP.md from the source tree |
 | `extract-constraints` | Extract constraints from a project's docs into agent rules |

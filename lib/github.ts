@@ -36,6 +36,17 @@ export interface GitHubClient {
        * is one. `listOpenIssues` drops them; see why there.
        */
       listForRepo: (params: { owner: string; repo: string; state?: string; per_page?: number; [key: string]: any }) => Promise<{ data: any[] }>;
+      /**
+       * The repository's milestones (#1647).
+       *
+       * `state` defaults to `open` at the API, which is the wrong default for
+       * anything deriving milestones from a spec: a phase whose milestone was
+       * closed early reads as absent, and the caller creates a duplicate.
+       * `listMilestones` below passes `all` and does not expose the choice.
+       */
+      listMilestones: (params: { owner: string; repo: string; state?: string; per_page?: number }) => Promise<{ data: any[] }>;
+      createMilestone: (params: { owner: string; repo: string; title: string; description?: string }) => Promise<{ data: any }>;
+      updateMilestone: (params: { owner: string; repo: string; milestone_number: number; title?: string; description?: string }) => Promise<{ data: any }>;
     };
     pulls: {
       create: (params: { owner: string; repo: string; title: string; head: string; base: string; body?: string; draft?: boolean }) => Promise<{ data: any }>;
@@ -543,6 +554,61 @@ export async function createIssue(
     title: opts.title,
     ...(opts.body !== undefined ? { body: opts.body } : {}),
     ...(opts.labels?.length ? { labels: opts.labels } : {}),
+  });
+  return response.data;
+}
+
+/**
+ * Every milestone, open AND closed (#1647).
+ *
+ * `state: "all"` is not a parameter, because the only caller derives
+ * milestones from a spec's phases and must not create a second milestone for
+ * a phase whose first one was closed. The API's own default is `open`, so the
+ * safe reading has to be stated here rather than left to the call site — an
+ * omitted `state` is the bug, and an omitted argument looks like care.
+ */
+export async function listMilestones(
+  client: GitHubClient,
+  repoSlug: string,
+): Promise<{ number: number; title: string; state: string; description: string | null }[]> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.issues.listMilestones({ owner, repo, state: "all", per_page: 100 });
+  return response.data.map((m: any) => ({
+    number: m.number,
+    title: m.title,
+    state: m.state,
+    description: m.description ?? null,
+  }));
+}
+
+export async function createMilestone(
+  client: GitHubClient,
+  repoSlug: string,
+  opts: { title: string; description?: string },
+): Promise<any> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.issues.createMilestone({
+    owner,
+    repo,
+    title: opts.title,
+    ...(opts.description !== undefined ? { description: opts.description } : {}),
+  });
+  return response.data;
+}
+
+export async function renameMilestone(
+  client: GitHubClient,
+  repoSlug: string,
+  milestoneNumber: number,
+  opts: { title: string; description?: string },
+): Promise<any> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.issues.updateMilestone({
+    owner,
+    repo,
+    milestone_number: milestoneNumber,
+    title: opts.title,
+    ...(opts.description !== undefined ? { description: opts.description } : {}),
   });
   return response.data;
 }

@@ -34,6 +34,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { PLACEMENT_HEADING, parsePlacementRows } from "../lib/spec-placement";
 
 const REPO = join(import.meta.dir, "..");
 const SPEC = "specs/CODE-REVIEW-CONVERGENCE-SPEC.md";
@@ -602,6 +603,170 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its own counts are computed, no
   });
 });
 
+/**
+ * The class behind rounds 4 through 7 of #1647, closed rather than patched.
+ *
+ * Each of those rounds found one more hand-typed cross-reference in the prose
+ * AROUND the placement table drifting from the table itself, and each was
+ * fixed as the single sentence a reviewer happened to read: Phase 5's "Six
+ * more belong here" naming five criteria, the PR body claiming CRC-M8 joins
+ * Phase 5 when the table places it under *Not adopted — deliberate*, and
+ * ADR-003 stating a milestone count the table's rule cannot produce. The
+ * reviewer's standing objection across three rounds was that the TABLE gained
+ * a guard and the prose narrating it did not, so the next edit reproduces the
+ * defect. It was right.
+ *
+ * These three cases bind the prose to the table. They would each have gone
+ * red on the shipped text before this commit, which is the only reason to
+ * believe they will catch the next one.
+ */
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the prose around the table cannot drift from it", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+  const WORDS: Record<string, number> = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+    seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+    thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+    seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+  };
+
+  /**
+   * Each `### Phase N — …` section's text, keyed by phase number.
+   *
+   * The LAST section must stop at the placement table, not at the end of the
+   * document. The first version of this ended it at `### Exit conditions`,
+   * which sits after the table — so Phase 6's "prose" contained every row of
+   * the table and the case reported 38 violations, every one an artefact. An
+   * instrument that swallows the thing it is comparing against reports total
+   * disagreement, which is at least loud; the same slip one boundary smaller
+   * would have reported a believable number.
+   */
+  const phaseSections = (src: string): Map<number, string> => {
+    const out = new Map<number, string>();
+    const heads = [...src.matchAll(/^#{2,4} Phase (\d+)\b.*$/gm)];
+    const stops = [src.indexOf(`\n${PLACEMENT_HEADING}`), src.indexOf("\n### Exit conditions")]
+      .filter(i => i > 0);
+    heads.forEach((h, i) => {
+      const start = h.index! + h[0].length;
+      const after = i + 1 < heads.length ? heads[i + 1].index! : src.length;
+      const end = Math.min(after, ...stops.filter(s => s > start));
+      out.set(Number(h[1]), src.slice(start, end));
+    });
+    return out;
+  };
+
+  test("a `**<Word> more belong here**` count equals the ids that sentence then names", () => {
+    expect(body, `${SPEC} is missing`).not.toBeNull();
+    const hits = [...body!.matchAll(/\*\*([A-Za-z]+) more belong here[^*]*\.\*\*([\s\S]*?)(?=\n\n|\n\*\*)/g)];
+    expect(
+      hits.length,
+      `no "**<Word> more belong here**" sentence matches any more. Either it was removed — ` +
+        `then delete this case — or reworded, and the count is now unchecked.`,
+    ).toBeGreaterThan(0);
+
+    const wrong: string[] = [];
+    for (const h of hits) {
+      const stated = WORDS[h[1].toLowerCase()];
+      if (stated === undefined) {
+        wrong.push(`"${h[1]} more belong here" — "${h[1]}" is not a number word this case knows`);
+        continue;
+      }
+      const named = new Set([...h[2].matchAll(/\bCRC-[A-Z]?\d+\b/g)].map(m => m[0]));
+      if (named.size !== stated) {
+        wrong.push(`"${h[1]} more belong here" names ${named.size}: ${[...named].join(", ")}`);
+      }
+    }
+    expect(
+      wrong,
+      `a phase's prose states a count that disagrees with the criteria it then names. ` +
+        `Found on rounds 4, 6 and 7 of #1647, in the same sentence each time.`,
+    ).toEqual([]);
+  });
+
+  // The third drift rounds 4-7 found — the PR body claiming CRC-M8 joins
+  // Phase 5 while the table places it under "Not adopted — deliberate" — has
+  // NO guard here, and the reason is worth stating rather than leaving as an
+  // apparent oversight.
+  //
+  // It was in the pull request DESCRIPTION, which is not a file in this tree
+  // and which no test can read. A case over the spec's prose cannot reach it.
+  //
+  // One was attempted and withdrawn: "every criterion a phase section names
+  // is in that phase's row". It cannot be written against this document,
+  // because the claim/citation distinction here is not structural. Phase 0's
+  // prose says *"the same 'needs a second person' constraint CRC-E5 and
+  // CRC-E7 carry"* and *"two further criteria — CRC-E6 and CRC-M9 —"*; both
+  // are citations, both are correct, and neither is distinguishable by shape
+  // from a placement claim. The attempted case reported all four as defects.
+  // A guard that reddens correct prose is deleted by the third person it
+  // blocks, so it is not shipped — `.claude/rules/checks-must-be-able-to-fail.md`
+  // on erring toward NOT reporting.
+  //
+  // The two cases that remain cover the two drifts that actually recurred in
+  // files, and both were proved to catch their own instance.
+
+  test("ADR-003's milestone count is the number of phase rows, spelled as a word", () => {
+    // The cross-document half, and the one that took three rounds. ADR-003
+    // says milestones are derived one per phase; a count in it that the table
+    // cannot produce is the rule and its illustration disagreeing.
+    const adrPath = join(REPO, "docs/adr/ADR-003-spec-to-tracker-mapping.md");
+    expect(existsSync(adrPath), "ADR-003 is gone — delete this case or re-point it").toBe(true);
+    const adr = readFileSync(adrPath, "utf-8");
+    const phases = parsePlacementRows(body!).filter(r => /^Phase \d+$/.test(r.placement)).length;
+    expect(phases, "no phase rows, so the claim below is compared to zero").toBeGreaterThan(5);
+
+    const claim = adr.match(/\*\*Milestones: ([a-z]+) derived, one not\.\*\*/);
+    expect(
+      claim,
+      "ADR-003 no longer states its derived-milestone count in the form this case reads. " +
+        "Reword the case with it, or the count goes unchecked.",
+    ).not.toBeNull();
+    expect(
+      WORDS[claim![1]],
+      `ADR-003 says "${claim![1]} derived" and the placement table has ${phases} phase rows`,
+    ).toBe(phases);
+  });
+
+  test("the Increment-1 plan's issue count is the number of rows it lists", () => {
+    // Same class, caught on this document the day it was written: the plan
+    // said "sixteen" in three places and listed eighteen rows. A count typed
+    // beside a list it does not come from is the drift this whole suite is
+    // about, and writing the guard is cheaper than reading the list again.
+    const planPath = join(REPO, "docs/adr/ADR-004-increment-1-issue-plan.md");
+    expect(
+      existsSync(planPath),
+      "the Increment-1 plan is gone — delete this case or re-point it",
+    ).toBe(true);
+    const plan = readFileSync(planPath, "utf-8");
+
+    // A row opens with `**P<phase>-<n> · `. Nothing else in the file does.
+    const rows = plan.match(/^\*\*P\d+-\d+ · /gm) ?? [];
+    expect(rows.length, "no rows matched, so the claim below is compared to zero").toBeGreaterThan(
+      5,
+    );
+
+    const heading = plan.match(/^## The ([a-z]+) new issues$/m);
+    expect(
+      heading,
+      "the plan no longer states its issue count in the form this case reads. " +
+        "Reword the case with it, or the count goes unchecked.",
+    ).not.toBeNull();
+    expect(
+      WORDS[heading![1]],
+      `the plan's heading says "${heading![1]}" and it lists ${rows.length} rows`,
+    ).toBe(rows.length);
+
+    // And the two restatements further down, which is where the first draft
+    // left two of its three wrong numbers after the heading was corrected.
+    for (const m of plan.matchAll(/\b(?:before these|^)([A-Za-z]+) (?:against one|new issues)\b/gm)) {
+      const word = m[1].toLowerCase();
+      if (WORDS[word] === undefined) continue;
+      expect(WORDS[word], `the plan restates its count as "${m[1]}" and lists ${rows.length}`).toBe(
+        rows.length,
+      );
+    }
+  });
+});
+
 describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
   const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
 
@@ -906,5 +1071,134 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
     expect(found, "the extractor read the planted body differently than intended")
       .toEqual(["REVIEW.md", "evals/ai-review-controls/"]);
     expect(found.filter(p => !existsSync(join(REPO, p)))).toEqual(["evals/ai-review-controls/"]);
+  });
+});
+
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every criterion has exactly one phase", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+  const HEADING = "### Phase placement — every criterion has exactly one home";
+
+  // The placement table's rows, as {placement, ids}. MEMBERSHIP IS THE SECOND
+  // CELL and nothing else — the same claim-vs-citation discipline the bucket
+  // partition above draws, and for the same measured reason: a scan of the
+  // phase prose reported four criteria placed that Phase 0 only mentions, and
+  // missed three that Phase 5 writes as one slash-joined run headed by CRC-M1,
+  // in which they never appear whole. Two errors in opposite directions, one
+  // believable total.
+  //
+  // It takes the document rather than closing over it, so the staged case at
+  // the bottom runs the REAL heading-lookup, section-slice and cell-split over
+  // a planted table. A staged case that reimplements the parse proves
+  // `Array.filter` works and nothing about this parser — if `rows()` ever
+  // de-duplicated while reading `cells[2]`, the duplicate check would pass
+  // vacuously and a reimplemented control would pass with it, which is the
+  // *two deciders that agree* shape in
+  // `.claude/rules/checks-must-be-able-to-fail.md`. Raised by the reviewer on
+  // #1647 and it was right.
+  //
+  // It is `parsePlacementRows` and not a copy of it for the SAME reason, one
+  // level out. `rungate plan-spec` derives this repository's milestones from
+  // this table, and a second parser here would be a second decider: a
+  // disagreement between what the test polices and what the command creates
+  // would be invisible from both sides, and the command is the one that
+  // writes to GitHub.
+  const rows = (src: string): { placement: string; ids: string[] }[] => {
+    expect(src.includes(HEADING), `the placement section is gone or renamed — rename it here too`)
+      .toBe(true);
+    return parsePlacementRows(src);
+  };
+
+  test("the table parses and carries every placement value, so the cases below are not vacuous", () => {
+    expect(body, `${SPEC} is missing`).not.toBeNull();
+    const parsed = rows(body!);
+    expect(parsed.length, "the placement table parsed no rows").toBeGreaterThan(5);
+    // The value set is closed and three of the values are deliberately not
+    // phases. A row that loses its ids, or a value nobody uses, is the way
+    // this table goes quietly wrong.
+    for (const row of parsed) {
+      expect(row.ids.length, `the "${row.placement}" row lists no criteria`).toBeGreaterThan(0);
+    }
+    expect(
+      parsed.map(r => r.placement).filter(p => !/^Phase [0-6]$/.test(p)).sort(),
+      "the non-phase placement values changed. They are deliberate — see the section's " +
+        "second paragraph — so if one is gone, say where its criteria went.",
+    ).toEqual(["Blocked — needs a second person", "Done", "Not adopted — deliberate", "Not observable here"]);
+  });
+
+  test("every criterion this spec declares is placed exactly once", () => {
+    const declared = [...body!.matchAll(/^- \[([ xX])\] (CRC-[A-Z]?\d+):/gm)].map(m => m[2]);
+    expect(declared.length, "no criteria parsed, so the partition below is over nothing")
+      .toBeGreaterThan(40);
+    const placed = rows(body!).flatMap(r => r.ids);
+
+    expect(
+      declared.filter(id => !placed.includes(id)),
+      `criteria with NO phase. The backlog is built from this document and an unplaced ` +
+        `criterion reads as finished. Add each to a row of the placement table — ` +
+        `"${HEADING.replace("### ", "")}".`,
+    ).toEqual([]);
+    expect(
+      placed.filter((id, i) => placed.indexOf(id) !== i),
+      "criteria placed TWICE. The placements are exclusive, so one of the two is wrong.",
+    ).toEqual([]);
+  });
+
+  test("the table places nothing this spec does not declare", () => {
+    // The other direction, and the one a rename breaks. A placement for an id
+    // that no longer exists is a row nobody will ever clear.
+    const declared = new Set([...body!.matchAll(/^- \[[ xX]\] (CRC-[A-Z]?\d+):/gm)].map(m => m[1]));
+    expect(
+      rows(body!).flatMap(r => r.ids).filter(id => !declared.has(id)),
+      `the placement table names criteria this spec does not declare. Either the id was ` +
+        `renamed — fix the row — or the placement was invented.`,
+    ).toEqual([]);
+  });
+
+  test("a missing and a duplicated placement are both caught, so the cases above can fail", () => {
+    // Driven over a PLANTED DOCUMENT through the real `rows()` — the heading
+    // lookup, the section slice and the cell split all run. The real table
+    // cannot be made wrong on demand, and a case that cannot be staged is a
+    // case that never ran.
+    const plant = (phase1: string, phase2: string) =>
+      [
+        "# planted",
+        "",
+        "- [ ] CRC-A1: one",
+        "- [ ] CRC-A2: two",
+        "- [ ] CRC-A3: three",
+        "",
+        HEADING,
+        "",
+        "| Placement | Criteria | What the value means |",
+        "|---|---|---|",
+        `| **Phase 1** | ${phase1} | first |`,
+        `| **Phase 2** | ${phase2} | second |`,
+        "",
+        "### Something else",
+      ].join("\n");
+    const declared = ["CRC-A1", "CRC-A2", "CRC-A3"];
+
+    // The positive control FIRST: a correct table is a clean partition, or
+    // the two negatives below could be red for a reason unrelated to the
+    // defect they name.
+    const ok = rows(plant("CRC-A1, CRC-A2", "CRC-A3")).flatMap(r => r.ids);
+    expect(ok.sort(), "the planted document did not parse as intended").toEqual(declared);
+    expect(declared.filter(id => !ok.includes(id))).toEqual([]);
+    expect(ok.filter((id, i) => ok.indexOf(id) !== i)).toEqual([]);
+
+    // Missing: CRC-A3 placed nowhere.
+    const short = rows(plant("CRC-A1, CRC-A2", "CRC-A2")).flatMap(r => r.ids);
+    expect(declared.filter(id => !short.includes(id))).toEqual(["CRC-A3"]);
+
+    // Duplicated: CRC-A1 placed under two phases. This is the one that goes
+    // vacuous if `rows()` ever de-duplicates while reading the cell, which is
+    // why it runs through `rows()` rather than beside it.
+    const twice = rows(plant("CRC-A1, CRC-A2", "CRC-A3, CRC-A1")).flatMap(r => r.ids);
+    expect(twice.filter((id, i) => twice.indexOf(id) !== i)).toEqual(["CRC-A1"]);
+
+    // And the header row must not be read as a placement, or every count
+    // above is off by whatever the header happens to contain.
+    expect(rows(plant("CRC-A1, CRC-A2", "CRC-A3")).map(r => r.placement))
+      .toEqual(["Phase 1", "Phase 2"]);
   });
 });

@@ -147,6 +147,59 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
     usage: "rungate audit-spec-evidence [--json] [--record-fingerprints]",
     projectRootFlag: true,
   },
+  // Step 2 of `docs/adr/ADR-003-spec-to-tracker-mapping.md`, which was eight
+  // `gh` commands typed by hand before this existed (#1647). Registered
+  // rather than left a script because the whole point is that a CONSUMER can
+  // turn their own spec into their own milestones — the derivation is not
+  // about this repository's phases, and a script in `scripts/` reaches
+  // nobody who installed the package.
+  //
+  // `projectRootFlag` is load-bearing for the same reason it is on
+  // `audit-spec-evidence`: the spec path is resolved against the root, so
+  // without the flag `bunx rungate plan-spec specs/X.md` would read
+  // `node_modules/rungate/specs/X.md` and derive RUNGATE's phases into the
+  // consumer's repository.
+  "plan-spec": {
+    script: "scripts/plan-spec.ts",
+    summary: "Derive a repository's milestones from a spec's Phase placement table",
+    usage: "rungate plan-spec <spec.md> --repo <owner/name> --prefix <name> [--write] [--json]",
+    projectRootFlag: true,
+  },
+  // Registered after two hours of building a weaker version of it beside it
+  // (#1647). This script has produced the full criterion-to-issue-to-PR-to-
+  // test matrix since it was written, and was reachable from nothing: not a
+  // command, not in `files[]`, not in CI, named in no always-loaded document.
+  // `rungate plan-spec`'s coverage column was written in ignorance of it and
+  // duplicated its matcher. An unregistered tool is indistinguishable from an
+  // absent one, which is the whole of #1309 and is why that registry exists.
+  //
+  // `projectRootFlag`, and the script REFUSES a `--project-root` without a
+  // `--spec`: its default spec is rungate's own convergence document.
+  "criterion-inventory": {
+    script: "scripts/criterion-inventory.ts",
+    summary: "Trace every criterion to the tests, issues and pull requests that name it",
+    usage: "rungate criterion-inventory --snapshot <dir> --spec <path> [--json] [--markdown]",
+    projectRootFlag: true,
+  },
+  // Step 3 of ADR-003 made VISIBLE (#1647). The issue body declares which
+  // criteria the work serves and the board renders fields, not bodies, so the
+  // declaration was invisible without opening every issue in turn. This
+  // derives a text column from the bodies and writes it.
+  //
+  // The direction is load-bearing and stated in `lib/board-mirror.ts`: the
+  // body is the source, the column is a mirror. A project custom field cannot
+  // be read through `gh` at all, so nothing an agent acts on may live there.
+  //
+  // `projectRootFlag` for the same reason as its neighbours — the spec path
+  // resolves against the root, and without it a consumer would mirror
+  // RUNGATE's criteria onto their own board.
+  "board-mirror": {
+    script: "scripts/board-mirror.ts",
+    summary: "Show a spec's criteria, and what is ready to pick up, on the project board",
+    usage:
+      "rungate board-mirror --project <node-id> --spec <spec.md> [--field <name>] [--write] [--ready]",
+    projectRootFlag: true,
+  },
   "sync-spec-tests": {
     script: "scripts/sync-spec-tests.ts",
     summary: "Regenerate the conformity suite from the specs",
