@@ -37,5 +37,6 @@ Read the governing spec BEFORE making changes in that area.
 | SESSION-AUDIT-SPEC.md | Session behavioral audit — two feedback loops for instruction quality improvement | false |
 | SESSION-LIFECYCLE-SPEC.md | Session start and end rituals — cold-start context loading, session-end state capture, handoff brief generation | true |
 | SPEC-AUTHORING-SPEC.md | Spec authoring — the frame a new spec is born with, and the rule that a ticked criterion must name what proved it | true |
+| SPEC-TO-BOARD-PIPELINE-SPEC.md | The spec-to-board pipeline — how a spec's criteria become milestones, issues and blocked-by edges, and how the board shows which criterion each issue serves | true |
 | harness-automation-matrix.md | STATES NO CRITERIA — Automation strategy — bash scripts vs hooks vs workflows for harness enforcement | true |
 | bootstrap-data-flow/ (6 specs) | Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | true |
