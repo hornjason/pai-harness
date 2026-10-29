@@ -99,6 +99,24 @@ to an issue body, one layer up.
 **A tick still comes from a test naming the id, never from an issue.** An issue
 says what is being attempted; only a test says what is true.
 
+### Cardinality — many to many, with one hard constraint
+
+Criteria and issues do **not** pair off, and neither direction is one:
+
+- **A criterion usually needs several issues.** Measured on the convergence
+  spec: CRC-M11 is named by 7, CRC-B4 by 6, CRC-N4 by 5. A criterion is a
+  statement about the finished system; getting there is several pieces of work.
+- **An issue usually serves several criteria.** #1507 names six, #1509 five.
+  This is the direction that keeps the backlog finite — 41 uncovered criteria
+  is roughly 15 issues, not 41. One issue per criterion is a named
+  anti-pattern (chunking a requirements document into tickets) and would push
+  the opened-against-closed ratio past 1.
+
+**The constraint many-to-many creates: a milestone is single-valued, so an
+issue must serve criteria from ONE phase.** If a piece of work genuinely spans
+two phases it is two issues — which is also what rule 3 of `AGENTS.md` wants,
+since cross-phase work is the shape that spreads across many files.
+
 ## What this gives you
 
 ```bash
