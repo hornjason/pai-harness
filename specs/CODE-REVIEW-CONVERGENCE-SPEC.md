@@ -1844,7 +1844,7 @@ and a daily rescore), CRC-M7 (a finding carries no remedy, so the control's
 own number is UNMEASURED), CRC-E3 and CRC-E9 (a second classifier, and a
 ledger that carries a tier to loosen against).
 
-**Six more belong here and were unplaced until 2026-10-28.** CRC-M2 (the
+**Five more belong here and were unplaced until 2026-10-28.** CRC-M2 (the
 case set's cases are expert-confirmed — a human act, but one this repository
 can perform, unlike the approval criteria below), and the four readability
 criteria the reviewer itself cannot report on today: CRC-M12 (an unreadable round names its mode),

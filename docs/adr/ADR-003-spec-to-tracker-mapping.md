@@ -130,12 +130,25 @@ bun scripts/criterion-inventory.ts --snapshot <dir> --spec specs/<SPEC>.md
 ## Status, honestly
 
 Steps 1 and 2 are done for `CODE-REVIEW-CONVERGENCE-SPEC.md`: 61 criteria
-placed, 8 milestones, 44 issues assigned, zero unplaced and zero double-placed.
+placed, zero unplaced and zero double-placed.
 
-**Step 3 is the gap and it is the largest one.** 17 of 61 criteria are reachable
-from an issue; 22 of the 44 convergence issues name no criterion at all, and two
-milestones have no criterion coverage between them. Until that closes, the
-inventory above is a report about a sparse graph rather than a trace.
+**Milestones: seven derived, one not.** The placement table has exactly seven
+phase values, Phase 0 through Phase 6, so the rule above produces seven
+milestones and `rungate plan-spec` creates seven. The repository holds an
+eighth, `Convergence Machinery`, which no phase row derives; `plan-spec`
+reports it as **unmanaged** and does not touch it. An earlier draft of this
+section said "8 milestones" and was caught by a reviewer on #1647 across three
+rounds — the count was right about the repository and wrong about the rule, and
+a number that cannot be derived from the rule it illustrates is the drift this
+whole ADR is about.
+
+**Step 3 is the gap and it is the largest one.** Measured 2026-10-29 with
+`bun bin/rungate.ts plan-spec specs/CODE-REVIEW-CONVERGENCE-SPEC.md --repo
+hornjason/rungate --prefix Convergence`: of the 44 criteria the table places in
+a phase, **36 are named by no open issue**. Against the whole tracker,
+`gh issue list --state open` returns 49 and **14 name any criterion id**. Until
+that closes, the inventory above is a report about a sparse graph rather than a
+trace.
 
 ## What is deliberately not decided here
 

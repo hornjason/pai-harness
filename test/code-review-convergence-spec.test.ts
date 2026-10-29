@@ -34,7 +34,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { parsePlacementRows } from "../lib/spec-placement";
+import { PLACEMENT_HEADING, parsePlacementRows } from "../lib/spec-placement";
 
 const REPO = join(import.meta.dir, "..");
 const SPEC = "specs/CODE-REVIEW-CONVERGENCE-SPEC.md";
@@ -600,6 +600,128 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its own counts are computed, no
         `"must be computed. A hand-typed one is a defect." Update the prose; do not raise ` +
         `the number here.`,
     ).toEqual([]);
+  });
+});
+
+/**
+ * The class behind rounds 4 through 7 of #1647, closed rather than patched.
+ *
+ * Each of those rounds found one more hand-typed cross-reference in the prose
+ * AROUND the placement table drifting from the table itself, and each was
+ * fixed as the single sentence a reviewer happened to read: Phase 5's "Six
+ * more belong here" naming five criteria, the PR body claiming CRC-M8 joins
+ * Phase 5 when the table places it under *Not adopted — deliberate*, and
+ * ADR-003 stating a milestone count the table's rule cannot produce. The
+ * reviewer's standing objection across three rounds was that the TABLE gained
+ * a guard and the prose narrating it did not, so the next edit reproduces the
+ * defect. It was right.
+ *
+ * These three cases bind the prose to the table. They would each have gone
+ * red on the shipped text before this commit, which is the only reason to
+ * believe they will catch the next one.
+ */
+describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the prose around the table cannot drift from it", () => {
+  const body = existsSync(join(REPO, SPEC)) ? readFileSync(join(REPO, SPEC), "utf-8") : null;
+  const WORDS: Record<string, number> = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+    seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  };
+
+  /**
+   * Each `### Phase N — …` section's text, keyed by phase number.
+   *
+   * The LAST section must stop at the placement table, not at the end of the
+   * document. The first version of this ended it at `### Exit conditions`,
+   * which sits after the table — so Phase 6's "prose" contained every row of
+   * the table and the case reported 38 violations, every one an artefact. An
+   * instrument that swallows the thing it is comparing against reports total
+   * disagreement, which is at least loud; the same slip one boundary smaller
+   * would have reported a believable number.
+   */
+  const phaseSections = (src: string): Map<number, string> => {
+    const out = new Map<number, string>();
+    const heads = [...src.matchAll(/^#{2,4} Phase (\d+)\b.*$/gm)];
+    const stops = [src.indexOf(`\n${PLACEMENT_HEADING}`), src.indexOf("\n### Exit conditions")]
+      .filter(i => i > 0);
+    heads.forEach((h, i) => {
+      const start = h.index! + h[0].length;
+      const after = i + 1 < heads.length ? heads[i + 1].index! : src.length;
+      const end = Math.min(after, ...stops.filter(s => s > start));
+      out.set(Number(h[1]), src.slice(start, end));
+    });
+    return out;
+  };
+
+  test("a `**<Word> more belong here**` count equals the ids that sentence then names", () => {
+    expect(body, `${SPEC} is missing`).not.toBeNull();
+    const hits = [...body!.matchAll(/\*\*([A-Za-z]+) more belong here[^*]*\.\*\*([\s\S]*?)(?=\n\n|\n\*\*)/g)];
+    expect(
+      hits.length,
+      `no "**<Word> more belong here**" sentence matches any more. Either it was removed — ` +
+        `then delete this case — or reworded, and the count is now unchecked.`,
+    ).toBeGreaterThan(0);
+
+    const wrong: string[] = [];
+    for (const h of hits) {
+      const stated = WORDS[h[1].toLowerCase()];
+      if (stated === undefined) {
+        wrong.push(`"${h[1]} more belong here" — "${h[1]}" is not a number word this case knows`);
+        continue;
+      }
+      const named = new Set([...h[2].matchAll(/\bCRC-[A-Z]?\d+\b/g)].map(m => m[0]));
+      if (named.size !== stated) {
+        wrong.push(`"${h[1]} more belong here" names ${named.size}: ${[...named].join(", ")}`);
+      }
+    }
+    expect(
+      wrong,
+      `a phase's prose states a count that disagrees with the criteria it then names. ` +
+        `Found on rounds 4, 6 and 7 of #1647, in the same sentence each time.`,
+    ).toEqual([]);
+  });
+
+  // The third drift rounds 4-7 found — the PR body claiming CRC-M8 joins
+  // Phase 5 while the table places it under "Not adopted — deliberate" — has
+  // NO guard here, and the reason is worth stating rather than leaving as an
+  // apparent oversight.
+  //
+  // It was in the pull request DESCRIPTION, which is not a file in this tree
+  // and which no test can read. A case over the spec's prose cannot reach it.
+  //
+  // One was attempted and withdrawn: "every criterion a phase section names
+  // is in that phase's row". It cannot be written against this document,
+  // because the claim/citation distinction here is not structural. Phase 0's
+  // prose says *"the same 'needs a second person' constraint CRC-E5 and
+  // CRC-E7 carry"* and *"two further criteria — CRC-E6 and CRC-M9 —"*; both
+  // are citations, both are correct, and neither is distinguishable by shape
+  // from a placement claim. The attempted case reported all four as defects.
+  // A guard that reddens correct prose is deleted by the third person it
+  // blocks, so it is not shipped — `.claude/rules/checks-must-be-able-to-fail.md`
+  // on erring toward NOT reporting.
+  //
+  // The two cases that remain cover the two drifts that actually recurred in
+  // files, and both were proved to catch their own instance.
+
+  test("ADR-003's milestone count is the number of phase rows, spelled as a word", () => {
+    // The cross-document half, and the one that took three rounds. ADR-003
+    // says milestones are derived one per phase; a count in it that the table
+    // cannot produce is the rule and its illustration disagreeing.
+    const adrPath = join(REPO, "docs/adr/ADR-003-spec-to-tracker-mapping.md");
+    expect(existsSync(adrPath), "ADR-003 is gone — delete this case or re-point it").toBe(true);
+    const adr = readFileSync(adrPath, "utf-8");
+    const phases = parsePlacementRows(body!).filter(r => /^Phase \d+$/.test(r.placement)).length;
+    expect(phases, "no phase rows, so the claim below is compared to zero").toBeGreaterThan(5);
+
+    const claim = adr.match(/\*\*Milestones: ([a-z]+) derived, one not\.\*\*/);
+    expect(
+      claim,
+      "ADR-003 no longer states its derived-milestone count in the form this case reads. " +
+        "Reword the case with it, or the count goes unchecked.",
+    ).not.toBeNull();
+    expect(
+      WORDS[claim![1]],
+      `ADR-003 says "${claim![1]} derived" and the placement table has ${phases} phase rows`,
+    ).toBe(phases);
   });
 });
 
