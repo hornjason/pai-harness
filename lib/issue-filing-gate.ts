@@ -2766,8 +2766,31 @@ export async function filingGate(
     // allowance back. Reading `cleared` here is still right, because within
     // this command the clause is provisionally filing and a sibling must not
     // be allowed to file under the same allowance.
+    // **A planned clause does not spend the allowance — here either.**
+    //
+    // This is the THIRD consumer of one fact, and the AI review of this
+    // change found it after the first two were already written: a planned
+    // clause that cleared still incremented `spent`, so in a multi-clause
+    // command the next clause read the allowance as gone, was refused
+    // `OVER_CAP`, and the refusal blocked the whole command — including the
+    // exempt clause that had just cleared. The exemption would have made a
+    // two-clause planned filing WORSE than a one-clause one.
+    //
+    // Named as one property rather than three guards, because three sites
+    // answering one question is how a behavioural suite comes to catch only
+    // the last of them to regress (`.claude/rules/checks-must-be-able-to-fail.md`,
+    // the fourth shape): **a planned filing never touches the allowance — not
+    // this counter, not the pre-read, not the reservation queue.** All three
+    // read the one `planned` reading — this site and the pre-read read the
+    // local directly, the reservation stage reads the `plannedBy` it was
+    // written onto, because it runs after this loop. `FG-185` exercises all
+    // three in one command.
+    //
+    // `siblings` still gets the clause. That is the DEDUPE corpus, not the
+    // allowance: two planned clauses filing the same finding twice is still a
+    // duplicate, and the plan route exempts the cap alone.
     if (cleared) {
-      spent += 1;
+      if (!planned.planned) spent += 1;
       siblings.push({ ...finding, id: String(index) });
       siblingTitles.set(String(index), attempt.title);
     }

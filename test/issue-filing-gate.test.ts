@@ -5112,6 +5112,45 @@ describe("FG-180..FG-184: a merged plan is the cap's second route", () => {
     expect(r.rows[0].refusal, "the plan does not exempt an unmeasurable cap").toBe("UNMEASURED_CAP");
   });
 
+  test("FG-185: a planned clause does not spend the allowance for its SIBLING", async () => {
+    // Found by the AI review of this change, after two of the three sites
+    // were already guarded. The cap is consulted in THREE places — the
+    // in-process `spent` counter, the pre-read, and the reservation stage —
+    // and a guard missing from any one of them makes the exemption worse
+    // than useless: here the planned clause cleared, incremented `spent`,
+    // and the unplanned sibling was refused OVER_CAP, which blocks the whole
+    // command INCLUDING the clause that had just been exempted.
+    //
+    // One command, both clauses, a FRESH allowance — so the only thing that
+    // can spend it is the planned clause itself. That is why this row starts
+    // from an empty ledger while FG-180..184 start from a spent one: they
+    // vary the plan against a spent allowance, this varies the allowance
+    // against a plan.
+    const r = await run(`${filing()} && ${filing("a second finding nobody planned")}`, namesIt, () => []);
+    expect(r.rows, "two clauses").toHaveLength(2);
+    expect(
+      r.rows.map(x => x.plannedBy === null ? "unplanned" : "planned"),
+      "the premise: clause 0 is planned and clause 1 is not",
+    ).toEqual(["planned", "unplanned"]);
+    expect(
+      r.rows.map(x => x.refusal),
+      "the planned clause must not have spent the sibling's allowance",
+    ).toEqual([null, null]);
+    expect(r.refusal, "so the command is not blocked").toBeNull();
+  });
+
+  test("FG-186 CONTROL: an UNPLANNED clause still spends it, so the sibling IS capped", async () => {
+    // Without this, FG-185 passes against a gate whose `spent` counter never
+    // moves at all — which would delete the cap for every multi-clause
+    // command in the tree and look exactly like the exemption working.
+    const r = await run(
+      `${filing("a first finding nobody planned")} && ${filing("a second finding nobody planned")}`,
+      namesNothing,
+      () => [],
+    );
+    expect(r.rows.map(x => x.refusal), "clause 1 is capped by clause 0").toEqual([null, "OVER_CAP"]);
+  });
+
   test("FG-184: a title the plan does not name is capped even when plans exist", async () => {
     // Against "any plan file at all lifts the cap", which passes FG-180 and
     // FG-181 and turns the first merged plan into a permanent bypass.
