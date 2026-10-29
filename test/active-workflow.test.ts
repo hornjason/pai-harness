@@ -26,7 +26,7 @@
  * records as never having run in CI at all.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isRunDirectory } from "../lib/active-workflow";
@@ -56,6 +56,11 @@ async function hookDecision(
   });
   const text = await new Response(proc.stdout).text();
   await proc.exited;
+  // Raised on #1648: five calls, five `rg-verify-lock-*` directories left
+  // under the OS temp dir on every run. Removed HERE rather than in an
+  // `afterEach`, so the command that creates the scratch is the command
+  // that deletes it and a case added later cannot forget.
+  rmSync(work, { recursive: true, force: true });
   return { blocked: text.includes('"decision":"block"'), text };
 }
 
@@ -92,6 +97,19 @@ describe("#1648: the hook, end to end against a planted work directory", () => {
     // Exactly #1648: `.archive/<slug>/workflow-state.json` matches the nested
     // scan, so a run that finished on 21 October was deciding the gate.
     const { blocked } = await hookDecision([{ dir: ".archive/proj-892", phase: "VERIFY" }]);
+    expect(blocked).toBe(false);
+  });
+
+  test("a hidden directory INSIDE a live run does not decide the lock either", async () => {
+    // Raised on #1648 by the reviewer. The predicate started out on the
+    // outer `readdirSync` only, so the same stale-bookkeeping defect sat
+    // one level deeper: `proj-169/.archive/workflow-state.json` is read by
+    // the nested scan, and being written last it outranks the live run by
+    // mtime. Red before `isRunDirectory(sub.name)` was added to that loop.
+    const { blocked } = await hookDecision([
+      { dir: "proj-169", phase: "DONE" },
+      { dir: "proj-169/.archive", phase: "VERIFY" },
+    ]);
     expect(blocked).toBe(false);
   });
 
