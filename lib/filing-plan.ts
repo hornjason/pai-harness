@@ -87,6 +87,48 @@ function cell(text: string): string {
   return text.trim().replace(/^\*\*|\*\*$/g, "").replace(/^`|`$/g, "").trim();
 }
 
+/** Leading indentation in columns; a tab is four, as CommonMark counts it. */
+function indent(line: string): number {
+  let n = 0;
+  for (const ch of line) {
+    if (ch === " ") n += 1;
+    else if (ch === "\t") n += 4;
+    else break;
+  }
+  return n;
+}
+
+/**
+ * One line with its `<!-- … -->` regions removed, and the state after it.
+ *
+ * Positional, not `includes`: a line may close a comment and open another,
+ * and it may carry live markdown either side of a comment that opens and
+ * closes within it. A text scan that only asks whether a delimiter is
+ * PRESENT gets both wrong, and gets them wrong toward reading commented-out
+ * content as live.
+ *
+ * When a comment opens and is still open at end of line, everything before
+ * it is dropped too. That loses a row a renderer would have shown — the
+ * direction that denies an exemption rather than inventing one.
+ */
+function uncommented(line: string, inComment: boolean): { text: string; commented: boolean } {
+  let rest = line;
+  if (inComment) {
+    const end = rest.indexOf("-->");
+    if (end === -1) return { text: "", commented: true };
+    rest = rest.slice(end + 3);
+  }
+  let text = "";
+  for (;;) {
+    const open = rest.indexOf("<!--");
+    if (open === -1) return { text: text + rest, commented: false };
+    const close = rest.indexOf("-->", open + 4);
+    if (close === -1) return { text: "", commented: true };
+    text += rest.slice(0, open);
+    rest = rest.slice(close + 3);
+  }
+}
+
 /**
  * Every title a plan file authorises.
  *
@@ -99,13 +141,37 @@ function cell(text: string): string {
  * authorises a filing whose title is the empty string — and `gh` will not
  * create one, but `createIssue` through Octokit would.
  *
- * **A fenced block and an HTML comment are not plan content.** An ADR that
- * shows what a plan table should look like, inside a ` ``` ` fence, or that
- * keeps a superseded table commented out, is the normal shape in this
- * repository — `.claude/rules/*.md` are mostly illustrative markdown inside
- * fences. Reading either as live would let an EXAMPLE authorise a filing, so
- * the "an agent cannot argue into this" property would hold only for files
- * nobody wrote an example in. Found by the AI review of this change.
+ * **A fenced block, an indented block and an HTML comment are not plan
+ * content.** An ADR that shows what a plan table should look like, inside a
+ * ` ``` ` fence, or that keeps a superseded table commented out, is the
+ * normal shape in this repository — `.claude/rules/*.md` are mostly
+ * illustrative markdown inside fences. Reading any of them as live would let
+ * an EXAMPLE authorise a filing, so the "an agent cannot argue into this"
+ * property would hold only for files nobody wrote an example in.
+ *
+ * ## Agreeing with the renderer is the whole requirement
+ *
+ * The reviewer of a plan reads what GitHub renders. This function reads the
+ * bytes. **Every place the two disagree is a filing a reviewer approved
+ * without seeing**, so this is not markdown parsing for its own sake — the
+ * differential IS the bypass. Four were found, all in the same direction:
+ * rendered inert, parsed live. Each is handled to CommonMark's rule and each
+ * has a case below.
+ *
+ * - A closing fence may not carry an info string. ` ```js ` after an open
+ *   ` ```md ` does not close it, so a parser that accepts it treats the rest
+ *   of a code block as a plan.
+ * - Four or more leading spaces is an indented code block.
+ * - A comment nests by position, not by whether the line *contains* a
+ *   delimiter: `-->` followed by `<!--` on one line leaves the comment open,
+ *   and `includes` cannot see order.
+ *
+ * Where a reading stays ambiguous it is resolved toward NOT authorising: an
+ * unclosed fence makes the rest of the file inert, a table indented under a
+ * list item is not counted, a row cut short by a comment opening mid-line is
+ * dropped, and a marker run CommonMark would reject as an opener opens one
+ * here anyway. Each of those costs somebody a row they have to move and merge
+ * again. The other direction costs the cap.
  */
 export function plannedTitles(content: string): PlannedTitle[] {
   const lines = content.split("\n");
@@ -116,43 +182,63 @@ export function plannedTitles(content: string): PlannedTitle[] {
   /** Whether we are inside a `<!-- … -->` that spans lines. */
   let commented = false;
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Both regions below also END the table they interrupt, the same way a
+    // Every region below also ENDS the table it interrupts, the same way a
     // line of prose does, so `column` is reset on every one of their lines.
-    if (commented) {
-      if (line.includes("-->")) commented = false;
+
+    // Comments first, and scanned by INDEX. `includes("-->")` cannot see
+    // order, so one line closing a comment and opening another reads as
+    // closed — and every line after it is live here while a renderer still
+    // has it commented out. What survives this is the line's live text.
+    const line = uncommented(lines[i], commented);
+    commented = line.commented;
+    if (commented || line.text.trim() === "") {
       column = null;
       continue;
     }
-    const run = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    const text = line.text;
+
+    const ind = indent(text);
+    const f = ind <= 3 ? /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(text) : null;
     if (fence !== null) {
-      // Only the SAME marker, at least as long, closes it: a ``` inside a
-      // ~~~ block is content. An unclosed fence swallows the rest of the
-      // file, which is the fail-closed direction and the one we want.
-      if (run !== undefined && run[0] === fence[0] && run.length >= fence.length) fence = null;
+      // Only the same marker, at least as long, AND nothing after it. A ```
+      // inside a ~~~ block is content; so is ```js inside a ```md block,
+      // which is the differential a bare marker test would miss.
+      if (
+        f !== null &&
+        f[1][0] === fence[0] &&
+        f[1].length >= fence.length &&
+        f[2].trim() === ""
+      ) {
+        fence = null;
+      }
       column = null;
       continue;
     }
-    if (run !== undefined) {
-      fence = run;
+    // Any marker run OPENS, info string or not — including the spellings
+    // CommonMark would reject as openers. That is deliberate: refusing to
+    // open leaves what follows live, and a reading this function is unsure
+    // about must not be the one that authorises.
+    if (f !== null) {
+      fence = f[1];
       column = null;
       continue;
     }
-    if (line.includes("<!--") && !line.includes("-->")) {
-      commented = true;
+    if (ind >= 4) {
+      // An indented code block. A table legitimately indented this far under
+      // a list item is not counted either — unindent it, or accept that the
+      // strict reading denies rather than grants.
       column = null;
       continue;
     }
 
-    if (!line.trimStart().startsWith("|")) {
+    if (!text.trimStart().startsWith("|")) {
       // A non-table line ends the table. Without this a second table's rows
       // are read against the first table's column index.
       column = null;
       continue;
     }
-    if (/^\s*\|[\s|:-]+\|\s*$/.test(line)) continue;
-    const cells = line.split("|").slice(1, -1).map(cell);
+    if (/^\s*\|[\s|:-]+\|\s*$/.test(text)) continue;
+    const cells = text.split("|").slice(1, -1).map(cell);
     if (column === null) {
       const at = cells.indexOf(TITLE_COLUMN);
       if (at !== -1) column = at;

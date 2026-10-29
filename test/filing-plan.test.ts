@@ -111,6 +111,36 @@ describe("plannedTitles reads the Outcome column and nothing else", () => {
       why: "a table inside a multi-line HTML comment — a superseded plan kept for reference",
       lines: ["<!-- superseded", "| Criterion | Outcome |", "|---|---|", "| X-1 | an example |", "-->"],
     },
+    {
+      // CommonMark: a CLOSING fence may not carry an info string. A renderer
+      // keeps the block open here and shows all of it as code; a parser that
+      // accepts ```js as a closer reads the rest as plan.
+      why: "a fence whose apparent closer carries an info string, so it never closed",
+      lines: [
+        "```markdown",
+        "```javascript",
+        "| Criterion | Outcome |",
+        "|---|---|",
+        "| X-1 | an example |",
+        "```",
+      ],
+    },
+    {
+      why: "a table indented four spaces, which is a code block",
+      lines: ["    | Criterion | Outcome |", "    |---|---|", "    | X-1 | an example |"],
+    },
+    {
+      // `includes` cannot see ORDER: this line both closes and re-opens.
+      why: "a comment that closes and opens again on the same line",
+      lines: [
+        "<!-- first",
+        "--> prose between them <!-- second",
+        "| Criterion | Outcome |",
+        "|---|---|",
+        "| X-1 | an example |",
+        "-->",
+      ],
+    },
   ];
 
   for (const row of inert) {
