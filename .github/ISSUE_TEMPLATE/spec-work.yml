@@ -1,0 +1,92 @@
+name: Spec work
+description: Work that moves a spec's criteria toward being true
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two fields here exist because of rules this project already holds, and
+        both are refusals rather than metadata.
+
+        **Criteria** — an issue that names none is invisible to
+        `scripts/criterion-inventory.ts`, so the work happens and the spec
+        never records that anything moved. Measured 2026-10-28: 41 of the
+        convergence spec's 61 criteria had no issue, and 22 of 44 convergence
+        issues named no criterion.
+
+        **Files** — rule 2 is *"work is an issue, and the issue names the files
+        it will change. Cannot name them → not ready → split it before
+        starting, not during review."* Rule 3 caps it at ten.
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What must become true
+      description: The state of the world when this is done. Not the steps.
+      placeholder: A second round posts no thread for a finding already threaded on round one.
+    validations:
+      required: true
+
+  - type: input
+    id: criteria
+    attributes:
+      label: Criteria this serves
+      description: >-
+        Ids, comma separated — several is normal and expected. A criterion
+        usually needs several issues and an issue usually serves several
+        criteria. If this is machinery that serves none, write `none —
+        machinery` and say why in the next field.
+      placeholder: CRC-N4, CRC-N2
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files this will change
+      description: >-
+        One per line. If you cannot name them, this is not ready — split it
+        first. Over ten files is the shape that predicts a failed change.
+      placeholder: |
+        lib/ai-review-suppression.ts
+        test/ai-review-suppression.test.ts
+    validations:
+      required: true
+
+  - type: input
+    id: blocked-by
+    attributes:
+      label: Blocked by
+      description: >-
+        Issue numbers that must land first. Leave empty if nothing blocks it —
+        empty is what puts this in the Ready queue. This field is a note; set
+        the real link with `gh issue edit <this> --add-blocked-by <N>`, because
+        only that version is readable by anything.
+      placeholder: "1600, 1601"
+    validations:
+      required: false
+
+  - type: textarea
+    id: proof
+    attributes:
+      label: How we will know
+      description: >-
+        What runs, and what it reads, when this is done. A tick comes from a
+        test naming the criterion id — never from closing this issue.
+      placeholder: AS-10 in test/ai-review-suppression.test.ts, with both vacuity controls.
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        **After filing**, two things this form cannot set:
+
+        ```
+        gh issue edit <N> --milestone "Convergence Phase 1 — stop the repeats"
+        gh issue edit <N> --add-blocked-by <M>
+        ```
+
+        The milestone is the phase, and which phase a criterion belongs to is
+        decided in the spec's *Phase placement* table — not here. See
+        `docs/adr/ADR-003-spec-to-tracker-mapping.md`.
