@@ -625,6 +625,8 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the prose around the table cann
   const WORDS: Record<string, number> = {
     one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
     seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+    thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+    seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
   };
 
   /**
@@ -722,6 +724,46 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the prose around the table cann
       WORDS[claim![1]],
       `ADR-003 says "${claim![1]} derived" and the placement table has ${phases} phase rows`,
     ).toBe(phases);
+  });
+
+  test("the Increment-1 plan's issue count is the number of rows it lists", () => {
+    // Same class, caught on this document the day it was written: the plan
+    // said "sixteen" in three places and listed eighteen rows. A count typed
+    // beside a list it does not come from is the drift this whole suite is
+    // about, and writing the guard is cheaper than reading the list again.
+    const planPath = join(REPO, "docs/adr/ADR-003-increment-1-issue-plan.md");
+    expect(
+      existsSync(planPath),
+      "the Increment-1 plan is gone — delete this case or re-point it",
+    ).toBe(true);
+    const plan = readFileSync(planPath, "utf-8");
+
+    // A row opens with `**P<phase>-<n> · `. Nothing else in the file does.
+    const rows = plan.match(/^\*\*P\d+-\d+ · /gm) ?? [];
+    expect(rows.length, "no rows matched, so the claim below is compared to zero").toBeGreaterThan(
+      5,
+    );
+
+    const heading = plan.match(/^## The ([a-z]+) new issues$/m);
+    expect(
+      heading,
+      "the plan no longer states its issue count in the form this case reads. " +
+        "Reword the case with it, or the count goes unchecked.",
+    ).not.toBeNull();
+    expect(
+      WORDS[heading![1]],
+      `the plan's heading says "${heading![1]}" and it lists ${rows.length} rows`,
+    ).toBe(rows.length);
+
+    // And the two restatements further down, which is where the first draft
+    // left two of its three wrong numbers after the heading was corrected.
+    for (const m of plan.matchAll(/\b(?:before these|^)([A-Za-z]+) (?:against one|new issues)\b/gm)) {
+      const word = m[1].toLowerCase();
+      if (WORDS[word] === undefined) continue;
+      expect(WORDS[word], `the plan restates its count as "${m[1]}" and lists ${rows.length}`).toBe(
+        rows.length,
+      );
+    }
   });
 });
 

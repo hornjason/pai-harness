@@ -50,7 +50,7 @@ coverage; it is missing one line, not missing entirely.
 | #1162 | CRC-B8 | Its title is *"findings are discarded four ways"*. CRC-B8 is **every finding is answered** — never silently dropped. Same defect, stated from the spec's side. |
 | #1266 | CRC-M15 | CRC-M15 names `lib/distribution-standing.ts` explicitly and says the staleness check must read contents rather than a version string. #1266 is about what evidence that tolerance is gated on. |
 
-## The sixteen new issues
+## The eighteen new issues
 
 Grouping is judgement and `rungate plan-spec` deliberately refuses to do it
 (ADR-003, *Cardinality*): a criterion usually needs several issues and an issue
@@ -207,8 +207,8 @@ gh issue list --repo hornjason/rungate --state closed --limit 1000 --json closed
 gh issue list --repo hornjason/rungate --state open   --limit 200  --json number    -q 'length'                                         #  46 open
 ```
 
-**1.13 opened per closed over the week, before these sixteen.** Adding them
-takes the week to 283 against 237, or 1.19. Both are above 1 and the backlog
+**1.13 opened per closed over the week, before these eighteen.** Adding them
+takes the week to 285 against 237, or 1.20. Both are above 1 and the backlog
 diverges on either.
 
 (The first draft of this paragraph said *"three closed earlier today — #1425,
@@ -218,7 +218,7 @@ docblock rather than a fix. Exactly one issue has closed since 2026-10-28,
 #1548. The number is now the output of the commands above rather than a
 recollection.)
 
-Sixteen against one is the honest framing, and it is
+Eighteen against one is the honest framing, and it is
 defensible exactly once, because these are not review findings: they are
 the already-agreed contents of a spec being made visible on the tracker, and
 the alternative is a board that cannot say what is left. It is not a
