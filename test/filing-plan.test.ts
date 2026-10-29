@@ -77,6 +77,61 @@ describe("plannedTitles reads the Outcome column and nothing else", () => {
     const blank = ["| Criterion | Outcome |", "|---|---|", "| CRC-C2 |  |"].join("\n");
     expect(plannedTitles(blank)).toEqual([]);
   });
+
+  /**
+   * A fence or a comment is an EXAMPLE, and an example must not authorise.
+   *
+   * Every case here pairs the inert region with a live table after it, in one
+   * fixture. Without that second half each one passes against a function that
+   * returns `[]` for the whole file — "the fence swallowed everything" and
+   * "the fence was skipped" are the same reading when nothing follows it.
+   */
+  const inert: { why: string; lines: string[] }[] = [
+    {
+      why: "a table inside a ``` fence",
+      lines: ["```markdown", "| Criterion | Outcome |", "|---|---|", "| X-1 | an example |", "```"],
+    },
+    {
+      why: "a table inside a ~~~ fence, which a ``` line does not close",
+      lines: ["~~~", "| Criterion | Outcome |", "|---|---|", "| X-1 | an example |", "```", "~~~"],
+    },
+    {
+      why: "a table inside a four-backtick fence, which a three-backtick line does not close",
+      lines: [
+        "````",
+        "```",
+        "| Criterion | Outcome |",
+        "|---|---|",
+        "| X-1 | an example |",
+        "```",
+        "````",
+      ],
+    },
+    {
+      why: "a table inside a multi-line HTML comment — a superseded plan kept for reference",
+      lines: ["<!-- superseded", "| Criterion | Outcome |", "|---|---|", "| X-1 | an example |", "-->"],
+    },
+  ];
+
+  for (const row of inert) {
+    test(`${row.why} authorises nothing, and the live table after it still does`, () => {
+      const content = [
+        ...row.lines,
+        "",
+        "| Criterion | Outcome |",
+        "|---|---|",
+        "| CRC-C2 | the real one |",
+      ].join("\n");
+      expect(plannedTitles(content).map(t => t.title)).toEqual(["the real one"]);
+    });
+  }
+
+  test("an unclosed fence swallows the rest of the file — the fail-closed direction", () => {
+    const content = ["```", "| Criterion | Outcome |", "|---|---|", "| X-1 | never closed |"].join(
+      "\n",
+    );
+    expect(plannedTitles(content)).toEqual([]);
+  });
 });
 
 /**
@@ -132,6 +187,23 @@ describe("plannedFiling: every route to NOT exempt, against a mutant that always
       title: "   ",
       source: ONE_PLAN,
       reason: /no title/,
+    },
+    {
+      why: "the plan's only Outcome table is an EXAMPLE inside a code fence",
+      title: "a title shown in an example",
+      source: sourceOf({
+        [`${PLAN_DIR}/ADR-009-plan.md`]: [
+          "# How to write one of these",
+          "",
+          "```markdown",
+          "| Criterion | Outcome |",
+          "|---|---|",
+          "| CRC-C2 | a title shown in an example |",
+          "```",
+          "",
+        ].join("\n"),
+      }),
+      reason: /no plan on the merged ref names/,
     },
   ];
 

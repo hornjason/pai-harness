@@ -98,13 +98,53 @@ function cell(text: string): string {
  * An empty cell is not a title. Without that, a table with a blank Outcome
  * authorises a filing whose title is the empty string — and `gh` will not
  * create one, but `createIssue` through Octokit would.
+ *
+ * **A fenced block and an HTML comment are not plan content.** An ADR that
+ * shows what a plan table should look like, inside a ` ``` ` fence, or that
+ * keeps a superseded table commented out, is the normal shape in this
+ * repository — `.claude/rules/*.md` are mostly illustrative markdown inside
+ * fences. Reading either as live would let an EXAMPLE authorise a filing, so
+ * the "an agent cannot argue into this" property would hold only for files
+ * nobody wrote an example in. Found by the AI review of this change.
  */
 export function plannedTitles(content: string): PlannedTitle[] {
   const lines = content.split("\n");
   const out: PlannedTitle[] = [];
   let column: number | null = null;
+  /** The opening run of a fence we are inside — `` ``` `` or `~~~` — or `null`. */
+  let fence: string | null = null;
+  /** Whether we are inside a `<!-- … -->` that spans lines. */
+  let commented = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+
+    // Both regions below also END the table they interrupt, the same way a
+    // line of prose does, so `column` is reset on every one of their lines.
+    if (commented) {
+      if (line.includes("-->")) commented = false;
+      column = null;
+      continue;
+    }
+    const run = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence !== null) {
+      // Only the SAME marker, at least as long, closes it: a ``` inside a
+      // ~~~ block is content. An unclosed fence swallows the rest of the
+      // file, which is the fail-closed direction and the one we want.
+      if (run !== undefined && run[0] === fence[0] && run.length >= fence.length) fence = null;
+      column = null;
+      continue;
+    }
+    if (run !== undefined) {
+      fence = run;
+      column = null;
+      continue;
+    }
+    if (line.includes("<!--") && !line.includes("-->")) {
+      commented = true;
+      column = null;
+      continue;
+    }
+
     if (!line.trimStart().startsWith("|")) {
       // A non-table line ends the table. Without this a second table's rows
       // are read against the first table's column index.
