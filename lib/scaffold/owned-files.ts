@@ -283,6 +283,61 @@ export function bytesIdentical(existing: string | null, generated: string): bool
 }
 
 /**
+ * A freshness stamp alone never justifies a rewrite (#1647).
+ *
+ * `updated:` claims to mean *the date this file's content last changed*. If
+ * the only thing separating the regenerated file from the committed one is
+ * that line, then the content did not change and the committed date is the
+ * true one — so the generator's "today" is a lie, and writing it makes the
+ * repository stop being a fixed point of its own generator at the next
+ * midnight.
+ *
+ * ## This is #827 again, through the hole its fix left
+ *
+ * #827 removed a `updated: today` that was forced AFTER the frontmatter
+ * spread, and replaced it with a carry-forward in
+ * `lib/generators/agents-md.ts`: keep the stamp when
+ * `body === existingBody(root)`. That condition is **never true in this
+ * repository and never can be.** AGENTS.md is written `section-preserving`,
+ * so the file on disk carries `## Hard Constraints` — 3,357 bytes of body
+ * against the generator's 1,352 on `aa7bc0c0` — and the generator does not
+ * emit that section. It is merged in HERE, after the comparison has already
+ * been made and lost.
+ *
+ * So the carry-forward never fired, the stamp was always today, and AC-2 of
+ * `test/harness-fixed-point.test.ts` went green only on the calendar day
+ * AGENTS.md was last committed. Measured: branch `rg/phase-placement` was
+ * green at 23:09 and 23:20 UTC on 2026-10-28 and red from 00:22 on 2026-10-29,
+ * the reddening commit being a documentation-only edit that touches neither
+ * AGENTS.md nor any generator.
+ *
+ * ## Why the decision lives at the write site
+ *
+ * Because this is the first point that holds the FINAL bytes. Any comparison
+ * made before `preserveSections` is comparing a document to a different
+ * document and can only be wrong — which is exactly how the first fix failed.
+ * `buildFrontmatter` no longer takes a `bodyUnchanged`: two deciders for
+ * "may the stamp move" is the shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, and the one that could see
+ * the answer was not the one being asked.
+ *
+ * Substitution, not deletion: a file whose content genuinely changed keeps
+ * the generator's today, because the swap then fails to make the two equal
+ * and `generated` is returned untouched.
+ */
+export function carryUpdatedStamp(existing: string | null, generated: string): string {
+  if (existing === null) return generated;
+  const STAMP = /^updated: .*$/m;
+  const theirs = existing.match(STAMP);
+  if (theirs === null || !STAMP.test(generated)) return generated;
+  // A function replacer, because a STRING replacement special-cases `$&`,
+  // `$$`, '$`', "$'" and `$<n>` — and `theirs[0]` is a committed stamp that
+  // `existingFrontmatter()` does not screen for `$`. Found on #1649.
+  const swapped = generated.replace(STAMP, () => theirs[0]);
+  return swapped === existing ? swapped : generated;
+}
+
+/**
  * The provenance marker for one line-comment syntax.
  *
  * A factory rather than a second copy, because `.github/workflows/*.yml`
@@ -412,7 +467,10 @@ export function decideOwnedWrite(
           merged.lost.join(" | "),
       };
     }
-    if (bytesIdentical(existing, merged.content)) {
+    // After the merge, because this is the first point holding the final
+    // bytes — see `carryUpdatedStamp`.
+    const settled = carryUpdatedStamp(existing, merged.content);
+    if (bytesIdentical(existing, settled)) {
       return { action: "unchanged", reason: "regenerated output is byte-identical" };
     }
     return {
@@ -421,7 +479,7 @@ export function decideOwnedWrite(
         merged.preserved === null
           ? "regenerated output differs"
           : `regenerated output differs; ${merged.preserved.lines.length} line(s) of user-owned content carried forward`,
-      content: merged.content,
+      content: settled,
     };
   }
 

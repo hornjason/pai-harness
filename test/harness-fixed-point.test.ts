@@ -40,6 +40,7 @@ import { mkdtempSync, mkdirSync, rmSync, cpSync, existsSync, readFileSync, write
 import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { generateAgentsMd } from "../lib/generators/agents-md";
+import { decideOwnedWrite } from "../lib/scaffold/owned-files";
 import { mockProjectScan } from "../lib/generators/types";
 
 const ROOT = join(import.meta.dir, "..");
@@ -391,19 +392,68 @@ describe("#827: AGENTS.md's `updated:` dates the content, not the run", () => {
     return out.slice(out.match(/^---\n[\s\S]*?\n---\n\n/)![0].length);
   }
 
+  // AC-6 and AC-9 read the stamp off `decideOwnedWrite` rather than off
+  // `generateAgentsMd`, because that is where the decision moved on
+  // 2026-10-29 (#1647) and asserting it at the old site is what let the
+  // defect live.
+  //
+  // The old binding was `body === existingBody(root)` inside the generator,
+  // and in this repository it is NEVER true: AGENTS.md is written
+  // `section-preserving`, so the file carries `## Hard Constraints` and the
+  // generated body does not — 3,357 bytes against 1,352. These two cases
+  // passed throughout, because their fixture has no preserved section and so
+  // never built the document the production path builds. A fixture that
+  // cannot exhibit the difference cannot witness it
+  // (`.claude/rules/checks-must-be-able-to-fail.md`, seventh shape: every row
+  // held the same thing fixed). AC-6b below is the row that does not.
+  const settled = (root: string): string => {
+    const generated = generateAgentsMd({ ...mockProjectScan(), root }, FUTURE);
+    const existing = existsSync(join(root, "AGENTS.md"))
+      ? readFileSync(join(root, "AGENTS.md"), "utf-8")
+      : null;
+    const d = decideOwnedWrite("section-preserving", existing, generated);
+    return d.content ?? existing ?? generated;
+  };
+
   test("#827 / AC-6: an unchanged body keeps its stamp, on a later day", () => {
     const { root, cleanup } = fixture(
       `---\ndoc-type: reference\nstatus: active\nowner: jason\nupdated: 2026-10-17\n---\n\n`,
       generatedBody,
     );
     try {
-      const out = generateAgentsMd({ ...mockProjectScan(), root }, FUTURE);
+      const out = settled(root);
       expect(out).toContain("updated: 2026-10-17");
       expect(out).not.toContain(`updated: ${FUTURE}`);
       // And the whole file round-trips, which is the property AC-2 needs and
       // which `toContain` on one line does not establish.
-      expect(generateAgentsMd({ ...mockProjectScan(), root }, FUTURE))
-        .toBe(readFileSync(join(root, "AGENTS.md"), "utf-8"));
+      expect(out).toBe(readFileSync(join(root, "AGENTS.md"), "utf-8"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("#827 / AC-6b: and it still keeps it when a preserved section is present", () => {
+    // The production shape, and the one the old binding could not survive.
+    // Without this row the suite is green under a generator that compares
+    // its own body to a document containing a section it never emits.
+    // Placed where `preserveSections` puts it — before `## Rules` — and not
+    // appended. A section in the wrong position IS a content change, and a
+    // fixture that appends it tests the carry declining rather than the
+    // carry holding. That mistake cost a round here.
+    const SECTION = "## Hard Constraints\n\nSeven rules, Jason's call.\n\n";
+    const withSection = (root: string) =>
+      generatedBody(root).replace("## Rules\n", `${SECTION}## Rules\n`);
+    const { root, cleanup } = fixture(
+      `---\ndoc-type: reference\nstatus: active\nowner: jason\nupdated: 2026-10-17\n---\n\n`,
+      withSection,
+    );
+    try {
+      const out = settled(root);
+      expect(out, "a preserved section must not be read as a content change").toContain(
+        "updated: 2026-10-17",
+      );
+      expect(out).toContain("Seven rules, Jason's call.");
+      expect(out).toBe(readFileSync(join(root, "AGENTS.md"), "utf-8"));
     } finally {
       cleanup();
     }
@@ -421,7 +471,14 @@ describe("#827: AGENTS.md's `updated:` dates the content, not the run", () => {
       root => generatedBody(root) + "\n<!-- a hand edit the generator will not reproduce -->\n",
     );
     try {
-      const out = generateAgentsMd({ ...mockProjectScan(), root }, FUTURE);
+      // Through `settled`, not `generateAgentsMd`. The reviewer on #1649 was
+      // right that this case had gone vacuous: after the fix,
+      // `buildFrontmatter` stamps `updated: today` unconditionally, because
+      // the conditional carry moved to `carryUpdatedStamp`. Called directly,
+      // the generator returns `FUTURE` for EVERY input — so a regression that
+      // carried the old stamp forward on a genuinely changed body would have
+      // left this green, in the one case written to catch it.
+      const out = settled(root);
       expect(out).toContain(`updated: ${FUTURE}`);
       expect(out).not.toContain("updated: 2026-10-17");
     } finally {
@@ -434,9 +491,13 @@ describe("#827: AGENTS.md's `updated:` dates the content, not the run", () => {
     // read as freshness. Without this the carry-forward could be written as
     // "never write the field", which AC-7 catches, or as "write whatever was
     // there", which only this catches.
+    //
+    // Also through `settled`, for AC-7's reason — and this is the case that
+    // exercises `carryUpdatedStamp`'s `existing === null` branch, which no
+    // other case here reaches.
     const root = mkdtempSync(join(tmpdir(), "agents-md-absent-"));
     try {
-      expect(generateAgentsMd({ ...mockProjectScan(), root }, FUTURE)).toContain(`updated: ${FUTURE}`);
+      expect(settled(root)).toContain(`updated: ${FUTURE}`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -448,7 +509,7 @@ describe("#827: AGENTS.md's `updated:` dates the content, not the run", () => {
       generatedBody,
     );
     try {
-      const out = generateAgentsMd({ ...mockProjectScan(), root }, FUTURE);
+      const out = settled(root);
       expect(out).toContain("owner: someone-else");
       expect(out).toContain("updated: 2026-01-02");
     } finally {
