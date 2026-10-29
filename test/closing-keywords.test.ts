@@ -427,14 +427,38 @@ describe("#590: the live project-state.json, read by the real comparison", () =>
   const session = live.session ?? {};
   const texts = [{ label: "session summary", text: String(session.summary ?? "") }];
 
-  test("the live record is read, and the reading is not empty", () => {
-    // The instrument check. A violation count means nothing beside a reading
-    // that found no references at all — that is the same number a broken
-    // regex produces.
-    const refs = closingReferences(texts[0].text, { label: "session summary", repo: TABLE_REPO });
+  test("the live record is read, and the extractor is not broken", () => {
+    // The instrument check, in two halves that must be asked of two
+    // different texts (#605).
+    //
+    // It used to demand BOTH of the live summary: that it be non-empty, and
+    // that `closingReferences` find at least one keyword in it. The second
+    // half contradicts the design it is guarding. `check-state-record-closes`
+    // stopped asking the declared side for a keyword precisely so that
+    // nobody would write no-op closing keywords into narrative prose — its
+    // own docblock calls putting them in `session.summary` "purer and worse"
+    // and "the exact defect #590 was filed over", and records that four
+    // records in a row did it.
+    //
+    // So a session that closed nothing through a keyword — which is the
+    // normal case now, since `issues_closed` spans many PRs merged long
+    // before the state PR exists — could only go green by manufacturing one.
+    // The check was paying out for the behaviour it exists to stop.
+    //
+    // The halves separate cleanly. Whether the live record was READ is a
+    // question about the live text. Whether the EXTRACTOR works is a
+    // question about the extractor, and it is answered with a control this
+    // test owns, so it cannot be satisfied by editing prose.
     expect(texts[0].text.length, "the live session summary is empty").toBeGreaterThan(200);
-    expect(refs.length, "no closing keyword at all was found in the live summary")
-      .toBeGreaterThan(0);
+
+    const control = "Closes #4242 and fixes #4243.";
+    const found = closingReferences(control, { label: "control", repo: TABLE_REPO });
+    expect(
+      found.map(r => r.number).sort((a, b) => a - b),
+      "closingReferences found nothing in a control that names two closes — " +
+        "the extractor is broken, and every count it produces below is a zero " +
+        "that means 'not looked' rather than 'nothing there'",
+    ).toEqual([4242, 4243]);
   });
 
   /**
