@@ -961,7 +961,7 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every criterion has exactly one
       parsed.map(r => r.placement).filter(p => !/^Phase [0-6]$/.test(p)).sort(),
       "the non-phase placement values changed. They are deliberate — see the section's " +
         "second paragraph — so if one is gone, say where its criteria went.",
-    ).toEqual(["Blocked — needs a second person", "Done", "Not observable here"]);
+    ).toEqual(["Blocked — needs a second person", "Done", "Not adopted — deliberate", "Not observable here"]);
   });
 
   test("every criterion this spec declares is placed exactly once", () => {

@@ -1846,10 +1846,8 @@ ledger that carries a tier to loosen against).
 
 **Six more belong here and were unplaced until 2026-10-28.** CRC-M2 (the
 case set's cases are expert-confirmed — a human act, but one this repository
-can perform, unlike the approval criteria below), CRC-M8 (the priority order
-between catching bugs and cutting rounds, which cannot be *enforced* before
-both numbers exist), and the four readability criteria the reviewer itself
-cannot report on today: CRC-M12 (an unreadable round names its mode),
+can perform, unlike the approval criteria below), and the four readability
+criteria the reviewer itself cannot report on today: CRC-M12 (an unreadable round names its mode),
 CRC-M13 (whether the reviewer READ anything, recorded apart from whether it
 found anything), CRC-M14 (every reading names the published version it was
 taken under) and **CRC-M11**, which is ticked and **contradicted by #1592** —
@@ -1905,11 +1903,12 @@ CRC-E8's withdrawal from Phase 0 already records once.
 | **Phase 2** | CRC-B3, CRC-B4, CRC-B6, CRC-N6 | stop the false findings |
 | **Phase 3** | CRC-A4, CRC-A7, CRC-B1, CRC-B2, CRC-B9 | what the reviewer is told |
 | **Phase 4** | CRC-A1, CRC-A2, CRC-A3, CRC-A8, CRC-B8 | findings get answered, repeats fixed at the source |
-| **Phase 5** | CRC-E3, CRC-E9, CRC-M1, CRC-M2, CRC-M3, CRC-M4, CRC-M5, CRC-M6, CRC-M7, CRC-M8, CRC-M10, CRC-M11, CRC-M12, CRC-M13, CRC-M14 | the instruments |
+| **Phase 5** | CRC-E3, CRC-E9, CRC-M1, CRC-M2, CRC-M3, CRC-M4, CRC-M5, CRC-M6, CRC-M7, CRC-M10, CRC-M11, CRC-M12, CRC-M13, CRC-M14 | the instruments |
 | **Phase 6** | CRC-C1, CRC-C2, CRC-F2, CRC-F3, CRC-F4, CRC-F5, CRC-H2, CRC-M15, CRC-N5 | release and detection — nothing here moves rounds-to-pass |
 | **Done** | CRC-A5, CRC-A6, CRC-B5, CRC-C4, CRC-E1, CRC-E2, CRC-E4, CRC-N1 | ticked and bound. Not *no work ever again* — CRC-B7 and CRC-M11 are also ticked and are **not** here, because an open issue contradicts each |
 | **Blocked — needs a second person** | CRC-E5, CRC-E6, CRC-E7, CRC-M9 | one account plus `enforce_admins: true` means an approval cannot exist, so E6 and M9 are **vacuous rather than unbuilt** — there is nothing to count. The blocker is CRC-E8's withdrawal and it is named in Phase 0 |
 | **Not observable here** | CRC-H1, CRC-H3, CRC-H4, CRC-H5 | statements about human judgement. *A mechanism exists; this repository cannot observe it* above says why: nothing distinguishes them being honoured from them being ignored |
+| **Not adopted — deliberate** | CRC-M8 | *Deliberately not adopted* above holds exactly this one. Its order is inverted **on purpose** — `MISSED` and `FIRED` are weighted equally because nobody absorbs the noise here — and the deviations table gives the revisit condition: *a human is reading the findings again, or the cost of a false block falls*. **The first draft of this table put it in Phase 5**, which read as *pending work, blocked on the instruments*, and invented a second revisit condition the document does not hold. That is the two-spellings failure arriving inside the table built to end it; the reviewer caught it on #1647 |
 
 **This table is the placement, and the phase sections above are its
 reasons.** Two spellings of one fact drift apart — this document says so
