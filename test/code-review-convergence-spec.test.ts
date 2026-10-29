@@ -34,6 +34,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { parsePlacementRows } from "../lib/spec-placement";
 
 const REPO = join(import.meta.dir, "..");
 const SPEC = "specs/CODE-REVIEW-CONVERGENCE-SPEC.md";
@@ -930,21 +931,17 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: every criterion has exactly one
   // *two deciders that agree* shape in
   // `.claude/rules/checks-must-be-able-to-fail.md`. Raised by the reviewer on
   // #1647 and it was right.
+  //
+  // It is `parsePlacementRows` and not a copy of it for the SAME reason, one
+  // level out. `rungate plan-spec` derives this repository's milestones from
+  // this table, and a second parser here would be a second decider: a
+  // disagreement between what the test polices and what the command creates
+  // would be invisible from both sides, and the command is the one that
+  // writes to GitHub.
   const rows = (src: string): { placement: string; ids: string[] }[] => {
-    const at = src.indexOf(HEADING);
-    expect(at, `the placement section is gone or renamed — rename it here too`).toBeGreaterThan(-1);
-    const ends = [src.indexOf("\n### ", at + 1), src.indexOf("\n## ", at + 1)].filter(i => i > 0);
-    const section = src.slice(at, ends.length > 0 ? Math.min(...ends) : src.length);
-    return section
-      .split("\n")
-      .filter(l => l.startsWith("| ") && !l.startsWith("|---") && !l.startsWith("| Placement"))
-      .map(l => {
-        const cells = l.split("|");
-        return {
-          placement: (cells[1] ?? "").replaceAll("*", "").trim(),
-          ids: [...(cells[2] ?? "").matchAll(/CRC-[A-Z]?\d+/g)].map(m => m[0]),
-        };
-      });
+    expect(src.includes(HEADING), `the placement section is gone or renamed — rename it here too`)
+      .toBe(true);
+    return parsePlacementRows(src);
   };
 
   test("the table parses and carries every placement value, so the cases below are not vacuous", () => {

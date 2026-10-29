@@ -147,6 +147,24 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
     usage: "rungate audit-spec-evidence [--json] [--record-fingerprints]",
     projectRootFlag: true,
   },
+  // Step 2 of `docs/adr/ADR-003-spec-to-tracker-mapping.md`, which was eight
+  // `gh` commands typed by hand before this existed (#1647). Registered
+  // rather than left a script because the whole point is that a CONSUMER can
+  // turn their own spec into their own milestones — the derivation is not
+  // about this repository's phases, and a script in `scripts/` reaches
+  // nobody who installed the package.
+  //
+  // `projectRootFlag` is load-bearing for the same reason it is on
+  // `audit-spec-evidence`: the spec path is resolved against the root, so
+  // without the flag `bunx rungate plan-spec specs/X.md` would read
+  // `node_modules/rungate/specs/X.md` and derive RUNGATE's phases into the
+  // consumer's repository.
+  "plan-spec": {
+    script: "scripts/plan-spec.ts",
+    summary: "Derive a repository's milestones from a spec's Phase placement table",
+    usage: "rungate plan-spec <spec.md> --repo <owner/name> --prefix <name> [--write] [--json]",
+    projectRootFlag: true,
+  },
   "sync-spec-tests": {
     script: "scripts/sync-spec-tests.ts",
     summary: "Regenerate the conformity suite from the specs",
