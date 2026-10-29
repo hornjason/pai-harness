@@ -200,6 +200,30 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
       "rungate board-mirror --project <node-id> --spec <spec.md> [--field <name>] [--write] [--ready]",
     projectRootFlag: true,
   },
+  // Step 4 of ADR-003, in reverse. The issue template's own footer says a
+  // GitHub issue form cannot set a milestone or a dependency; this does both
+  // from a plan somebody approved. `--repair` fixes issues that already
+  // exist.
+  //
+  // `projectRootFlag` because the plan path resolves against the root.
+  "plan-issues": {
+    script: "scripts/plan-issues.ts",
+    summary: "Apply an approved issue repair plan — criteria links and milestone demotions",
+    usage: "rungate plan-issues --repair <plan.md> --repo <owner/name> [--write] [--json]",
+    projectRootFlag: true,
+  },
+  // Step 5 of ADR-003. `plan-spec` turns the placement table into milestones;
+  // this turns the ORDER of those milestones into `blocked by` edges, which is
+  // AGENTS.md rule 4 — ordering is data, not prose.
+  //
+  // No `projectRootFlag`: it reads the tracker, not the tree. The phase is
+  // read off each issue's milestone title, so there is no spec path to
+  // resolve and nothing on disk it could resolve against the wrong root.
+  "plan-deps": {
+    script: "scripts/plan-deps.ts",
+    summary: "Write a spec's phase order onto the tracker as blocked-by edges",
+    usage: "rungate plan-deps --repo <owner/name> [--write] [--json] [--include-closed]",
+  },
   "sync-spec-tests": {
     script: "scripts/sync-spec-tests.ts",
     summary: "Regenerate the conformity suite from the specs",
