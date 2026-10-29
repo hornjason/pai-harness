@@ -31,6 +31,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { parseHookInput } from './lib/parseStdin';
 import { verifyPhaseRefusal } from '../lib/issue-create-override';
+import { isRunDirectory } from '../lib/active-workflow';
 import { filingGate, ledgerPath, recordAdjudication } from '../lib/issue-filing-gate';
 
 const WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
@@ -42,6 +43,10 @@ function findActiveWorkflow(): { path: string; data: any } | null {
   try {
     for (const entry of readdirSync(WORK_DIR, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
+      // `.archive/<slug>/workflow-state.json` matches the nested shape below,
+      // so without this an ARCHIVED run decides the lock. One did, for eight
+      // days — see lib/active-workflow.ts for the reading.
+      if (!isRunDirectory(entry.name)) continue;
       const wfPath = join(WORK_DIR, entry.name, 'workflow-state.json');
       if (existsSync(wfPath)) {
         try {
