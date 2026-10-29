@@ -39,6 +39,7 @@ import {
   parseRepairPlan,
 } from "../lib/issue-repair";
 import type { RepairRow } from "../lib/issue-repair";
+import { parseDecompositionPlan, planDecomposition } from "../lib/issue-decomposition";
 
 /**
  * THE one non-zero exit. One site, so `test/plan-issues.test.ts` can build a
@@ -132,14 +133,163 @@ const LIVE_GITHUB: PlanIssuesGitHub = {
   },
 };
 
-const USAGE = `rungate plan-issues --repair <plan.md> --repo <owner/name> [--write] [--json]
+const USAGE = `rungate plan-issues (--repair | --decompose) <plan.md> --repo <owner/name> [--write] [--json]
 
-  --repair   the approved plan. A table of
-             | Issue | Phase | Repair | Criteria | Confidence | Why |
-             where Repair is (a) annotate or (b) demote.
-  --repo     owner/name. Defaults to $GITHUB_REPOSITORY.
-  --write    apply it. Without this nothing is mutated.
-  --json     the whole reading.`;
+  --repair     an approved repair plan. A table of
+               | Issue | Phase | Repair | Criteria | Confidence | Why |
+               where Repair is (a) annotate or (b) demote.
+  --decompose  a decomposition plan — step 4 of ADR-003. A table of
+               | Criterion | Outcome | Files | Milestone | Blocked by |
+               where one row is one issue proving one criterion.
+  --repo       owner/name. Defaults to $GITHUB_REPOSITORY.
+  --write      apply it. Without this nothing is mutated.
+  --json       the whole reading.`;
+
+/** What creating issues from a plan needs. Injected so a test never shells out. */
+export interface DecomposeGitHub {
+  /** Title → number for every OPEN issue. The idempotence key. */
+  openTitles: (repo: string) => Promise<Map<string, number>>;
+  /** Milestone titles that exist. `plan-spec` makes them; this never does. */
+  milestones: (repo: string) => Promise<Set<string>>;
+  create: (
+    repo: string,
+    issue: { title: string; body: string; milestone: string | null },
+  ) => Promise<number>;
+  addBlockedBy: (repo: string, blocked: number, blocker: number) => Promise<void>;
+}
+
+const LIVE_DECOMPOSE: DecomposeGitHub = {
+  openTitles: async repo => {
+    const rows = JSON.parse(
+      gh(["issue", "list", "--repo", repo, "--state", "open", "--limit", "1000", "--json", "number,title"]),
+    ) as { number: number; title: string }[];
+    return new Map(rows.map(r => [r.title, r.number]));
+  },
+  milestones: async repo => {
+    const rows = JSON.parse(gh(["api", `repos/${repo}/milestones?state=all&per_page=100`])) as {
+      title: string;
+    }[];
+    return new Set(rows.map(m => m.title));
+  },
+  create: async (repo, issue) => {
+    const args = ["issue", "create", "--repo", repo, "--title", issue.title, "--body-file", "-"];
+    if (issue.milestone !== null) args.push("--milestone", issue.milestone);
+    const url = gh(args, issue.body).trim();
+    const n = Number(url.split("/").pop());
+    // A URL whose last segment is not a number means `gh` printed something
+    // else — a warning, a prompt — and treating NaN as an issue number would
+    // wire every edge to nothing and report success.
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`created, but could not read a number from: ${url}`);
+    return n;
+  },
+  addBlockedBy: async (repo, blocked, blocker) => {
+    gh(["issue", "edit", String(blocked), "--repo", repo, "--add-blocked-by", String(blocker)]);
+  },
+};
+
+/**
+ * Step 4: create the issues a reviewed plan names, then wire their order.
+ *
+ * Two passes, and the order is the point: a row may be blocked by another row
+ * in the same plan, which has no number until it exists. Creating and wiring
+ * in one pass would silently drop every forward reference — AGENTS.md rule 4
+ * says ordering is data, and an edge that was never written is not data.
+ */
+async function decompose(
+  planPath: string,
+  repo: string,
+  write: boolean,
+  json: boolean,
+  api: DecomposeGitHub,
+): Promise<number> {
+  const reading = parseDecompositionPlan(readFileSync(planPath, "utf-8"));
+  if (reading.reading === "UNMEASURED") {
+    console.error(`plan-issues: UNMEASURED — the decomposition plan could not be read:`);
+    for (const r of reading.unmeasuredReasons) console.error(`  - ${r}`);
+    for (const r of reading.rejected) console.error(`  line ${r.line}: ${r.why}\n    ${r.text}`);
+    return REFUSAL_EXIT;
+  }
+
+  const live = { openTitles: await api.openTitles(repo), milestones: await api.milestones(repo) };
+  const planned = planDecomposition(reading.rows, live, planPath, CRITERIA_HEADING);
+  if (planned.reading === "UNMEASURED") {
+    console.error(`plan-issues: UNMEASURED — the plan does not fit the tracker:`);
+    for (const r of planned.unmeasuredReasons) console.error(`  - ${r}`);
+    return REFUSAL_EXIT;
+  }
+
+  /** Outcome → number, grown as issues are created, so pass two can resolve. */
+  const numbers = new Map<string, number>();
+  for (const a of planned.actions) if (a.kind === "exists") numbers.set(a.row.outcome, a.number);
+
+  const created: { title: string; number: number }[] = [];
+  const failed: string[] = [];
+  if (write) {
+    for (const a of planned.actions) {
+      if (a.kind !== "create") continue;
+      try {
+        const n = await api.create(repo, { title: a.title, body: a.body, milestone: a.row.milestone });
+        numbers.set(a.row.outcome, n);
+        created.push({ title: a.title, number: n });
+      } catch (e) {
+        failed.push(`${a.title}: ${(e as Error).message}`);
+      }
+    }
+  }
+
+  const edges: string[] = [];
+  if (write) {
+    for (const e of planned.edges) {
+      const blocked = numbers.get(e.blocked);
+      const blocker = /^#(\d+)$/.exec(e.blocker) ? Number(e.blocker.slice(1)) : numbers.get(e.blocker);
+      if (blocked === undefined || blocker === undefined) {
+        // One end was never created, because its creation failed above. Say
+        // so: a missing edge that nothing reports is an order silently lost.
+        failed.push(`edge "${e.blocked}" blocked by "${e.blocker}": one end does not exist`);
+        continue;
+      }
+      try {
+        await api.addBlockedBy(repo, blocked, blocker);
+        edges.push(`#${blocked} blocked by #${blocker}`);
+      } catch (err) {
+        failed.push(`edge #${blocked} blocked by #${blocker}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          reading: "MEASURED",
+          plan: planPath,
+          wouldCreate: planned.actions.filter(a => a.kind === "create").length,
+          alreadyOpen: planned.actions.filter(a => a.kind === "exists").length,
+          wrote: write,
+          created,
+          edges,
+          failed,
+        },
+        null,
+        2,
+      ),
+    );
+    return failed.length > 0 ? REFUSAL_EXIT : 0;
+  }
+
+  for (const a of planned.actions) {
+    if (a.kind === "exists") console.log(`  open    #${a.number}  ${a.row.outcome}`);
+    else console.log(`  create  ${a.row.criterion.padEnd(8)}  ${a.title}`);
+  }
+  for (const e of planned.edges) console.log(`  order   "${e.blocked}" blocked by "${e.blocker}"`);
+  if (!write) {
+    console.log(`\nNothing written. Re-run with --write to apply.`);
+    return 0;
+  }
+  console.log(`\nCreated ${created.length}, wired ${edges.length} edge(s).`);
+  for (const f of failed) console.error(`  FAILED: ${f}`);
+  return failed.length > 0 ? REFUSAL_EXIT : 0;
+}
 
 /** What one row would do, resolved against the issue's live state. */
 interface Action {
@@ -151,13 +301,18 @@ interface Action {
   note: string;
 }
 
-export async function main(argv: string[], gh2: PlanIssuesGitHub = LIVE_GITHUB): Promise<number> {
+export async function main(
+  argv: string[],
+  gh2: PlanIssuesGitHub = LIVE_GITHUB,
+  gh3: DecomposeGitHub = LIVE_DECOMPOSE,
+): Promise<number> {
   let parsed;
   try {
     parsed = parseArgs({
       args: argv,
       options: {
         repair: { type: "string" },
+        decompose: { type: "string" },
         repo: { type: "string" },
         write: { type: "boolean", default: false },
         json: { type: "boolean", default: false },
@@ -170,8 +325,15 @@ export async function main(argv: string[], gh2: PlanIssuesGitHub = LIVE_GITHUB):
     return REFUSAL_EXIT;
   }
   const { values } = parsed;
-  if (!values.repair) {
-    console.error(`plan-issues: --repair <plan.md> is required\n\n${USAGE}`);
+  // Both would mean two plans in one run, and the second would be applied
+  // against a tracker the first had already moved. One or the other.
+  if (values.repair && values.decompose) {
+    console.error(`plan-issues: --repair and --decompose are two different plans — pass one\n\n${USAGE}`);
+    return REFUSAL_EXIT;
+  }
+  const given = values.repair ?? values.decompose;
+  if (!given) {
+    console.error(`plan-issues: --repair <plan.md> or --decompose <plan.md> is required\n\n${USAGE}`);
     return REFUSAL_EXIT;
   }
   const repo = values.repo ?? process.env.GITHUB_REPOSITORY;
@@ -180,10 +342,13 @@ export async function main(argv: string[], gh2: PlanIssuesGitHub = LIVE_GITHUB):
     return REFUSAL_EXIT;
   }
   const root = values["project-root"] ?? process.cwd();
-  const planPath = isAbsolute(values.repair) ? values.repair : join(root, values.repair);
+  const planPath = isAbsolute(given) ? given : join(root, given);
   if (!existsSync(planPath)) {
     console.error(`plan-issues: no such plan: ${planPath}`);
     return REFUSAL_EXIT;
+  }
+  if (values.decompose) {
+    return await decompose(planPath, repo, values.write, values.json, gh3);
   }
 
   const reading = parseRepairPlan(readFileSync(planPath, "utf-8"));
