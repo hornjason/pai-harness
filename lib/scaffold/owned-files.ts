@@ -330,7 +330,10 @@ export function carryUpdatedStamp(existing: string | null, generated: string): s
   const STAMP = /^updated: .*$/m;
   const theirs = existing.match(STAMP);
   if (theirs === null || !STAMP.test(generated)) return generated;
-  const swapped = generated.replace(STAMP, theirs[0]);
+  // A function replacer, because a STRING replacement special-cases `$&`,
+  // `$$`, '$`', "$'" and `$<n>` — and `theirs[0]` is a committed stamp that
+  // `existingFrontmatter()` does not screen for `$`. Found on #1649.
+  const swapped = generated.replace(STAMP, () => theirs[0]);
   return swapped === existing ? swapped : generated;
 }
 

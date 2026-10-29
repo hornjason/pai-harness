@@ -471,7 +471,14 @@ describe("#827: AGENTS.md's `updated:` dates the content, not the run", () => {
       root => generatedBody(root) + "\n<!-- a hand edit the generator will not reproduce -->\n",
     );
     try {
-      const out = generateAgentsMd({ ...mockProjectScan(), root }, FUTURE);
+      // Through `settled`, not `generateAgentsMd`. The reviewer on #1649 was
+      // right that this case had gone vacuous: after the fix,
+      // `buildFrontmatter` stamps `updated: today` unconditionally, because
+      // the conditional carry moved to `carryUpdatedStamp`. Called directly,
+      // the generator returns `FUTURE` for EVERY input — so a regression that
+      // carried the old stamp forward on a genuinely changed body would have
+      // left this green, in the one case written to catch it.
+      const out = settled(root);
       expect(out).toContain(`updated: ${FUTURE}`);
       expect(out).not.toContain("updated: 2026-10-17");
     } finally {
@@ -484,9 +491,13 @@ describe("#827: AGENTS.md's `updated:` dates the content, not the run", () => {
     // read as freshness. Without this the carry-forward could be written as
     // "never write the field", which AC-7 catches, or as "write whatever was
     // there", which only this catches.
+    //
+    // Also through `settled`, for AC-7's reason — and this is the case that
+    // exercises `carryUpdatedStamp`'s `existing === null` branch, which no
+    // other case here reaches.
     const root = mkdtempSync(join(tmpdir(), "agents-md-absent-"));
     try {
-      expect(generateAgentsMd({ ...mockProjectScan(), root }, FUTURE)).toContain(`updated: ${FUTURE}`);
+      expect(settled(root)).toContain(`updated: ${FUTURE}`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
