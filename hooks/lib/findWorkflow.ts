@@ -9,6 +9,7 @@
 
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
+import { isRunDirectory } from '../../lib/active-workflow';
 
 const RUNGATE_WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.RUNGATE_WORK_DIR || join(process.env.HOME!, '.rungate');
 
@@ -36,8 +37,13 @@ export function findWorkflowForIssue(issueNum?: string, phases?: string[], repo?
   };
 
   try {
+    // Hidden entries are the work dir's own bookkeeping, not runs — and
+    // `Priority 3` below is an mtime fallback, so `.archive`'s newest state
+    // file outranks every live run. That is #1648, and this module is where
+    // it reaches IssueCloseGuard, AutoVerifyGate and CommitEnforcement.
+    // Both levels, for the reason in lib/active-workflow.ts.
     const dirs = readdirSync(RUNGATE_WORK_DIR, { withFileTypes: true })
-      .filter(d => d.isDirectory());
+      .filter(d => d.isDirectory() && isRunDirectory(d.name));
 
     for (const d of dirs) {
       // Level 1: direct children
@@ -46,7 +52,8 @@ export function findWorkflowForIssue(issueNum?: string, phases?: string[], repo?
       // Level 2: nested subdirectories (e.g., pai/361)
       const subDir = join(RUNGATE_WORK_DIR, d.name);
       try {
-        const subDirs = readdirSync(subDir, { withFileTypes: true }).filter(sd => sd.isDirectory());
+        const subDirs = readdirSync(subDir, { withFileTypes: true })
+          .filter(sd => sd.isDirectory() && isRunDirectory(sd.name));
         for (const sd of subDirs) {
           collectWorkflow(join(subDir, sd.name, 'workflow-state.json'), `${d.name}/${sd.name}`);
         }

@@ -32,6 +32,40 @@ import { join } from "node:path";
 import { isRunDirectory } from "../lib/active-workflow";
 
 const HOOK = join(import.meta.dir, "..", "hooks", "VerifyPhaseLock.hook.ts");
+const FIND_WORKFLOW = join(import.meta.dir, "..", "hooks", "lib", "findWorkflow.ts");
+
+/**
+ * Ask the SHARED discovery module which run it picks, in a subprocess.
+ *
+ * `findWorkflow.ts` resolves `RUNGATE_WORK_DIR` at module load, so the env
+ * has to be set before the import — an in-process call would read this
+ * suite's environment and silently measure the wrong directory.
+ */
+async function discoveredSlug(runs: { dir: string; phase: string }[]): Promise<string | null> {
+  const work = mkdtempSync(join(tmpdir(), "rg-verify-lock-"));
+  try {
+    for (const r of runs) {
+      const d = join(work, ...r.dir.split("/"));
+      mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, "workflow-state.json"), JSON.stringify({ phase: r.phase }));
+    }
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        `const { findWorkflowForIssue } = await import(${JSON.stringify(FIND_WORKFLOW)});
+         const r = findWorkflowForIssue();
+         console.log(JSON.stringify(r ? r.slug : null));`,
+      ],
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env, RUNGATE_WORK_DIR: work } },
+    );
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    return JSON.parse(out.trim() || "null");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
 
 const CREATE = "gh issue create --repo o/r --title t --body b";
 
@@ -46,13 +80,17 @@ async function hookDecision(
   text: string;
 }> {
   const work = mkdtempSync(join(tmpdir(), "rg-verify-lock-"));
-  for (const r of runs) {
-    const d = join(work, ...r.dir.split("/"));
-    mkdirSync(d, { recursive: true });
-    writeFileSync(join(d, "workflow-state.json"), JSON.stringify({ phase: r.phase }));
-  }
   let text: string;
   try {
+    // Inside the `try`, because `mkdtempSync` has already created the
+    // directory by this point: a throw in the planting loop leaked it when
+    // the `try` started below the loop instead of above it. Raised on #1648
+    // round 5, against a commit message that claimed "every exit path".
+    for (const r of runs) {
+      const d = join(work, ...r.dir.split("/"));
+      mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, "workflow-state.json"), JSON.stringify({ phase: r.phase }));
+    }
     const proc = Bun.spawn(["bun", HOOK], {
       stdin: new TextEncoder().encode(
         JSON.stringify({ tool_name: "Bash", tool_input: { command: cmd } }),
@@ -165,5 +203,41 @@ describe("#1648: the hook, end to end against a planted work directory", () => {
 
   test("no work directory entries at all does not block", async () => {
     expect((await hookDecision([])).blockedByLock).toBe(false);
+  });
+});
+
+describe("#1648: hooks/lib/findWorkflow.ts — the same scan, three more hooks", () => {
+  // Raised on #1648 round 5, and correct. `findWorkflow.ts` repeats the
+  // two-level scan with an mtime fallback, and it is imported by
+  // IssueCloseGuard, AutoVerifyGate and CommitEnforcement. Fixing only
+  // VerifyPhaseLock left the archived run deciding three other gates.
+  //
+  // The archived entry is planted LAST in each case, so it is the newest
+  // file and wins `Priority 3` unless it is filtered out.
+
+  test("the control: a live run is found", async () => {
+    expect(await discoveredSlug([{ dir: "proj-169", phase: "BUILD" }])).toBe("proj-169");
+  });
+
+  test("an archived run is never the answer, even when it is newest", async () => {
+    expect(
+      await discoveredSlug([
+        { dir: "proj-169", phase: "BUILD" },
+        { dir: ".archive/proj-892", phase: "VERIFY" },
+      ]),
+    ).toBe("proj-169");
+  });
+
+  test("a hidden directory INSIDE a live run is not the answer either", async () => {
+    expect(
+      await discoveredSlug([
+        { dir: "proj-169", phase: "BUILD" },
+        { dir: "proj-169/.archive", phase: "VERIFY" },
+      ]),
+    ).toBe("proj-169");
+  });
+
+  test("an archived run ALONE discovers nothing, rather than itself", async () => {
+    expect(await discoveredSlug([{ dir: ".archive/proj-892", phase: "VERIFY" }])).toBe(null);
   });
 });
