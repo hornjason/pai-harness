@@ -34,6 +34,7 @@
  * 7's opened-to-closed ratio. {@link uncoveredByMilestone} reports the input
  * to that decision and stops there.
  */
+import { oneScMentionPattern } from "./sc-ids";
 import { parseCriteria } from "./spec-evidence";
 
 /** The heading a spec puts its placement table under. One spelling, by fiat. */
@@ -254,13 +255,27 @@ function escapeRe(s: string): string {
  * its error rate is known and bad in the safe direction: the tick-versus-issue
  * sweep on 2026-10-28 returned 12 raw hits of which 2 to 3 were real, so this
  * OVER-reports coverage's absence being fixed and never invents it.
+ *
+ * ## `oneScMentionPattern`, not a pattern of its own
+ *
+ * The first version built its own `(?<!…)id(?!…)` regex. That was a SECOND
+ * DECIDER for a question `scripts/criterion-inventory.ts` has answered since
+ * it was written, via `oneScMentionPattern`. The two were free to disagree
+ * about exactly the input that matters — an id that is a prefix of another,
+ * `CRC-M1` inside `CRC-M15` — with each side's tests green, which is
+ * `.claude/rules/checks-must-be-able-to-fail.md`'s *two deciders that agree*.
+ * They did already differ: this one excluded a trailing `-` and
+ * `oneScMentionPattern`'s `(?![\w-])` excludes a trailing `_` as well.
+ *
+ * Caught by Jason asking whether a tool for this already existed, two hours
+ * after the duplicate was committed. It did, and it is the better one.
  */
 export function uncoveredByMilestone(
   actions: MilestoneAction[],
   issueBodies: { number: number; text: string }[],
 ): { title: string; phase: number; covered: string[]; uncovered: string[] }[] {
   const names = (id: string): boolean =>
-    issueBodies.some(i => new RegExp(String.raw`(?<![A-Za-z0-9-])${escapeRe(id)}(?![A-Za-z0-9-])`).test(i.text));
+    issueBodies.some(i => oneScMentionPattern(id).test(i.text));
   return actions.map(a => ({
     title: a.title,
     phase: a.phase,

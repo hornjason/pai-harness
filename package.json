@@ -28,6 +28,7 @@
     "scripts/audit-specs.ts",
     "scripts/audit-spec-evidence.ts",
     "scripts/plan-spec.ts",
+    "scripts/criterion-inventory.ts",
     "scripts/create-spec.ts",
     "scripts/create-success.ts",
     "scripts/create-sc.ts",

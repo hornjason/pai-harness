@@ -165,6 +165,22 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
     usage: "rungate plan-spec <spec.md> --repo <owner/name> --prefix <name> [--write] [--json]",
     projectRootFlag: true,
   },
+  // Registered after two hours of building a weaker version of it beside it
+  // (#1647). This script has produced the full criterion-to-issue-to-PR-to-
+  // test matrix since it was written, and was reachable from nothing: not a
+  // command, not in `files[]`, not in CI, named in no always-loaded document.
+  // `rungate plan-spec`'s coverage column was written in ignorance of it and
+  // duplicated its matcher. An unregistered tool is indistinguishable from an
+  // absent one, which is the whole of #1309 and is why that registry exists.
+  //
+  // `projectRootFlag`, and the script REFUSES a `--project-root` without a
+  // `--spec`: its default spec is rungate's own convergence document.
+  "criterion-inventory": {
+    script: "scripts/criterion-inventory.ts",
+    summary: "Trace every criterion to the tests, issues and pull requests that name it",
+    usage: "rungate criterion-inventory --snapshot <dir> --spec <path> [--json] [--markdown]",
+    projectRootFlag: true,
+  },
   "sync-spec-tests": {
     script: "scripts/sync-spec-tests.ts",
     summary: "Regenerate the conformity suite from the specs",

@@ -55,7 +55,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { hasContent, isIsoDay, parseCriteria } from "../lib/spec-evidence";
 import { oneScMentionPattern } from "../lib/sc-ids";
@@ -560,8 +560,25 @@ function main(): number {
     console.error("usage: bun scripts/criterion-inventory.ts --snapshot <dir> [--spec <path>]");
     return EXIT_REFUSED;
   }
-  const root = join(import.meta.dir, "..");
-  const specPath = flag(argv, "--spec") ?? join(root, "specs/CODE-REVIEW-CONVERGENCE-SPEC.md");
+  // `--project-root`, not `import.meta.dir/..`, for the reason registering
+  // this as a CLI command made load-bearing (#1647). The dispatcher passes
+  // the consumer's cwd; without it, `bunx rungate criterion-inventory` would
+  // read `node_modules/rungate/test/` and `node_modules/rungate/specs/`, and
+  // report RUNGATE's traceability as the consumer's — a full, plausible
+  // matrix about a tree the caller has never opened. That is the exact defect
+  // `audit-spec-evidence`'s registry entry records catching.
+  const root = flag(argv, "--project-root") ?? join(import.meta.dir, "..");
+  const specFlag = flag(argv, "--spec");
+  if (!specFlag && flag(argv, "--project-root")) {
+    console.error(
+      "criterion-inventory: --spec is required when --project-root is given. The default " +
+        "spec is rungate's own convergence spec, which is not yours.",
+    );
+    return EXIT_REFUSED;
+  }
+  const specPath = specFlag
+    ? (isAbsolute(specFlag) ? specFlag : join(root, specFlag))
+    : join(root, "specs/CODE-REVIEW-CONVERGENCE-SPEC.md");
 
   const snapshot = readSnapshot(dir);
   const testFiles = collectTestFiles(join(root, "test"));
