@@ -209,6 +209,19 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
   // No `projectRootFlag`: it reads the tracker, not the tree. The phase is
   // read off each issue's milestone title, so there is no spec path to
   // resolve and nothing on disk it could resolve against the wrong root.
+  // Step 4 of ADR-003, in reverse. The issue template's own footer says a
+  // GitHub issue form cannot set a milestone or a dependency; this does both
+  // from a plan somebody approved. `--repair` fixes issues that already
+  // exist — 11 convergence issues named no criterion on 2026-10-29 and were
+  // invisible to every criterion-based reading.
+  //
+  // `projectRootFlag` because the plan path resolves against the root.
+  "plan-issues": {
+    script: "scripts/plan-issues.ts",
+    summary: "Apply an approved issue repair plan — criteria links and milestone demotions",
+    usage: "rungate plan-issues --repair <plan.md> --repo <owner/name> [--write] [--json]",
+    projectRootFlag: true,
+  },
   "plan-deps": {
     script: "scripts/plan-deps.ts",
     summary: "Write a spec's phase order onto the tracker as blocked-by edges",
