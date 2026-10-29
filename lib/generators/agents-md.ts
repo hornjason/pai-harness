@@ -83,11 +83,20 @@ export function existingBody(root: string): string | null {
  * from the body is what makes it mean that; the fixed point then falls out
  * rather than being exempted into existence.
  *
- * @param bodyUnchanged  the generator's body for this scan equals the one on
- *                       disk. The caller computes the body first and answers
- *                       this; the frontmatter is not in a position to.
+ * **The carry-forward moved to the write site on 2026-10-29 (#1647), because
+ * it never fired here.** The condition was `body === existingBody(root)`, and
+ * AGENTS.md is written `section-preserving`: the file on disk carries
+ * `## Hard Constraints` and the generated body does not, so the two were
+ * never equal — 3,357 bytes against 1,352 in this repository. The comparison
+ * was being made before the merge that decides the final bytes, so it was
+ * comparing a document to a different document and could only answer "changed".
+ *
+ * The stamp is therefore always today HERE, and `carryUpdatedStamp` in
+ * `lib/scaffold/owned-files.ts` puts the committed one back when the final
+ * bytes are otherwise identical. One decider, and it is the one that can see
+ * the answer.
  */
-function buildFrontmatter(root: string, today: string, bodyUnchanged: boolean): string {
+function buildFrontmatter(root: string, today: string): string {
   const defaults: Record<string, string> = {
     "doc-type": "reference",
     status: "active",
@@ -96,12 +105,7 @@ function buildFrontmatter(root: string, today: string, bodyUnchanged: boolean): 
 
   const existing = existingFrontmatter(root);
 
-  // An existing stamp survives only when the body it dates is unchanged. A
-  // file with no stamp at all gets today's either way — there is nothing to
-  // carry, and a missing `updated:` is not evidence of freshness.
-  const stamp = bodyUnchanged ? (existing.updated ?? today) : today;
-
-  const merged: Record<string, string> = { ...defaults, ...existing, updated: stamp };
+  const merged: Record<string, string> = { ...defaults, ...existing, updated: today };
   const order = ["doc-type", "status", "owner", "updated"];
   const keys = [...order.filter(k => k in merged), ...Object.keys(merged).filter(k => !order.includes(k))];
   return `---\n${keys.map(k => `${k}: ${merged[k]}`).join("\n")}\n---\n\n`;
@@ -265,7 +269,7 @@ ${repoLine}${makeTargets}
 - **Test:** \`${testCmd}\`
 `;
 
-  return buildFrontmatter(scan.root, today, body === existingBody(scan.root)) + body;
+  return buildFrontmatter(scan.root, today) + body;
 }
 
 /**
