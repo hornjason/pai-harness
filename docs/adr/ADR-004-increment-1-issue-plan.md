@@ -7,11 +7,25 @@ owner: jason
 governs: the issues that close the convergence spec's forward coverage gap — what each one is for, which criteria it serves, which files it may touch, and what must land first
 ---
 
-# ADR-003 Increment 1: the issues that close the forward gap
+# ADR-004 Increment 1: the issues that close the forward gap
 
 **Status:** Proposed — this file is the reservation. Nothing is created until
 it is committed.
 **Deciders:** Jason (owner, authorised creation), Rayford (DA)
+
+## This is a one-off record, not a step in the pipeline
+
+**The board is the plan.** `docs/adr/ADR-003-spec-to-tracker-mapping.md` is the
+standing architecture; this file is not a second copy of it and nothing in the
+spec→tracker flow reads it. It exists for one reason, stated below: the filing
+cap needs the unit of work fixed in a reviewable artefact *before* anything is
+created, and a batch of eighteen has nowhere else to be fixed. Once the issues
+exist, the tracker carries every fact this file carries, and this becomes a
+record of what was reserved on 2026-10-29 rather than a document anyone works
+from.
+
+It was numbered ADR-003 when it was written, colliding with the mapping ADR.
+Renumbered to 004, which is the only thing that changed.
 
 ## What this file is, and why it exists before the issues do
 

@@ -731,7 +731,7 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: the prose around the table cann
     // said "sixteen" in three places and listed eighteen rows. A count typed
     // beside a list it does not come from is the drift this whole suite is
     // about, and writing the guard is cheaper than reading the list again.
-    const planPath = join(REPO, "docs/adr/ADR-003-increment-1-issue-plan.md");
+    const planPath = join(REPO, "docs/adr/ADR-004-increment-1-issue-plan.md");
     expect(
       existsSync(planPath),
       "the Increment-1 plan is gone — delete this case or re-point it",
