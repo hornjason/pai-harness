@@ -60,7 +60,7 @@ query($owner:String!,$name:String!,$states:[IssueState!],$after:String){
         number
         state
         milestone{title}
-        blockedBy(first:${PAGE}){nodes{number}}
+        blockedBy(first:${PAGE}){pageInfo{hasNextPage} nodes{number}}
       }
     }
   }
@@ -73,7 +73,7 @@ interface IssuePage {
     number: number;
     state: string;
     milestone: { title: string } | null;
-    blockedBy: { nodes: { number: number }[] } | null;
+    blockedBy: { pageInfo: { hasNextPage: boolean }; nodes: { number: number }[] } | null;
   }[];
 }
 
@@ -125,6 +125,10 @@ async function liveReadIssues(
         state: n.state,
         milestone: n.milestone?.title ?? null,
         blockedBy: (n.blockedBy?.nodes ?? []).map(b => b.number),
+        // A second page means this list is CUT, not short. `dependencyPlan`
+        // refuses rather than deriving from it: an unread blocker past the
+        // boundary reads as missing and gets re-added.
+        blockedByTruncated: n.blockedBy?.pageInfo.hasNextPage === true,
       });
     }
     if (!page.pageInfo.hasNextPage) return out;
@@ -194,10 +198,23 @@ export async function main(argv: string[], gh: PlanDepsGitHub = LIVE_GITHUB): Pr
   const refuseWrite = plan.reading === "UNMEASURED";
 
   if (values.json) {
-    const wrote = !values.write ? "not-requested" : refuseWrite ? "refused" : "yes";
-    console.log(JSON.stringify({ ...plan, wrote }, null, 2));
-    if (values.write && !refuseWrite) await applyEdges(gh, repo, plan.missing);
-    return refuseWrite ? REFUSAL_EXIT : 0;
+    // Apply FIRST, then report. The first version printed `"wrote": "yes"`
+    // and only then awaited applyEdges, whose per-group catch turns a failure
+    // into a string nothing read — so a run where every `gh issue edit` call
+    // failed emitted "yes" and exited 0. This is the identical defect the
+    // same PR fixed in `scripts/plan-issues.ts`, left unfixed in its sibling:
+    // naming a fix in one file is not sweeping for its shape in the others.
+    const results = values.write && !refuseWrite ? await applyEdges(gh, repo, plan.missing) : [];
+    const failures = results.filter(r => r.includes("FAILED"));
+    const wrote = !values.write
+      ? "not-requested"
+      : refuseWrite
+        ? "refused"
+        : failures.length > 0
+          ? "partial"
+          : "yes";
+    console.log(JSON.stringify({ ...plan, results, wrote }, null, 2));
+    return refuseWrite || failures.length > 0 ? REFUSAL_EXIT : 0;
   }
 
   console.log(`${repo} — ${issues.length} issue(s) read, phases ${plan.phases.join(" -> ") || "(none)"}\n`);
@@ -238,7 +255,16 @@ export async function main(argv: string[], gh: PlanDepsGitHub = LIVE_GITHUB): Pr
   }
 
   console.log(`\nWRITING`);
-  for (const line of await applyEdges(gh, repo, plan.missing)) console.log(`  ${line}`);
+  const applied = await applyEdges(gh, repo, plan.missing);
+  for (const line of applied) console.log(`  ${line}`);
+  const failures = applied.filter(r => r.includes("FAILED"));
+  if (failures.length > 0) {
+    console.error(
+      `\nplan-deps: ${failures.length} of ${applied.length} write(s) FAILED. The exit code ` +
+        `says so; printing the failure among the successes did not.`,
+    );
+    return REFUSAL_EXIT;
+  }
   return 0;
 }
 

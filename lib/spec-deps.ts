@@ -54,6 +54,13 @@ export interface DepIssue {
   readonly milestone: string | null;
   /** The issue numbers that already block this one, live. */
   readonly blockedBy: readonly number[];
+  /**
+   * True when the reader could not see all of them — a paged connection that
+   * reported another page. A truncated list is not a short list: an unread
+   * blocker past the cut reads as {@link DependencyPlan.missing} and is
+   * re-added, and a real {@link DependencyPlan.extra} goes unreported.
+   */
+  readonly blockedByTruncated?: boolean;
 }
 
 /** One `blocked by` link: `blocked` waits for `blocker`. */
@@ -81,6 +88,83 @@ export interface DependencyPlan {
 }
 
 /**
+ * Every way this reading can fail to carry an order — the whole class, once.
+ *
+ * ## Why this is a table and not another `if`
+ *
+ * The first version refused on `issues.length === 0` and on
+ * `phases.length === 1`, and four review rounds each found a different input
+ * that walks between them. The last was `phases.length === 0`: issues exist,
+ * so the empty-input guard is skipped, and there is no single phase, so the
+ * one-phase guard is skipped — and an unphased board reports `0 missing`,
+ * which `scripts/plan-deps.ts` prints as *"the tracker already carries the
+ * phase order"*. That sentence is false and it is the flattering reading.
+ *
+ * The reviewer's own process finding named the shape: *a UNMEASURED check
+ * written for one specific empty-input shape, not the class of them*, which
+ * a line-level patch keeps reintroducing variants of. `AGENTS.md` rule 5
+ * says to stop repairing and re-scope at the third round. So the guard is
+ * stated once, as the property it is actually about:
+ *
+ * > **An order needs two phases.** Fewer than two cannot express one, and
+ * > every row below is a different way of arriving at fewer than two.
+ *
+ * | # | Condition | What it means |
+ * |---|---|---|
+ * | 1 | nothing read | a failed fetch and an empty repository are the same bytes |
+ * | 2 | read, none considered | every issue was filtered out — all closed, without `--include-closed` |
+ * | 3 | considered, no phase | nobody carries a `Phase N` milestone: `plan-spec` never ran, or the naming drifted from `phaseOf` |
+ * | 4 | one phase | nothing to sequence, which is not the same as already sequenced |
+ * | 5 | a truncated blocker list | an unread edge past the page boundary reads as missing and gets re-added |
+ *
+ * Rows 1-4 are exhaustive over `phases.length < 2` by construction: a
+ * non-empty considered set with two or more distinct phases is the only
+ * input that reaches none of them. Row 5 is orthogonal — the phases can be
+ * fine while the live edge list is short — so it is checked alongside rather
+ * than inside the count.
+ */
+export function degenerateReasons(r: {
+  readonly read: number;
+  readonly considered: number;
+  readonly phases: readonly number[];
+  readonly includeClosed: boolean;
+  readonly truncated: readonly number[];
+}): string[] {
+  const out: string[] = [];
+  if (r.read === 0) {
+    out.push(
+      "no issues were read — an empty repository and a failed fetch produce the same " +
+        "empty edge list, and only one of them is a clean reading",
+    );
+  } else if (r.considered === 0) {
+    out.push(
+      `${r.read} issue(s) were read and none was considered` +
+        (r.includeClosed ? "" : " — every one is closed, and --include-closed was not passed"),
+    );
+  } else if (r.phases.length === 0) {
+    out.push(
+      `${r.considered} issue(s) were considered and NONE carries a Phase milestone — ` +
+        `either plan-spec has not run here, or the milestone titles no longer match ` +
+        `what phaseOf reads. An empty plan from this input means "nothing was read", ` +
+        `not "the tracker already carries the phase order"`,
+    );
+  } else if (r.phases.length === 1) {
+    out.push(
+      `every issue read sits in Phase ${r.phases[0]} — one phase states no order, so an ` +
+        `empty plan here means "nothing to sequence" and not "already sequenced"`,
+    );
+  }
+  if (r.truncated.length > 0) {
+    out.push(
+      `the blocker list was truncated for ${r.truncated.length} issue(s) ` +
+        `(${r.truncated.map(n => `#${n}`).join(", ")}) — an edge past the page boundary ` +
+        `reads as missing and would be re-added`,
+    );
+  }
+  return out;
+}
+
+/**
  * What the repository's `blocked by` edges should be, given the phases its
  * issues sit in.
  *
@@ -95,14 +179,6 @@ export function dependencyPlan(
   issues: readonly DepIssue[],
   opts: { readonly includeClosed?: boolean } = {},
 ): DependencyPlan {
-  const reasons: string[] = [];
-  if (issues.length === 0) {
-    reasons.push(
-      "no issues were read — an empty repository and a failed fetch produce the same " +
-        "empty edge list, and only one of them is a clean reading",
-    );
-  }
-
   const considered = issues.filter(i => opts.includeClosed || i.state === "OPEN");
   const unphased: number[] = [];
   const byPhase = new Map<number, DepIssue[]>();
@@ -116,12 +192,13 @@ export function dependencyPlan(
   }
 
   const phases = [...byPhase.keys()].sort((a, b) => a - b);
-  if (phases.length === 1) {
-    reasons.push(
-      `every issue read sits in Phase ${phases[0]} — one phase states no order, so an ` +
-        `empty plan here means "nothing to sequence" and not "already sequenced"`,
-    );
-  }
+  const reasons = degenerateReasons({
+    read: issues.length,
+    considered: considered.length,
+    phases,
+    includeClosed: opts.includeClosed === true,
+    truncated: issues.filter(i => i.blockedByTruncated === true).map(i => i.number),
+  });
 
   // Adjacent members of the phases that EXIST. See the header: `p - 1` would
   // leave a phase after a gap blocked by nothing and reading as startable.

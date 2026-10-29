@@ -112,19 +112,75 @@ describe("lib/spec-deps: what it refuses to touch", () => {
   });
 });
 
-describe("lib/spec-deps: an empty or single-phase reading is UNMEASURED", () => {
-  test("no issues at all is UNMEASURED — a failed fetch is not an ordered tracker", () => {
-    const plan = dependencyPlan([]);
-    expect(plan.reading).toBe("UNMEASURED");
-    expect(plan.unmeasuredReasons.join(" ")).toContain("failed fetch");
-    // The pair: one more phase and the same function reads MEASURED.
-    expect(dependencyPlan([iss(10, 0), iss(20, 1)]).reading).toBe("MEASURED");
+/**
+ * The WHOLE class of degenerate readings, as one table.
+ *
+ * Four review rounds each found a different input that walked between two
+ * hand-written guards — the last was `phases.length === 0`, where issues
+ * exist (so the empty check is skipped) and there is no single phase (so the
+ * one-phase check is skipped), and the command prints *"the tracker already
+ * carries the phase order"* about a board it could not read.
+ *
+ * So the cases below are not four more `if`s. They enumerate every route to
+ * **fewer than two phases**, which is the property, and the last case is the
+ * negative control: the only input that must reach none of them.
+ */
+describe("lib/spec-deps: every route to fewer than two phases is UNMEASURED", () => {
+  const cases: [string, DepIssue[], { includeClosed?: boolean }, string][] = [
+    ["nothing read", [], {}, "failed fetch"],
+    [
+      "read, but nothing considered — every issue closed",
+      [iss(10, 0, { state: "CLOSED" }), iss(20, 1, { state: "CLOSED" })],
+      {},
+      "none was considered",
+    ],
+    [
+      "considered, but NOT ONE carries a Phase milestone",
+      [iss(10, null), iss(20, null), iss(30, null)],
+      {},
+      "NONE carries a Phase milestone",
+    ],
+    ["exactly one phase", [iss(10, 0), iss(11, 0)], {}, "one phase states no order"],
+  ];
+  for (const [name, issues, opts, reason] of cases) {
+    test(`${name} is UNMEASURED, and says which`, () => {
+      const plan = dependencyPlan(issues, opts);
+      expect(plan.reading).toBe("UNMEASURED");
+      expect(plan.unmeasuredReasons.join(" ")).toContain(reason);
+      expect(plan.missing, "an edge was derived from a reading that could not be taken").toEqual([]);
+    });
+  }
+
+  test("THE NEGATIVE CONTROL: two phases over a considered set reads MEASURED", () => {
+    // Without this, every case above passes against a function that refuses
+    // unconditionally — four green rows witnessing nothing.
+    const plan = dependencyPlan([iss(10, 0), iss(20, 1)]);
+    expect(plan.reading).toBe("MEASURED");
+    expect(keys(plan.missing)).toEqual(["20<-10"]);
   });
 
-  test("one phase is UNMEASURED — no edges there means nothing to sequence", () => {
-    const plan = dependencyPlan([iss(10, 0), iss(11, 0)]);
+  test("the unphased case is NOT the same as the no-issues case — the reasons differ", () => {
+    // Both produce `missing: []`. Only the text distinguishes them, and the
+    // whole point of the row is that a reader can act on which one it is.
+    const empty = dependencyPlan([]).unmeasuredReasons.join(" ");
+    const unphased = dependencyPlan([iss(10, null)]).unmeasuredReasons.join(" ");
+    expect(unphased).not.toBe(empty);
+    expect(unphased).toContain("plan-spec has not run");
+  });
+
+  test("a TRUNCATED blocker list refuses even when the phases are sound", () => {
+    // Orthogonal to the count: two phases, a derivable order, and a live edge
+    // list the reader could not see the end of. Deriving from it would re-add
+    // an edge that already exists past the page boundary.
+    const plan = dependencyPlan([
+      iss(10, 0),
+      { ...iss(20, 1), blockedBy: [10], blockedByTruncated: true },
+    ]);
     expect(plan.reading).toBe("UNMEASURED");
-    expect(plan.missing).toEqual([]);
+    expect(plan.unmeasuredReasons.join(" ")).toContain("truncated");
+    expect(plan.unmeasuredReasons.join(" ")).toContain("#20");
+    // The pair: the identical input with the flag off is MEASURED.
+    expect(dependencyPlan([iss(10, 0), iss(20, 1, { blockedBy: [10] })]).reading).toBe("MEASURED");
   });
 });
 
@@ -182,6 +238,63 @@ describe("scripts/plan-deps --write: nothing reaches GitHub on an unmeasured rea
     const code = await planDepsMain(["--repo", "o/r", "--write"], s.gh);
     expect(s.calls).toEqual([]);
     expect(code).toBe(REFUSAL_EXIT);
+  });
+
+  test("a FAILED write exits non-zero — the status is derived from what happened", async () => {
+    // `applyEdges` catches each failure into a "FAILED" string and returns
+    // it. Nothing read that array, so a run where every `gh issue edit` call
+    // failed printed its failures among the successes and returned 0. The
+    // same defect was fixed in `plan-issues` by this PR and left here.
+    const gh: PlanDepsGitHub = {
+      createClient: (() => ({}) as never) as PlanDepsGitHub["createClient"],
+      readIssues: async () => [iss(10, 0), iss(20, 1)],
+      addBlockers: async () => {
+        throw new Error("gh: HTTP 503");
+      },
+    };
+    const code = await planDepsMain(["--repo", "o/r", "--write"], gh);
+    expect(code, "every write failed and the command reported success").toBe(REFUSAL_EXIT);
+  });
+
+  test("--json --write reports `partial` on a failed write, not `yes`", async () => {
+    const out: string[] = [];
+    const log = console.log;
+    console.log = (x: string) => void out.push(x);
+    const gh: PlanDepsGitHub = {
+      createClient: (() => ({}) as never) as PlanDepsGitHub["createClient"],
+      readIssues: async () => [iss(10, 0), iss(20, 1)],
+      addBlockers: async () => {
+        throw new Error("gh: HTTP 503");
+      },
+    };
+    let code;
+    try {
+      code = await planDepsMain(["--repo", "o/r", "--write", "--json"], gh);
+    } finally {
+      console.log = log;
+    }
+    const json = JSON.parse(out.join("\n"));
+    expect(json.wrote, "a run whose every write failed printed a clean status").toBe("partial");
+    expect(json.results.join(" ")).toContain("FAILED");
+    expect(code).toBe(REFUSAL_EXIT);
+  });
+
+  test("--json --write on a sound plan still reports `yes` and applies", async () => {
+    // The pair for both cases above: without it they pass against a command
+    // that reports "partial" unconditionally.
+    const out: string[] = [];
+    const log = console.log;
+    console.log = (x: string) => void out.push(x);
+    const s = spy([iss(10, 0), iss(20, 1)]);
+    let code;
+    try {
+      code = await planDepsMain(["--repo", "o/r", "--write", "--json"], s.gh);
+    } finally {
+      console.log = log;
+    }
+    expect(JSON.parse(out.join("\n")).wrote).toBe("yes");
+    expect(s.calls).toEqual(["#20 +10"]);
+    expect(code).toBe(0);
   });
 
   test("a second --write run is a no-op — the command is idempotent", async () => {
