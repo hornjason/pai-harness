@@ -192,6 +192,38 @@ describe("plannedTitles reads the Outcome column and nothing else", () => {
     });
   }
 
+  /**
+   * A fence and a comment are two states, and neither may be entered from
+   * inside the other. Both directions, because fixing one by reordering is
+   * exactly how you break the other.
+   */
+  test("an unbalanced <!-- inside a fence is literal text, and the fence still closes", () => {
+    const content = [
+      "```text",
+      "<!-- example snippet",
+      "```",
+      "| Criterion | Outcome |",
+      "|---|---|",
+      "| C1 | a real planned title |",
+    ].join("\n");
+    expect(plannedTitles(content).map(t => t.title)).toEqual(["a real planned title"]);
+  });
+
+  test("a ``` inside an open comment is literal text, and the comment still closes", () => {
+    const content = [
+      "<!-- superseded",
+      "```",
+      "| Criterion | Outcome |",
+      "|---|---|",
+      "| C1 | commented out |",
+      "-->",
+      "| Criterion | Outcome |",
+      "|---|---|",
+      "| C2 | a real planned title |",
+    ].join("\n");
+    expect(plannedTitles(content).map(t => t.title)).toEqual(["a real planned title"]);
+  });
+
   test("an unclosed fence swallows the rest of the file — the fail-closed direction", () => {
     const content = ["```", "| Criterion | Outcome |", "|---|---|", "| X-1 | never closed |"].join(
       "\n",

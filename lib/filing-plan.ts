@@ -184,14 +184,43 @@ export function plannedTitles(content: string): PlannedTitle[] {
   let fence: string | null = null;
   /** Whether we are inside a `<!-- … -->` that spans lines. */
   let commented = false;
+  const opener = /^[ \t]*(`{3,}|~{3,})(.*)$/;
   for (let i = 0; i < lines.length; i++) {
     // Every region below also ENDS the table it interrupts, the same way a
     // line of prose does, so `column` is reset on every one of their lines.
 
-    // Comments first, and scanned by INDEX. `includes("-->")` cannot see
-    // order, so one line closing a comment and opening another reads as
-    // closed — and every line after it is live here while a renderer still
-    // has it commented out. What survives this is the line's live text.
+    // **Fence first, and on the RAW line.** A fence and a comment are two
+    // states, and neither may be entered from inside the other: inside a
+    // fence, `<!--` is literal text a renderer shows, so reading it as a
+    // comment opens one that the matching `-->` — also literal, also inside
+    // the fence — never closes, and the fence's own closing marker is then
+    // eaten as comment content. One unbalanced `<!--` in an illustrative
+    // snippet would silently cost every title in the rest of the file.
+    // That direction only DENIES, but it denies a plan a reviewer merged and
+    // the `why` would not say so. Found by the AI review of this change.
+    if (fence !== null) {
+      const c = indent(lines[i]) <= 3 ? opener.exec(lines[i]) : null;
+      // Only the same marker, at least as long, AND nothing after it. A ```
+      // inside a ~~~ block is content; so is ```js inside a ```md block,
+      // which is the differential a bare marker test would miss.
+      if (
+        c !== null &&
+        c[1][0] === fence[0] &&
+        c[1].length >= fence.length &&
+        c[2].trim() === ""
+      ) {
+        fence = null;
+      }
+      column = null;
+      continue;
+    }
+
+    // Then comments, scanned by INDEX. `includes("-->")` cannot see order,
+    // so one line closing a comment and opening another reads as closed —
+    // and every line after it is live here while a renderer still has it
+    // commented out. What survives this is the line's live text. While a
+    // comment is open a fence marker inside it is literal, which is the
+    // same rule as above with the two states swapped.
     const line = uncommented(lines[i], commented);
     commented = line.commented;
     if (commented || line.text.trim() === "") {
@@ -201,22 +230,7 @@ export function plannedTitles(content: string): PlannedTitle[] {
     const text = line.text;
 
     const ind = indent(text);
-    const f = ind <= 3 ? /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(text) : null;
-    if (fence !== null) {
-      // Only the same marker, at least as long, AND nothing after it. A ```
-      // inside a ~~~ block is content; so is ```js inside a ```md block,
-      // which is the differential a bare marker test would miss.
-      if (
-        f !== null &&
-        f[1][0] === fence[0] &&
-        f[1].length >= fence.length &&
-        f[2].trim() === ""
-      ) {
-        fence = null;
-      }
-      column = null;
-      continue;
-    }
+    const f = ind <= 3 ? opener.exec(text) : null;
     // Any marker run OPENS, info string or not — including the spellings
     // CommonMark would reject as openers. That is deliberate: refusing to
     // open leaves what follows live, and a reading this function is unsure
