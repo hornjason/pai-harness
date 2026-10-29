@@ -9,8 +9,13 @@
 
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
+import { isRunDirectory } from '../../lib/active-workflow';
 
-const RUNGATE_WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.RUNGATE_WORK_DIR || join(process.env.HOME!, '.rungate');
+// `PAI_WORK_DIR` second, as every sibling resolves it — VerifyPhaseLock,
+// StaleTTLCleanup, AgentVerdictCapture and lib/issue-filing-gate.ts all read
+// the same three in the same order. This file read RUNGATE_WORK_DIR twice,
+// so a consumer still on the legacy variable silently got `~/.rungate`.
+const RUNGATE_WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
 
 interface WorkflowState {
   path: string;
@@ -36,8 +41,18 @@ export function findWorkflowForIssue(issueNum?: string, phases?: string[], repo?
   };
 
   try {
+    // Hidden entries are the work dir's own bookkeeping, not runs — and
+    // `Priority 3` below is an mtime fallback, so `.archive`'s newest state
+    // file outranks every live run. That is #1648. Both levels, for the
+    // reason in lib/active-workflow.ts.
+    //
+    // Blast radius, since an earlier version of this comment got it wrong:
+    // `CommitEnforcement.hook.ts` is the ONLY hook importing this module.
+    // `IssueCloseGuard` and `AutoVerifyGate` use `findWorkflowState` from
+    // `./utils`, a third implementation of this scan that is still
+    // unfiltered — #1668. Fixing this file does not reach them.
     const dirs = readdirSync(RUNGATE_WORK_DIR, { withFileTypes: true })
-      .filter(d => d.isDirectory());
+      .filter(d => d.isDirectory() && isRunDirectory(d.name));
 
     for (const d of dirs) {
       // Level 1: direct children
@@ -46,7 +61,8 @@ export function findWorkflowForIssue(issueNum?: string, phases?: string[], repo?
       // Level 2: nested subdirectories (e.g., pai/361)
       const subDir = join(RUNGATE_WORK_DIR, d.name);
       try {
-        const subDirs = readdirSync(subDir, { withFileTypes: true }).filter(sd => sd.isDirectory());
+        const subDirs = readdirSync(subDir, { withFileTypes: true })
+          .filter(sd => sd.isDirectory() && isRunDirectory(sd.name));
         for (const sd of subDirs) {
           collectWorkflow(join(subDir, sd.name, 'workflow-state.json'), `${d.name}/${sd.name}`);
         }
