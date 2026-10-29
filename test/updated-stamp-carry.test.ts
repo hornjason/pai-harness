@@ -97,5 +97,25 @@ describe("#1647: carryUpdatedStamp — a stamp alone never justifies a rewrite",
         doc("2026-10-20", body),
       );
     });
+
+    // Found by the reviewer on #1649. `String.replace` special-cases `$&`,
+    // `$$`, '$`', "$'" and `$<n>` in a STRING replacement, and the committed
+    // stamp is passed as exactly that. `existingFrontmatter()` rejects `---`,
+    // control characters and anything over 200 bytes — it does not reject
+    // `$`, so a templated or hand-edited stamp reaches the swap intact.
+    //
+    // The failure is silent and in the wrong direction: the expansion makes
+    // `swapped` differ from `existing`, the equality fails, and a file that
+    // genuinely did not change is stamped with today. A function replacer
+    // takes no patterns at all, so there is nothing left to escape.
+    test.each([
+      ["$&", "the whole match"],
+      ["$$", "a literal dollar"],
+      ["$`", "everything before the match"],
+      ["$'", "everything after the match"],
+    ])("a committed stamp containing %s is carried literally, not expanded as %s", token => {
+      const stamp = `2026-10-20 ${token}`;
+      expect(carryUpdatedStamp(doc(stamp), doc("2026-10-29"))).toBe(doc(stamp));
+    });
   });
 });
