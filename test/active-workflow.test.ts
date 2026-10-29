@@ -39,29 +39,56 @@ const CREATE = "gh issue create --repo o/r --title t --body b";
 async function hookDecision(
   runs: { dir: string; phase: string }[],
   cmd = CREATE,
-): Promise<{ blocked: boolean; text: string }> {
+): Promise<{
+  blocked: boolean;
+  blockedByLock: boolean;
+  blockedByArbiter: boolean;
+  text: string;
+}> {
   const work = mkdtempSync(join(tmpdir(), "rg-verify-lock-"));
   for (const r of runs) {
     const d = join(work, ...r.dir.split("/"));
     mkdirSync(d, { recursive: true });
     writeFileSync(join(d, "workflow-state.json"), JSON.stringify({ phase: r.phase }));
   }
-  const proc = Bun.spawn(["bun", HOOK], {
-    stdin: new TextEncoder().encode(
-      JSON.stringify({ tool_name: "Bash", tool_input: { command: cmd } }),
-    ),
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, RUNGATE_WORK_DIR: work },
-  });
-  const text = await new Response(proc.stdout).text();
-  await proc.exited;
-  // Raised on #1648: five calls, five `rg-verify-lock-*` directories left
-  // under the OS temp dir on every run. Removed HERE rather than in an
-  // `afterEach`, so the command that creates the scratch is the command
-  // that deletes it and a case added later cannot forget.
-  rmSync(work, { recursive: true, force: true });
-  return { blocked: text.includes('"decision":"block"'), text };
+  let text: string;
+  try {
+    const proc = Bun.spawn(["bun", HOOK], {
+      stdin: new TextEncoder().encode(
+        JSON.stringify({ tool_name: "Bash", tool_input: { command: cmd } }),
+      ),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, RUNGATE_WORK_DIR: work },
+    });
+    text = await new Response(proc.stdout).text();
+    await proc.exited;
+  } finally {
+    // Raised on #1648: five calls, five `rg-verify-lock-*` directories left
+    // under the OS temp dir on every run — 40 of them on the author's machine.
+    // In a `finally`, because a spawn or a read that throws leaves the scratch
+    // behind on exactly the path this was written to close.
+    rmSync(work, { recursive: true, force: true });
+  }
+  // The hook has TWO gates that each emit `"decision":"block"` — the VERIFY
+  // lock this PR is about, and `filingGate`'s adjudication, which runs in
+  // every phase. A bare read of the string cannot say which one answered, so
+  // it is read per gate off the prefix each refusal names itself with.
+  //
+  // Not hypothetical: an assertion that filingGate stays quiet was tried here
+  // and went red, because it refuses this very command some of the time. That
+  // is the whole point — every case must read ONLY its own gate, and no case
+  // may assert anything about the other one, or this suite inherits the
+  // network-dependent behaviour of a gate it is not testing.
+  //
+  // `blocked` is kept for the text it reports on a failure; nothing asserts
+  // on it.
+  return {
+    blocked: text.includes('"decision":"block"'),
+    blockedByLock: text.includes("[VerifyPhaseLock]"),
+    blockedByArbiter: text.includes("[FindingArbiter]"),
+    text,
+  };
 }
 
 describe("#1648: isRunDirectory", () => {
@@ -88,16 +115,18 @@ describe("#1648: the hook, end to end against a planted work directory", () => {
   test("a LIVE run in VERIFY still blocks — the gate is not disabled", async () => {
     // The control. Without this the fix below could have switched the whole
     // lock off and every case would still read as a pass.
-    const { blocked, text } = await hookDecision([{ dir: "proj-1", phase: "VERIFY" }]);
-    expect(blocked).toBe(true);
+    const { blockedByLock, text } = await hookDecision([{ dir: "proj-1", phase: "VERIFY" }]);
+    expect(blockedByLock).toBe(true);
     expect(text).toContain("VerifyPhaseLock");
   });
 
   test("an ARCHIVED run in VERIFY does not block", async () => {
     // Exactly #1648: `.archive/<slug>/workflow-state.json` matches the nested
     // scan, so a run that finished on 21 October was deciding the gate.
-    const { blocked } = await hookDecision([{ dir: ".archive/proj-892", phase: "VERIFY" }]);
-    expect(blocked).toBe(false);
+    const { blockedByLock } = await hookDecision([
+      { dir: ".archive/proj-892", phase: "VERIFY" },
+    ]);
+    expect(blockedByLock).toBe(false);
   });
 
   test("a hidden directory INSIDE a live run does not decide the lock either", async () => {
@@ -106,35 +135,35 @@ describe("#1648: the hook, end to end against a planted work directory", () => {
     // one level deeper: `proj-169/.archive/workflow-state.json` is read by
     // the nested scan, and being written last it outranks the live run by
     // mtime. Red before `isRunDirectory(sub.name)` was added to that loop.
-    const { blocked } = await hookDecision([
+    const { blockedByLock } = await hookDecision([
       { dir: "proj-169", phase: "DONE" },
       { dir: "proj-169/.archive", phase: "VERIFY" },
     ]);
-    expect(blocked).toBe(false);
+    expect(blockedByLock).toBe(false);
   });
 
   test("an archived VERIFY alongside a live non-VERIFY run does not block", async () => {
     // The real shape on this machine: three live runs, none in VERIFY, and
     // the newest file of all sitting in `.archive` at VERIFY. The archived
     // one won because the scan ranks by mtime.
-    const { blocked } = await hookDecision([
+    const { blockedByLock } = await hookDecision([
       { dir: "proj-169", phase: "DONE" },
       { dir: ".archive/proj-892", phase: "VERIFY" },
     ]);
-    expect(blocked).toBe(false);
+    expect(blockedByLock).toBe(false);
   });
 
   test("a live VERIFY run blocks even when an archived run is newer", async () => {
     // The other direction, so the fix cannot be "ignore VERIFY when anything
     // is archived". The live run is written FIRST and is therefore older.
-    const { blocked } = await hookDecision([
+    const { blockedByLock } = await hookDecision([
       { dir: "proj-1", phase: "VERIFY" },
       { dir: ".archive/proj-892", phase: "DONE" },
     ]);
-    expect(blocked).toBe(true);
+    expect(blockedByLock).toBe(true);
   });
 
   test("no work directory entries at all does not block", async () => {
-    expect((await hookDecision([])).blocked).toBe(false);
+    expect((await hookDecision([])).blockedByLock).toBe(false);
   });
 });
