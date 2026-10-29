@@ -206,11 +206,15 @@ describe("#1648: the hook, end to end against a planted work directory", () => {
   });
 });
 
-describe("#1648: hooks/lib/findWorkflow.ts — the same scan, three more hooks", () => {
+describe("#1648: hooks/lib/findWorkflow.ts — the same scan, one more hook", () => {
   // Raised on #1648 round 5, and correct. `findWorkflow.ts` repeats the
-  // two-level scan with an mtime fallback, and it is imported by
-  // IssueCloseGuard, AutoVerifyGate and CommitEnforcement. Fixing only
-  // VerifyPhaseLock left the archived run deciding three other gates.
+  // two-level scan with an mtime fallback, so fixing only VerifyPhaseLock
+  // left the archived run deciding it too.
+  //
+  // Its one importer is `CommitEnforcement.hook.ts`. An earlier version of
+  // this comment also named IssueCloseGuard and AutoVerifyGate and was
+  // wrong — those two use `findWorkflowState` from `hooks/lib/utils.ts`, a
+  // third implementation of this scan that is still unfiltered (#1668).
   //
   // The archived entry is planted LAST in each case, so it is the newest
   // file and wins `Priority 3` unless it is filtered out.
