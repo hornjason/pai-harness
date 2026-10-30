@@ -164,6 +164,149 @@ describe("update-project-state", () => {
     expect(md).toContain("**Current phase: Phase 1 — Next — 2 SCs open**");
   });
 
+  /**
+   * The headline and the phase sections must agree about what "complete"
+   * means, because they are two readings of one question.
+   *
+   * `render`'s `current` had its own: the first phase with an open SC. A
+   * phase carrying no SCs at all — the shape every planning phase has before
+   * its criteria are bound — is invisible to it, so the document opened with
+   * "All phases complete" while a section further down read "NOT STARTED"
+   * with a note saying 30 engineering items remain. That is the file
+   * AGENTS.md tells every session to read first, and its first line was
+   * false. Raised by the AI review of #1684.
+   */
+  test("the headline does not say complete while a phase section says otherwise", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [
+        { name: "Phase 0 — Done", scs: [{ id: "SC-9441", what: "A", done: true }] },
+        { name: "Phase 1 — Unbound", scs: [], note: "IN PROGRESS — 9 of 56 criteria bound" },
+      ],
+      sessions: []
+    });
+    const md = run();
+    expect(md).toContain("## 🔄 Phase 1 — Unbound (IN PROGRESS)");
+    expect(md, "the headline claims completion the section below contradicts").not.toContain(
+      "All phases complete",
+    );
+    expect(md).toContain("**Current phase: Phase 1 — Unbound — IN PROGRESS**");
+  });
+
+  /**
+   * The negative control for the case above. Without it, "never say All
+   * phases complete" is satisfiable by deleting the string, and the headline
+   * would be wrong in the other direction on a genuinely finished project.
+   */
+  /**
+   * `"incomplete".includes("complete")` is TRUE.
+   *
+   * An SC-less phase's status was inferred by testing whether its note
+   * contained the substring "complete" anywhere, so a note reading
+   * `Status: incomplete, 9 of 56 criteria bound` rendered `✅ (COMPLETE)` —
+   * and once the headline was derived from the same reading, it skipped the
+   * phase and printed "All phases complete" above a section describing
+   * unfinished work. The same contradiction the headline fix removed,
+   * arriving by a different route. Raised by the AI review of #1684.
+   *
+   * Every note in this repo's own state begins with its status word —
+   * `COMPLETE — 25 SCs`, `IN PROGRESS 2026-10-23`, `P0 PRIORITY`, `SHIPPED` —
+   * so the leading token is read and nothing else is. A note reading
+   * "completed" is therefore NOT credited, which is the direction this is
+   * allowed to be wrong in: an uncredited phase costs one word in a note,
+   * and the other direction puts a false headline on the handoff document.
+   */
+  test.each([
+    // A note that does not say complete is somebody writing about work in
+    // flight — IN PROGRESS, never NOT STARTED. Only an ABSENT note means
+    // nothing is known, and that is the third row's whole point.
+    ["Status: incomplete, 9 of 56 criteria bound", "\u{1F504}", "IN PROGRESS"],
+    ["not complete yet", "\u{1F504}", "IN PROGRESS"],
+    ["IN PROGRESS — nowhere near complete", "\u{1F504}", "IN PROGRESS"],
+    [undefined, "\u2B1C", "NOT STARTED"],
+    ["", "\u2B1C", "NOT STARTED"],
+    ["COMPLETE — 25 SCs, all done", "\u2705", "COMPLETE"],
+    ["complete", "\u2705", "COMPLETE"],
+  ])("a note reading %j is %s", (note, emoji, status) => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [{ name: "Phase X", scs: [], ...(note === undefined ? {} : { note }) }],
+      sessions: []
+    });
+    expect(run()).toContain(`## ${emoji} Phase X (${status})`);
+  });
+
+  test("the headline still reads complete when every phase is", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [
+        { name: "Phase 0 — Done", scs: [{ id: "SC-9441", what: "A", done: true }] },
+        { name: "Phase 1 — Also done", scs: [], note: "complete" },
+      ],
+      sessions: []
+    });
+    expect(run()).toContain("**Current phase: All phases complete**");
+  });
+
+  /**
+   * `issues_created` is declared `string` and the DA has always written an
+   * array of numbers, so `render` interpolated it through
+   * `Array.prototype.toString` and produced a bare `1675,1676,1680` where
+   * every other issue reference in the same document reads `#1675`.
+   *
+   * The second half is the one the review did not name and is the worse of
+   * the two: `[]` is TRUTHY, so a session that closed nothing rendered the
+   * label `Issues closed:` with nothing after it — byte-identical to a
+   * session that never recorded the field. *Silent Default Substitution*,
+   * in the handoff document (`.claude/rules/config-access.md`). Raised by
+   * the AI review of #1684.
+   */
+  test("issue lists render as issue references, and an empty one is omitted rather than left blank", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [{ name: "Phase 0", scs: [{ id: "SC-9441", what: "A", done: true }] }],
+      session: { number: 1, date: "2026-01-01", summary: "s", suite: "t", issues_created: [1675, 1680], issues_closed: [] },
+      sessions: []
+    });
+    const md = run();
+    expect(md).toContain("Issues opened: #1675, #1680");
+    // The premise: without the formatting there really would be a bare list.
+    expect(md, "the raw Array.toString form survived").not.toContain("Issues opened: 1675,1680");
+    expect(md, "an empty list rendered a label with nothing after it").not.toContain("Issues closed:");
+  });
+
+  /**
+   * A field that was never written renders nothing — not `#undefined`.
+   *
+   * Absent and empty reach `issueList` by different routes and the first
+   * mutation battery had no case for the first, so `v === undefined` could
+   * be changed to `v === null` and stay green while the document grew a
+   * line reading `Issues opened: #undefined`.
+   */
+  test("a session with no issue fields renders no issue lines", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [{ name: "Phase 0", scs: [{ id: "SC-9441", what: "A", done: true }] }],
+      session: { number: 1, date: "2026-01-01", summary: "s", suite: "t" },
+      sessions: []
+    });
+    const md = run();
+    expect(md).not.toContain("Issues opened:");
+    expect(md).not.toContain("Issues closed:");
+    expect(md, "an absent field rendered as the string undefined").not.toContain("undefined");
+  });
+
+  /** The control: a NON-empty closed list must still render. */
+  test("a session that closed something still says so", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [{ name: "Phase 0", scs: [{ id: "SC-9441", what: "A", done: true }] }],
+      session: { number: 1, date: "2026-01-01", summary: "s", suite: "t", issues_closed: [1676] },
+      sessions: []
+    });
+    expect(run()).toContain("Issues closed: #1676");
+  });
+
   test("promote-only: spec [x] promotes SC, spec [ ] does not demote", () => {
     writeFileSync(join(SPECS_DIR, "test-promote.md"), `- [x] SC-9441: promoted\n- [ ] SC-9442: still open in spec`);
     writeTestJson({

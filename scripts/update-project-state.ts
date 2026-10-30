@@ -37,8 +37,37 @@ interface CurrentSession {
   date: string;
   summary: string;
   suite: string;
-  issues_created?: string;
-  issues_closed?: string;
+  // The DA has always written these as arrays of issue numbers. They were
+  // declared `string`, and `render` interpolated them, so the document
+  // carried `1675,1676` through Array.prototype.toString where every other
+  // issue reference in it reads `#1675`.
+  //
+  // ARRAY ONLY, and that is the narrower choice on purpose. A `| string`
+  // union would oblige this file to split a comma-separated value, and
+  // `parseDeclaredCloses` in `scripts/check-state-record-closes.ts` already
+  // splits this exact field — two deciders for one question, each invisible
+  // to any behavioural test of the other. `projectStateViolations` refuses
+  // the string shape by name before the renderer sees it, so there is one
+  // shape here and a clear message for every other.
+  issues_created?: readonly (number | string)[];
+  issues_closed?: readonly (number | string)[];
+}
+
+/**
+ * An issue list as issue REFERENCES, or nothing at all.
+ *
+ * Returning `null` for an empty list is the point. `[]` is truthy, so a
+ * session that closed nothing used to render the label `Issues closed:`
+ * with nothing after it — byte-identical to a session that never recorded
+ * the field. Two different facts, one rendering: *Silent Default
+ * Substitution* (`.claude/rules/config-access.md`), in the document every
+ * session is told to read first.
+ */
+function issueList(v: CurrentSession["issues_created"]): string | null {
+  if (v === undefined) return null;
+  const items = v.map(String).filter(s => s.trim() !== "");
+  if (items.length === 0) return null;
+  return items.map(s => (s.startsWith("#") ? s : `#${s}`)).join(", ");
 }
 
 interface ProjectState {
@@ -65,9 +94,52 @@ function scanSpecSCStatus(): Record<string, boolean> {
   return status;
 }
 
+/**
+ * Whether a phase with no SCs declares itself complete, read from the
+ * LEADING word of its note and nothing else.
+ *
+ * It used to be `note.includes("complete")`, and `"incomplete".includes(
+ * "complete")` is true — so `Status: incomplete, 9 of 56 criteria bound`
+ * rendered as COMPLETE, and once the headline was derived from the same
+ * reading it skipped the phase and printed "All phases complete" above a
+ * section describing unfinished work.
+ *
+ * Every note in this repository's state begins with its status word:
+ * `COMPLETE — 25 SCs`, `IN PROGRESS 2026-10-23`, `P0 PRIORITY`, `SHIPPED`.
+ * So the convention the data already follows is the one that is read.
+ * `completed` is NOT credited, and that is the direction this is allowed to
+ * be wrong in — an uncredited phase costs one word in a note, while the
+ * other direction puts a false headline on the document every session is
+ * told to read first.
+ */
+function noteDeclaresComplete(note: string | undefined): boolean {
+  return note?.trim().match(/^[A-Za-z]+/)?.[0]?.toLowerCase() === "complete";
+}
+
+/**
+ * THREE buckets for a phase with no SCs, because there are three states and
+ * only two were spelled.
+ *
+ * "Does the note say complete" is a yes/no question and the answer was
+ * rendered as COMPLETE or NOT STARTED, so the CRC phase — `scs: []`, note
+ * `IN PROGRESS 2026-10-23. 9 of 56 criteria bound, 30 engineering items
+ * remaining` — rendered NOT STARTED, contradicting its own note one line
+ * below. The same contradiction the two commits before this one removed,
+ * one level down. Raised by the AI review of #1684.
+ *
+ * A note is somebody writing about the phase. If they wrote and did not say
+ * complete, the phase is under way; only the ABSENCE of a note means
+ * nothing is known, and that is the one reading that may say NOT STARTED.
+ * Three states, three readings, and no fourth to discover.
+ */
+function unboundPhaseEmoji(note: string | undefined): string {
+  if (note === undefined || note.trim() === "") return "⬜";
+  return noteDeclaresComplete(note) ? "✅" : "🔄";
+}
+
 function phaseEmoji(phase: Phase): string {
   if (phase.scs.length === 0) {
-    return phase.note?.toLowerCase().includes("complete") ? "✅" : "⬜";
+    return unboundPhaseEmoji(phase.note);
   }
   const done = phase.scs.filter(sc => sc.done).length;
   if (done === phase.scs.length) return "✅";
@@ -85,10 +157,22 @@ function phaseStatus(phase: Phase): string {
 function render(state: ProjectState): string {
   const lines: string[] = [];
 
-  // Find current phase
-  const current = state.phases.find(p => p.scs.length > 0 && p.scs.some(sc => !sc.done));
-  const openCount = current ? current.scs.filter(sc => !sc.done).length : 0;
-  const currentLabel = current ? `${current.name} — ${openCount} SCs open` : "All phases complete";
+  // The current phase is the first one `phaseEmoji` does not call complete.
+  //
+  // It used to be the first phase with an OPEN SC, which is a second notion
+  // of "complete" answering the same question as `phaseEmoji` — and a phase
+  // carrying no SCs at all, the shape every planning phase has before its
+  // criteria are bound, is invisible to it. So the document opened with
+  // "All phases complete" above a section reading "NOT STARTED" whose own
+  // note said 30 engineering items remained. One decider now, and the label
+  // falls back to the phase's status word when there are no SCs to count,
+  // because "0 SCs open" is exactly as misleading.
+  const current = state.phases.find(p => phaseEmoji(p) !== "✅");
+  const currentLabel = !current
+    ? "All phases complete"
+    : current.scs.length > 0
+      ? `${current.name} — ${current.scs.filter(sc => !sc.done).length} SCs open`
+      : `${current.name} — ${phaseStatus(current)}`;
 
   lines.push("# Project State");
   lines.push("");
@@ -102,8 +186,17 @@ function render(state: ProjectState): string {
     lines.push(`**Session ${state.session.number} (${state.session.date})** — ${state.session.summary}`);
     lines.push("");
     lines.push(`Suite: ${state.session.suite}`);
-    if (state.session.issues_created) lines.push(`Issues opened: ${state.session.issues_created}`);
-    if (state.session.issues_closed) lines.push(`Issues closed: ${state.session.issues_closed}`);
+    // `!== null`, NOT truthiness. A truthy test re-decides "is there
+    // anything to show" here, which `issueList` has already decided, and two
+    // deciders agreeing means no case can tell them apart: with the empty
+    // guard removed, `issueList` returns `""` and the falsy test suppresses
+    // the line anyway, so the suppression reads as covered while the only
+    // thing holding it up is this line. Measured — a mutant that deleted the
+    // guard left the suite green.
+    const opened = issueList(state.session.issues_created);
+    const closed = issueList(state.session.issues_closed);
+    if (opened !== null) lines.push(`Issues opened: ${opened}`);
+    if (closed !== null) lines.push(`Issues closed: ${closed}`);
   }
 
   if (state.notes) lines.push(`\n${state.notes}`);

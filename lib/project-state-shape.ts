@@ -123,6 +123,36 @@ export function projectStateViolations(raw: unknown): string[] {
       for (const k of ["date", "summary", "suite"]) {
         if (typeof e[k] !== "string") out.push(`session.${k} is ${JSON.stringify(e[k])}, expected a string`);
       }
+      // The issue lists reach the renderer's formatter, which stringifies
+      // whatever it is handed: a bare string rendered as ONE garbled
+      // reference `#1675,1676,1680`, and a stray element as `#null` or
+      // `#[object Object]`.
+      //
+      // A string is refused rather than split. `parseDeclaredCloses` in
+      // `scripts/check-state-record-closes.ts` already parses this field and
+      // already splits strings; a splitter in the renderer too would be two
+      // deciders for one question, each invisible to any behavioural test of
+      // the other. One shape reaches the renderer; everything else is a
+      // refusal naming the path.
+      for (const k of ["issues_created", "issues_closed"]) {
+        if (!(k in e) || e[k] === undefined) continue;
+        const v = e[k];
+        if (!Array.isArray(v)) {
+          out.push(
+            `session.${k} is ${JSON.stringify(v)}, expected an array of issue numbers — ` +
+              `a comma-separated string renders as one garbled reference`,
+          );
+          continue;
+        }
+        v.forEach((item, i) => {
+          const n = typeof item === "number" ? item : Number(String(item).replace(/^#/, "").trim());
+          if (typeof item === "object" || !Number.isInteger(n) || n <= 0) {
+            out.push(
+              `session.${k}[${i}] is ${JSON.stringify(item)}, expected an issue number`,
+            );
+          }
+        });
+      }
     }
   }
 
