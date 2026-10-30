@@ -303,8 +303,16 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     // Written as a case rather than only as a reply because the premise was
     // asserted about a renderer, and on #1671 accepting exactly that kind of
     // unmeasured premise introduced a real bypass.
+    const TWO = String.fromCharCode(92, 92);
+    expect(TWO.length, "the fixture does not hold two backslashes").toBe(2);
     const r = parseDecompositionPlan(
-      plan("| CRC-C2 | ends in backslash\\| lib/a.ts | Phase 3 | — |"),
+      // The fixture proves its own premise before asserting anything. The
+      // first version wrote the backslashes as a TS escape and decoded to
+      // ONE at runtime, so it exercised the single-escape control under a
+      // title claiming two, and could not have told the implementation
+      // apart from a mutant that pairs backslashes. Caught by the AI review,
+      // which read the literal rather than the title.
+      plan(`| CRC-C2 | ends in backslash${TWO}| lib/a.ts | Phase 3 | — |`),
     );
     expect(r.reading).toBe("UNMEASURED");
     expect(r.rejected.map(x => x.why).join(" ")).toMatch(/only 4 cells, need 5/);
