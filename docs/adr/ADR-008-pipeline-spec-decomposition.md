@@ -56,13 +56,13 @@ measured on `origin/main` at `521d4661`, not inferred:
 SC-2606 and SC-2611 were written here as *present*, and they are not. The AI
 review of PR #1674 checked them and was right both times:
 
-```
-lib/spec-deps.ts:24       * chains adjacent members of that list. A spec whose placement table skips a
-lib/spec-placement.ts:302 * OVER-reports coverage's absence being fixed and never invents it.
-```
-
-One occurrence each, both inside a prose comment, neither a declared
-identifier. **The reading was taken with `grep` and reported as if it were a
+In `lib/spec-deps.ts` the only occurrence of `adjacent` is the sentence
+*"chains adjacent members of that list"*, in the module docblock. In
+`lib/spec-placement.ts` the only occurrence of `coverage` is *"OVER-reports
+coverage's absence being fixed and never invents it"*, in the docblock above
+`uncoveredByMilestone`. One occurrence each, both inside a prose comment,
+neither a declared identifier — `grep -n` for either name, and read what
+comes back. **The reading was taken with `grep` and reported as if it were a
 symbol table.** That is the failure the row below SC-2609 warns about,
 arriving one level earlier: not "a symbol present is not a behaviour proved"
 but a symbol that was never present at all.
