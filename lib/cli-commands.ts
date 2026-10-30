@@ -208,8 +208,10 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
   // `projectRootFlag` because the plan path resolves against the root.
   "plan-issues": {
     script: "scripts/plan-issues.ts",
-    summary: "Apply an approved issue repair plan — criteria links and milestone demotions",
-    usage: "rungate plan-issues --repair <plan.md> --repo <owner/name> [--write] [--json]",
+    summary:
+      "Apply an approved issue plan — --decompose creates issues from criteria (step 4), --repair links and demotes existing ones",
+    usage:
+      "rungate plan-issues (--repair | --decompose) <plan.md> --repo <owner/name> [--write] [--json]",
     projectRootFlag: true,
   },
   // Step 5 of ADR-003. `plan-spec` turns the placement table into milestones;
