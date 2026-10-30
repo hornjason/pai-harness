@@ -123,6 +123,67 @@ function cells(text: string): string[] {
     .filter(s => s !== "");
 }
 
+/**
+ * Every cycle in the plan's own blocking graph, each as the outcomes around it.
+ *
+ * The first version of this check tested `b === r.outcome` — a row blocked by
+ * ITSELF — because that was the case the review found. Two rows naming each
+ * other slipped straight through it: each names the OTHER row's real outcome,
+ * so neither is self-referential and both resolve, and `--write` created both
+ * issues and then wired each blocked by the other. Neither can ever start,
+ * which is the same harm, reached by two rows instead of one. Found by the AI
+ * review of this change.
+ *
+ * So the property is acyclicity and self-blocking is its N=1 member, rather
+ * than two checks that would have to be kept in agreement.
+ *
+ * `#<n>` blockers are not nodes. They name issues outside this plan, and
+ * whether the tracker's existing edges close a cycle is not a question this
+ * file can answer from a plan file.
+ */
+function blockingCycles(
+  rows: readonly DecompositionRow[],
+  byOutcome: ReadonlyMap<string, number>,
+): string[][] {
+  const blockers = new Map<string, string[]>();
+  for (const r of rows) {
+    blockers.set(
+      r.outcome,
+      r.blockedBy.filter(b => !/^#\d+$/.test(b) && byOutcome.has(b)),
+    );
+  }
+
+  const found: string[][] = [];
+  const reported = new Set<string>();
+  const done = new Set<string>();
+  const path: string[] = [];
+  const onPath = new Set<string>();
+
+  const walk = (node: string): void => {
+    path.push(node);
+    onPath.add(node);
+    for (const next of blockers.get(node) ?? []) {
+      if (onPath.has(next)) {
+        const cycle = path.slice(path.indexOf(next));
+        // One cycle is one finding however many nodes it is entered from.
+        const key = [...cycle].sort().join("\u0000");
+        if (!reported.has(key)) {
+          reported.add(key);
+          found.push(cycle);
+        }
+        continue;
+      }
+      if (!done.has(next)) walk(next);
+    }
+    onPath.delete(node);
+    path.pop();
+    done.add(node);
+  };
+
+  for (const r of rows) if (!done.has(r.outcome)) walk(r.outcome);
+  return found;
+}
+
 export function parseDecompositionPlan(content: string): DecompositionReading {
   const lines = content.split("\n");
   const start = lines.findIndex(l => HEADER.test(l));
@@ -233,21 +294,31 @@ export function parseDecompositionPlan(content: string): DecompositionReading {
   for (const r of rows) {
     for (const b of r.blockedBy) {
       if (/^#\d+$/.test(b)) continue;
-      // ANOTHER row, which the message below already said and the check did
-      // not: `byOutcome` holds every row including this one, so a row naming
-      // its own outcome passed. `--write` then resolved both ends of the edge
-      // to one freshly created number and called `addBlockedBy(n, n)` — an
-      // issue blocked by itself, which is never startable. Found by the AI
-      // review of this change.
-      if (b === r.outcome) {
-        reasons.push(`line ${r.line}: blocked by itself — an issue that blocks itself never starts`);
-        continue;
-      }
       if (byOutcome.has(b)) continue;
       reasons.push(
         `line ${r.line}: blocked by "${b}", which is neither #<issue> nor the outcome of another row`,
       );
     }
+  }
+
+  // Then cycles, over the edges that resolved above. A plan that creates a
+  // ring of issues each waiting on the next produces work that is on the
+  // board, correctly linked, and permanently unstartable — which is worse
+  // than work nobody filed, because "what is unblocked" silently skips it
+  // for ever. See `blockingCycles` for why self-blocking is a member of this
+  // family rather than a check of its own.
+  for (const cycle of blockingCycles(rows, byOutcome)) {
+    if (cycle.length === 1) {
+      reasons.push(
+        `line ${byOutcome.get(cycle[0])}: blocked by itself — an issue that blocks itself never starts`,
+      );
+      continue;
+    }
+    const chain = [...cycle, cycle[0]].map(o => `"${o}"`).join(" <- ");
+    reasons.push(
+      `lines ${cycle.map(o => byOutcome.get(o)).join(", ")}: a blocking CYCLE, ${chain} ` +
+        `(<- reads "is blocked by") — none of these issues could ever start`,
+    );
   }
 
   if (rejected.length > 0) {

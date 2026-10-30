@@ -163,6 +163,65 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     expect(r.unmeasuredReasons.join(" ")).toMatch(/blocked by itself/);
   });
 
+  test("TWO rows blocking each other are refused — the self-block case at N=2", () => {
+    // The self-block guard tested `b === r.outcome`, so a 2-cycle walked
+    // straight past it: each row names the OTHER row's real outcome, so
+    // neither is self-referential and both resolve. On --write that created
+    // both issues and wired each blocked by the other — the same permanently
+    // unstartable pair, reached by two rows. Found by the AI review of this
+    // change, after the N=1 fix.
+    const r = parseDecompositionPlan(
+      plan(
+        "| CRC-C2 | the first half of the work | lib/a.ts | — | the second half of the work |",
+        "| CRC-C2 | the second half of the work | lib/b.ts | — | the first half of the work |",
+      ),
+    );
+    expect(r.reading).toBe("UNMEASURED");
+    expect(r.unmeasuredReasons.join(" ")).toMatch(/blocking CYCLE/);
+  });
+
+  test("a THREE-row ring is refused too — the property is acyclicity, not pairs", () => {
+    const r = parseDecompositionPlan(
+      plan(
+        "| CRC-C2 | the first part of the work | lib/a.ts | — | the second part of the work |",
+        "| CRC-C2 | the second part of the work | lib/b.ts | — | the third part of the work |",
+        "| CRC-C2 | the third part of the work | lib/c.ts | — | the first part of the work |",
+      ),
+    );
+    expect(r.reading).toBe("UNMEASURED");
+    expect(r.unmeasuredReasons.join(" ")).toMatch(/blocking CYCLE/);
+  });
+
+  test("a three-row CHAIN is accepted — the control the two cases above need", () => {
+    // Same three rows, one edge reversed so the ring opens. Without this,
+    // a detector that refused every multi-row ordering would pass both
+    // cases above while making the whole feature unusable.
+    const r = parseDecompositionPlan(
+      plan(
+        "| CRC-C2 | the first part of the work | lib/a.ts | — | — |",
+        "| CRC-C2 | the second part of the work | lib/b.ts | — | the first part of the work |",
+        "| CRC-C2 | the third part of the work | lib/c.ts | — | the second part of the work |",
+      ),
+    );
+    expect(r.reading, r.unmeasuredReasons.join(" | ")).toBe("MEASURED");
+    expect(r.rows).toHaveLength(3);
+  });
+
+  test("a DIAMOND is accepted — two rows sharing a blocker is not a cycle", () => {
+    // The other way a cycle detector goes wrong: revisiting a node that is
+    // merely reachable twice, rather than one that is on the current path.
+    const r = parseDecompositionPlan(
+      plan(
+        "| CRC-C2 | the groundwork everything needs | lib/a.ts | — | — |",
+        "| CRC-C2 | the left branch of the work | lib/b.ts | — | the groundwork everything needs |",
+        "| CRC-C2 | the right branch of the work | lib/c.ts | — | the groundwork everything needs |",
+        "| CRC-C2 | the join at the end of it | lib/d.ts | — | the left branch of the work, the right branch of the work |",
+      ),
+    );
+    expect(r.reading, r.unmeasuredReasons.join(" | ")).toBe("MEASURED");
+    expect(r.rows).toHaveLength(4);
+  });
+
   test("a blocker naming neither #<n> nor another row is refused, never dropped", () => {
     const r = parseDecompositionPlan(
       plan("| CRC-C2 | an outcome long enough to pass | lib/a.ts | — | some work elsewhere |"),
