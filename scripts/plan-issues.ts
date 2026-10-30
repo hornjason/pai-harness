@@ -190,11 +190,38 @@ const LIVE_DECOMPOSE: DecomposeGitHub = {
     }
     return map;
   },
+  /**
+   * Every milestone, PAGINATED, for a worse reason than `openTitles` above.
+   *
+   * A first page of 100 is not a reading of the milestones that exist; it is
+   * a reading of the first hundred. A milestone on page two then reads as
+   * ABSENT, and `planDecomposition` refuses the plan telling you to run
+   * `plan-spec` so the placement table creates it — so the remedy the
+   * message names is "create a milestone that already exists". A refusal is
+   * the safe DIRECTION and this one still hands you a duplicate.
+   *
+   * Found by the AI review of this change, as the sibling of `openTitles`:
+   * the first fix left the second site, which is the shape
+   * `.claude/rules/checks-must-be-able-to-fail.md` calls out as only
+   * catchable by asserting the property across sites.
+   */
   milestones: async repo => {
-    const rows = JSON.parse(gh(["api", `repos/${repo}/milestones?state=all&per_page=100`])) as {
-      title: string;
-    }[];
-    return new Set(rows.map(m => m.title));
+    const out = gh([
+      "api",
+      "--paginate",
+      `repos/${repo}/milestones?state=all&per_page=100`,
+      "--jq",
+      // `@json` and not a bare `.title`, for the same reason `openTitles`
+      // uses it: a title containing a newline would otherwise arrive as two
+      // milestones, neither of which exists.
+      ".[] | [.title] | @json",
+    ]);
+    const titles = new Set<string>();
+    for (const line of out.split("\n")) {
+      if (line.trim() === "") continue;
+      titles.add((JSON.parse(line) as [string])[0]);
+    }
+    return titles;
   },
   create: async (repo, issue) => {
     const args = ["issue", "create", "--repo", repo, "--title", issue.title, "--body-file", "-"];
