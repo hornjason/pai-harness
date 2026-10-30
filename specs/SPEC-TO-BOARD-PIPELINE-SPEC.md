@@ -92,6 +92,7 @@ something to name — which is the whole argument of this spec.
 - [ ] SC-2611: lib/spec-placement.ts contains [coverage] — a spec with no Phase placement table is REPORTED as unplanned rather than contributing nothing; 1 of 26 specs had one on 2026-10-29, and the other 25 were indistinguishable from specs with no work left
 - [ ] SC-2612: lib/finding-promotion.ts contains [promote] — a review finding that names real work becomes a criterion in a spec, so the backlog stops accumulating issues that serve none; 22 open issues carried no criterion on 2026-10-29 and 20 of them were labelled follow-up or external-audit
 - [ ] SC-2613: lib/github.ts contains [filingGate] — `createIssue` is adjudicated by the filing cap, so a tool that creates issues is metered the way a `gh issue create` in a Bash command already is
+- [ ] SC-2614: lib/finding-arbiter.ts contains [STALE_CITATION] — a finding whose quoted source does not appear in the tree the review ran on is reported STALE rather than adjudicated as live, because a finding and its own staleness are indistinguishable to the person answering it; on PR #1672 round 4, two findings from ONE run at ONE head SHA disagreed about whether the milestone read was paginated, the one that said it was not quoted source the reviewed commit had deleted, and the sibling that said it was cited a file containing zero matches for either fetcher
 
 ### Phase placement — every criterion has exactly one home
 
@@ -106,7 +107,7 @@ is built from this document.
 | **Phase 2** | SC-2606, SC-2607 |
 | **Phase 3** | SC-2608, SC-2609, SC-2610 |
 | **Phase 4** | SC-2611 |
-| **Phase 5** | SC-2612, SC-2613 |
+| **Phase 5** | SC-2612, SC-2613, SC-2614 |
 
 ### Phase 0 — the transform refuses
 
