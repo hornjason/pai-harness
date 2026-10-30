@@ -33,7 +33,7 @@
  */
 import { readdirSync, readFileSync } from "fs";
 import { join, relative, sep } from "path";
-import { idAsLiteral, oneScMentionPattern } from "./sc-ids";
+import { idBoundedPattern, oneScMentionPattern } from "./sc-ids";
 import { parseCriteria } from "./spec-evidence";
 
 /** One spec, and the criterion ids it states. */
@@ -210,7 +210,7 @@ export function mirrorText(criteria: readonly string[]): string {
  * task checkbox.
  */
 export function declaresOwnCriterion(text: string, id: string): boolean {
-  return new RegExp(`^[ \\t]*[-*][ \\t]*\\[[ xX]\\][ \\t]*${idAsLiteral(id)}\\b`, "m").test(text);
+  return idBoundedPattern("^[ \\t]*[-*][ \\t]*\\[[ xX]\\][ \\t]*", id, "m").test(text);
 }
 
 /**

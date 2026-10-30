@@ -284,6 +284,26 @@ describe("SC-2610: every spec contributes, not the one on the command line", () 
     expect(criteriaNamedBy({ title: "x", body: text }, [id]), "a declaration counted").toEqual([]);
   });
 
+  /**
+   * The other half of matching an id, and the one `\b` gets wrong.
+   *
+   * `\b` fires on a word-to-non-word transition, so a trailing hyphen counts
+   * as a boundary and `SC-1` matches the front of `SC-1-draft`. That is #148,
+   * and `declaresOwnCriterion` reintroduced it one round after the escaping
+   * half was fixed — found by the AI review of #1679. Both sites now close
+   * the id through `idBoundedPattern`, so this asserts the property at both.
+   */
+  test("an id does not match the front of a LONGER id, at either site", () => {
+    const longer = "- [ ] SC-1-draft — a different criterion entirely\n";
+    expect(declaresOwnCriterion(longer, "SC-1"), "SC-1 matched inside SC-1-draft").toBe(false);
+    expect(declaresOwnCriterion(longer, "SC-1-draft"), "the real id stopped matching").toBe(true);
+    // The digit case #148 was originally about, at the same site.
+    expect(declaresOwnCriterion("- [ ] SC-15 — another\n", "SC-1")).toBe(false);
+    // And the sibling, on the same inputs, so the two cannot drift apart.
+    expect(criteriaNamedBy({ title: "x", body: "serves SC-1-draft" }, ["SC-1"])).toEqual([]);
+    expect(criteriaNamedBy({ title: "x", body: "serves SC-15" }, ["SC-1"])).toEqual([]);
+  });
+
   test("the excluded file exists, states criteria, and leaves the sweep", () => {
     const root = join(import.meta.dir, "..");
     expect(NOT_A_SPEC).toEqual(["specs/SPEC-TEMPLATE.md"]);
