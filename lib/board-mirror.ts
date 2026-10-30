@@ -92,7 +92,7 @@ export function specCriteriaIn(root: string): SpecSweep {
   try {
     files = readdirSync(dir, { recursive: true, withFileTypes: true })
       .filter(e => e.isFile() && e.name.endsWith(".md"))
-      .map(e => relative(root, join(e.parentPath ?? dir, e.name)).split(sep).join("/"))
+      .map(e => relative(root, join(e.parentPath ?? e.path ?? dir, e.name)).split(sep).join("/"))
       .filter(p => !(NOT_A_SPEC as readonly string[]).includes(p))
       .sort();
   } catch (e) {
