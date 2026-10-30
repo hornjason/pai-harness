@@ -98,6 +98,12 @@
       "from": 2600,
       "to": 2629,
       "note": "The spec-to-board pipeline spec (SPEC-TO-BOARD-PIPELINE-SPEC.md). The highest SC in specs/ on main was 2581 and the highest declared block ended at 2599, so this sits above both. SC-2600..2614 are consumed; 2615..2629 are free. Delete when the PR merges."
+    },
+    {
+      "owner": "rg/codify-engine-goal",
+      "from": 2630,
+      "to": 2649,
+      "note": "ADR-009 - the engine goal codified: board-state criteria, the no-hand rule, the conformance command, behavioural form. SC-2614 is the highest id on main and rg/pipeline-spec declares 2600-2629, so this sits above every declared block AND above every consumed id, which is what the allocator hands an owner who has none. Declared before any id is consumed. Cannot be pushed to main ahead of the branch (main requires the test and ai-review checks), so it reaches main through this PR. Delete when the PR merges."
     }
   ]
 }

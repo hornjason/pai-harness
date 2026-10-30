@@ -45,6 +45,11 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
    out of that PR's scope *and* somebody will act on it. Watch issues opened
    against issues closed: above 1 the backlog diverges however fast the work
    goes. A swarm once ran at three-to-one.
+8. **Three attempts on a blocker, then change method** — research it, ask for
+   a second opinion, find another route. Bounded, not a rabbit hole. Only if
+   that comes back empty is it logged as a blocker and left for the next
+   unblocked item. Abandoning on the third try throws away the problems that
+   were one search away from solved. Jason's call, 2026-10-30.
 
 ## Rules
 
