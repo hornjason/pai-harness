@@ -251,6 +251,64 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     expect(r.rows[0].files).toEqual(["lib/a.ts", "lib/b.ts"]);
   });
 
+  test("a row that omits its LEADING pipe is read, as GFM reads it", () => {
+    // `startsWith("|")` broke the scan here, dropping this row and every
+    // row after it with no `rejected` entry. MEASURED, POST /markdown
+    // mode=gfm, 2026-10-30: all three rows render.
+    const r = parseDecompositionPlan(
+      plan(
+        "| CRC-C2 | the first row of the plan | lib/a.ts | — | — |",
+        "CRC-C3 | no leading pipe at all | lib/b.ts | — | — |",
+        "| CRC-C4 | the third row of the plan | lib/c.ts | — | — |",
+      ),
+    );
+    expect(r.reading, r.unmeasuredReasons.join(" | ")).toBe("MEASURED");
+    expect(r.rows.map(x => x.criterion)).toEqual(["CRC-C2", "CRC-C3", "CRC-C4"]);
+  });
+
+  test("a row that omits its TRAILING pipe keeps its last cell", () => {
+    // `slice(1, -1)` assumed both boundary pipes were present and ate the
+    // real last cell of any row missing one.
+    const r = parseDecompositionPlan(
+      plan("| CRC-C2 | an outcome long enough to pass | lib/a.ts | — | #999"),
+    );
+    expect(r.reading, r.unmeasuredReasons.join(" | ")).toBe("MEASURED");
+    expect(r.rows[0].blockedBy, "the author's ordering was silently dropped").toEqual(["#999"]);
+  });
+
+  test("SIX values and no trailing pipe is REFUSED, not quietly trimmed to five", () => {
+    // The shape round 10 reported and I declined on the grounds that GFM
+    // truncates the same way. The decline was wrong in the direction that
+    // matters: the renderer dropping a value the author wrote does not make
+    // it acceptable for the tool to create the issue without it. Six cells
+    // now reach the count check and are refused by name.
+    const r = parseDecompositionPlan(
+      plan("| CRC-C2 | an outcome long enough to pass | lib/a.ts | — | — | #999"),
+    );
+    expect(r.reading).toBe("UNMEASURED");
+    expect(r.rejected.map(x => x.why).join(" ")).toMatch(/6 cells, need 5/);
+  });
+
+  test("a BLANK line ends the table — the control for reading past the rows", () => {
+    // The scan no longer stops at the first line without a leading pipe, so
+    // something must still end it. Without this, prose under the table would
+    // be read as rows and the whole plan refused.
+    const r = parseDecompositionPlan(
+      [
+        "# A plan somebody reviewed",
+        "",
+        "| Criterion | Outcome | Files | Milestone | Blocked by |",
+        "|---|---|---|---|---|",
+        "| CRC-C2 | the only row of the plan | lib/a.ts | — | — |",
+        "",
+        "Some prose explaining why this is one issue and not two.",
+        "",
+      ].join("\n"),
+    );
+    expect(r.reading, r.unmeasuredReasons.join(" | ")).toBe("MEASURED");
+    expect(r.rows).toHaveLength(1);
+  });
+
   test("a row indented up to THREE spaces is read, as GFM reads it", () => {
     // `!line.startsWith("|")` ended the scan on a row the renderer shows,
     // with no `rejected` entry — dropping it AND every row after it. A

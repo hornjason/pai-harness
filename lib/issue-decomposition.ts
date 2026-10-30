@@ -110,7 +110,20 @@ function rowCells(line: string): string[] {
     cur += line[i];
   }
   out.push(cur);
-  return out.slice(1, -1).map(s => s.trim());
+
+  // GFM's leading and trailing delimiters are BOTH optional, and measured on
+  // 2026-10-30 a row missing either still renders as a full row:
+  //
+  //   CRC-C3 | no leading pipe | lib/b.ts | Phase 3 | — |   -> 5 cells
+  //   | CRC-C3 | no trailing pipe | lib/b.ts | Phase 3 | —   -> 5 cells
+  //
+  // `slice(1, -1)` assumed both were present, so it ate a real cell from any
+  // row that omitted one — a five-cell row with the author's `Blocked by`
+  // quietly gone, reported MEASURED. Dropping a boundary part only when it
+  // is BLANK is the same rule the renderer applies.
+  if (out.length > 0 && out[0].trim() === "") out.shift();
+  if (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+  return out.map(s => s.trim());
 }
 
 /**
@@ -237,7 +250,14 @@ export function parseDecompositionPlan(content: string): DecompositionReading {
       width += lines[i][pos] === "\t" ? 4 : 1;
     }
     const line = lines[i].slice(pos);
-    if (width >= 4 || !line.startsWith("|")) break;
+    // A table ends at a blank line or an indented code block — NOT at a row
+    // that omits its leading pipe, which GFM renders as a full row and the
+    // old `startsWith("|")` dropped silently along with every row after it.
+    // Measured 2026-10-30: all three rows render when the middle one has no
+    // leading pipe. Anything else non-blank is now READ and refused on its
+    // cell count, because a loud refusal is recoverable and a silent drop is
+    // the failure this module exists to prevent.
+    if (width >= 4 || line.trim() === "") break;
     if (/^\|[\s|:-]+\|$/.test(line)) continue;
     const c = rowCells(line);
     const at = i + 1;
