@@ -40,10 +40,17 @@ interface CurrentSession {
   // The DA has always written these as arrays of issue numbers. They were
   // declared `string`, and `render` interpolated them, so the document
   // carried `1675,1676` through Array.prototype.toString where every other
-  // issue reference in it reads `#1675`. The union keeps the declared type
-  // honest about both shapes rather than renaming the fact.
-  issues_created?: readonly (number | string)[] | string;
-  issues_closed?: readonly (number | string)[] | string;
+  // issue reference in it reads `#1675`.
+  //
+  // ARRAY ONLY, and that is the narrower choice on purpose. A `| string`
+  // union would oblige this file to split a comma-separated value, and
+  // `parseDeclaredCloses` in `scripts/check-state-record-closes.ts` already
+  // splits this exact field — two deciders for one question, each invisible
+  // to any behavioural test of the other. `projectStateViolations` refuses
+  // the string shape by name before the renderer sees it, so there is one
+  // shape here and a clear message for every other.
+  issues_created?: readonly (number | string)[];
+  issues_closed?: readonly (number | string)[];
 }
 
 /**
@@ -58,7 +65,7 @@ interface CurrentSession {
  */
 function issueList(v: CurrentSession["issues_created"]): string | null {
   if (v === undefined) return null;
-  const items = (Array.isArray(v) ? v : [v]).map(String).filter(s => s.trim() !== "");
+  const items = v.map(String).filter(s => s.trim() !== "");
   if (items.length === 0) return null;
   return items.map(s => (s.startsWith("#") ? s : `#${s}`)).join(", ");
 }

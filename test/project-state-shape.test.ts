@@ -162,6 +162,51 @@ describe("#project-state: the shape is checked before the renderer reads it", ()
     doc.sessions[0].items = ["ok", 42];
     expect(projectStateViolations(doc).join("\n")).toContain("sessions[0].items[1]");
   });
+
+  /**
+   * `issues_created` / `issues_closed` reach the renderer's issue-list
+   * formatter, which stringifies whatever it is handed. Every shape below
+   * rendered silently into the handoff document rather than being refused:
+   * a bare string produced one garbled reference `#1675,1676,1680`, and a
+   * stray element produced `#null` or `#[object Object]`.
+   *
+   * Refusing the string here rather than teaching the renderer to split it
+   * is deliberate. `parseDeclaredCloses` in
+   * `scripts/check-state-record-closes.ts` ALREADY parses this field and
+   * already splits strings; a second splitter in the renderer would be two
+   * deciders for one question, which is the defect that cost this session
+   * its night. One shape reaches the renderer, and anything else is a
+   * refusal naming the path. Raised by the AI review of #1684.
+   */
+  test("an issue list that is not an array of issue numbers is caught", () => {
+    for (const [value, expected] of [
+      ["1675,1676", "session.issues_created"],
+      [null, "session.issues_created"],
+      [[1675, null], "session.issues_created[1]"],
+      [[1675, { n: 1 }], "session.issues_created[1]"],
+      [[1675, "not-a-number"], "session.issues_created[1]"],
+    ] as [unknown, string][]) {
+      const doc = good() as any;
+      doc.session = { number: 1, date: "d", summary: "s", suite: "t", issues_created: value };
+      expect(
+        projectStateViolations(doc).join("\n"),
+        `${JSON.stringify(value)} was accepted`,
+      ).toContain(expected);
+    }
+  });
+
+  /**
+   * The negative control. Without it, "refuse an issue list" is satisfiable
+   * by refusing every issue list, and the field becomes unusable.
+   */
+  test("the shapes the DA actually writes are accepted", () => {
+    for (const value of [undefined, [], [1675, 1676], ["#1675", "1676"]]) {
+      const doc = good() as any;
+      doc.session = { number: 1, date: "d", summary: "s", suite: "t" };
+      if (value !== undefined) doc.session.issues_closed = value;
+      expect(projectStateViolations(doc), JSON.stringify(value)).toEqual([]);
+    }
+  });
 });
 
 describe("#project-state: the script refuses rather than crashing", () => {
