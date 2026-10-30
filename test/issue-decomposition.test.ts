@@ -797,6 +797,30 @@ describe("scripts/plan-issues --decompose: what reaches GitHub", () => {
     expect(calls).toEqual([]);
   });
 
+  test("a tracker read that THROWS refuses cleanly, it does not crash the command", async () => {
+    // These two were the only api.* calls in decompose() with no try/catch,
+    // so a rate limit propagated as a stack out of main(). A command that
+    // crashes and a command that refuses are different facts, and only one
+    // of them tells the operator what to do next. Found by the AI review.
+    const calls: string[] = [];
+    const api: DecomposeGitHub = {
+      openTitles: async () => {
+        throw new Error("API rate limit exceeded");
+      },
+      milestones: async () => new Set(["Phase 3"]),
+      blockedBy: async () => [],
+      create: async () => {
+        calls.push("create");
+        return 1;
+      },
+      addBlockedBy: async () => {
+        calls.push("edge");
+      },
+    };
+    expect(await run([GOOD], api, ["--write"])).toBe(REFUSAL_EXIT);
+    expect(calls, "something was written after the tracker read failed").toEqual([]);
+  });
+
   test("a milestone that does not exist refuses BEFORE creating anything", async () => {
     // The order matters: refusing after creating half the plan leaves a
     // tracker nobody planned and a command that reports failure.

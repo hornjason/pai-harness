@@ -293,7 +293,23 @@ async function decompose(
     return REFUSAL_EXIT;
   }
 
-  const live = { openTitles: await api.openTitles(repo), milestones: await api.milestones(repo) };
+  // The two pre-flight reads were the only `api.*` calls in this function
+  // with no try/catch, so a rate limit or a network blip left `decompose()`
+  // throwing a stack out of `main()` instead of reporting UNMEASURED the way
+  // every other refusal here does. A command that crashes and a command that
+  // refuses are different facts, and only one of them says what to do next.
+  // Found by the AI review of this change.
+  let live;
+  try {
+    live = { openTitles: await api.openTitles(repo), milestones: await api.milestones(repo) };
+  } catch (e) {
+    console.error(
+      `plan-issues: UNMEASURED — could not read the tracker, so the plan was not applied:\n` +
+        `  - ${(e as Error).message}\n` +
+        `  Nothing was created. Re-run when the read succeeds.`,
+    );
+    return REFUSAL_EXIT;
+  }
   const planned = planDecomposition(reading.rows, live, planPath, CRITERIA_HEADING);
   if (planned.reading === "UNMEASURED") {
     console.error(`plan-issues: UNMEASURED — the plan does not fit the tracker:`);
