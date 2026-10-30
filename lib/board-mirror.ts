@@ -140,6 +140,29 @@ export type SpecDirReader = (dir: string) => readonly SpecDirEntry[];
 export const readSpecDir: SpecDirReader = dir =>
   readdirSync(dir, { recursive: true, withFileTypes: true });
 
+/**
+ * THE one way out of `specCriteriaIn` without a reading.
+ *
+ * A refusal must carry nothing read. A populated `ids` beside
+ * `reading: "UNMEASURED"` is the partial result the refusal exists to
+ * prevent, handed back quietly for any caller that checks the array before
+ * it checks the reading.
+ *
+ * It is a function rather than three careful `return`s because three
+ * careful `return`s is what this function had, and the third one leaked.
+ * Each of the first two was written, reviewed and fixed on its own; the one
+ * nobody was looking at kept its partial `specs` and `ids` — and no
+ * behavioural test of either fixed branch could see it, because they are
+ * separate branches answering the same question (*two deciders that agree*,
+ * at N=3, `.claude/rules/checks-must-be-able-to-fail.md`). So the property
+ * is asserted across the SITES: `test/board-mirror.test.ts` requires the
+ * `UNMEASURED` literal to appear exactly once in this file. A fourth branch
+ * cannot leak, because a fourth branch cannot spell the reading itself.
+ */
+function unmeasuredSweep(reasons: string[]): SpecSweep {
+  return { reading: "UNMEASURED", specs: [], ids: [], collisions: [], unmeasuredReasons: reasons };
+}
+
 export function specCriteriaIn(root: string, readDir: SpecDirReader = readSpecDir): SpecSweep {
   const dir = join(root, "specs");
   let files: string[];
@@ -159,17 +182,11 @@ export function specCriteriaIn(root: string, readDir: SpecDirReader = readSpecDi
     // not a sweep with fewer specs in it.
     const unlocatable = unlocatableEntries(entries);
     if (unlocatable.length > 0) {
-      return {
-        reading: "UNMEASURED",
-        specs: [],
-        ids: [],
-        collisions: [],
-        unmeasuredReasons: [
-          `this runtime does not report Dirent.parentPath, so ${unlocatable.length} spec file(s) ` +
-            `under ${dir} cannot be located — a nested spec would be read as a top-level one. ` +
-            `Nothing was read: ${unlocatable.map(e => e.name).sort().join(", ")}`,
-        ],
-      };
+      return unmeasuredSweep([
+        `this runtime does not report Dirent.parentPath, so ${unlocatable.length} spec file(s) ` +
+          `under ${dir} cannot be located — a nested spec would be read as a top-level one. ` +
+          `Nothing was read: ${unlocatable.map(e => e.name).sort().join(", ")}`,
+      ]);
     }
     // `as string` rather than a second `typeof e.parentPath === "string"`:
     // the refusal above already decided that question for every entry here,
@@ -180,13 +197,7 @@ export function specCriteriaIn(root: string, readDir: SpecDirReader = readSpecDi
       .filter(p => !(NOT_A_SPEC as readonly string[]).includes(p))
       .sort();
   } catch (e) {
-    return {
-      reading: "UNMEASURED",
-      specs: [],
-      ids: [],
-      collisions: [],
-      unmeasuredReasons: [`could not read ${dir}: ${(e as Error).message}`],
-    };
+    return unmeasuredSweep([`could not read ${dir}: ${(e as Error).message}`]);
   }
 
   const specs: SpecCriteria[] = [];
@@ -240,13 +251,17 @@ export function specCriteriaIn(root: string, readDir: SpecDirReader = readSpecDi
           `attributed to a single one: ${collisions.map(c => `${c.id} (${c.specs.join(", ")})`).join("; ")}`,
     );
   }
-  return {
-    reading: reasons.length > 0 ? "UNMEASURED" : "MEASURED",
-    specs,
-    ids,
-    collisions,
-    unmeasuredReasons: reasons,
-  };
+  // The third branch, and the one that leaked. A spec `readdirSync` listed
+  // and `readFileSync` could not open — a permission bit, a race with a
+  // delete — pushed a reason and carried on, so the sweep returned
+  // UNMEASURED with the OTHER specs' ids still in it. The caller refuses on
+  // the reading before it touches the array, so nothing was wrong today;
+  // what was wrong is that the exported contract contradicted itself and the
+  // next caller to read `ids` first would get a short list that looks whole.
+  // Raised by the AI review of #1679, one round after the two branches above
+  // were each fixed on their own.
+  if (reasons.length > 0) return unmeasuredSweep(reasons);
+  return { reading: "MEASURED", specs, ids, collisions, unmeasuredReasons: [] };
 }
 
 /** What the board is told about one issue. */

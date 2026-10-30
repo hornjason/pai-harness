@@ -298,6 +298,65 @@ describe("SC-2610: every spec contributes, not the one on the command line", () 
   });
 
   /**
+   * The THIRD refusal — a spec the listing can see and `readFileSync`
+   * cannot open — and the property that stops there being a fourth.
+   *
+   * The two branches above were each written, reviewed and fixed on their
+   * own round. This one pushed a reason, carried on, and returned
+   * `reading: "UNMEASURED"` with the other specs' `ids` and `specs` still in
+   * it: a short list that looks whole to any caller reading the array before
+   * the reading. No behavioural test of either fixed branch could see it —
+   * three branches answering one question is *two deciders that agree* at
+   * N=3, and a behavioural suite catches only the last one to regress. So
+   * the second half of this case asserts the property across the SITES.
+   * Raised by the AI review of #1679.
+   */
+  test("a spec that cannot be opened refuses with nothing in it, and no branch spells the reading", () => {
+    const root = tree({ "A-SPEC.md": spec("SC-10") });
+    const at = join(root, "specs");
+    // A file the listing reports and the disk does not have — the race with
+    // a delete, deterministically, without chmod (which does nothing when
+    // the suite runs as root).
+    const listing = (withGhost: boolean) => [
+      { name: "A-SPEC.md", parentPath: at, isFile: () => true },
+      ...(withGhost ? [{ name: "GHOST.md", parentPath: at, isFile: () => true }] : []),
+    ];
+    try {
+      const ok = specCriteriaIn(root, () => listing(false));
+      expect(ok.reading, "the control cannot reach a real read").toBe("MEASURED");
+      expect(ok.ids).toEqual(["SC-10"]);
+
+      const r = specCriteriaIn(root, () => listing(true));
+      expect(r.reading).toBe("UNMEASURED");
+      expect(r.ids, "the refusal handed back the specs it DID read").toEqual([]);
+      expect(r.specs).toEqual([]);
+      expect(r.collisions).toEqual([]);
+      expect(r.unmeasuredReasons.length).toBe(1);
+      expect(r.unmeasuredReasons[0]).toContain("could not read specs/GHOST.md");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    // The cross-site property. `unmeasuredSweep` is the only thing allowed to
+    // name the reading, so a branch added later cannot leak a partial result
+    // however carelessly it is written — it has no way to say UNMEASURED.
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "board-mirror.ts"), "utf-8");
+    const from = src.indexOf("export function specCriteriaIn(");
+    const to = src.indexOf("/** What the board is told about one issue. */", from);
+    expect(from, "specCriteriaIn was renamed, so this scan examines nothing").toBeGreaterThan(-1);
+    expect(to, "the slice overran past the function it meant to read").toBeGreaterThan(from);
+    const body = src.slice(from, to);
+    // The premise: the slice really is the sweep, and it really does hold the
+    // branches. Without this the assertion below passes on an empty string.
+    expect(body).toContain("readDir(dir)");
+    expect(body.split("return unmeasuredSweep(").length - 1).toBe(3);
+    expect(
+      body.split('"UNMEASURED"').length - 1,
+      "a branch of specCriteriaIn spells the reading itself, so it can return one with data in it",
+    ).toBe(0);
+  });
+
+  /**
    * Both readers of a spec, agreeing by construction rather than by having
    * been fixed twice.
    *
