@@ -357,6 +357,64 @@ describe("SC-2610: every spec contributes, not the one on the command line", () 
   });
 
   /**
+   * Every place in the tree that documents `--spec`, swept together.
+   *
+   * Making the flag optional in `scripts/board-mirror.ts` left two siblings
+   * describing the old contract: the command registry spelled `--spec`
+   * unbracketed, so a reader of `rungate --help` believes it is required,
+   * and `plan-issues` PRINTED a follow-up command combining `--spec` with
+   * `--write` — handing the reader SC-2610 as advice. Both are the fix this
+   * PR makes, restated where the fix did not reach.
+   *
+   * The AI review raised them on ten consecutive rounds and each round found
+   * them unswept, because each round's answer was to look again at the file
+   * that was already right. The repo's own rule is the other way round: on
+   * replacing one name, sweep for the others
+   * (`.claude/rules/checks-must-be-able-to-fail.md`, *two deciders that
+   * agree*). So this is the sweep, as an assertion.
+   */
+  test("every site documenting board-mirror --spec says the same thing about it", () => {
+    const root = join(import.meta.dir, "..");
+    const read = (p: string) => readFileSync(join(root, p), "utf-8");
+
+    // The strongest form: the two documented contracts must AGREE, byte for
+    // byte. Drift in either one is what shipped.
+    // Found by its declaration, never by line number — a line index dates a
+    // revision and this file has already moved under one citation tonight.
+    const usageLine = read("scripts/board-mirror.ts")
+      .split("\n")
+      .find(l => l.startsWith("const USAGE = `"))!
+      .replace("const USAGE = `", "");
+    const registry = read("lib/cli-commands.ts")
+      .split("\n")
+      .find(l => l.includes("rungate board-mirror --project"))!;
+    expect(usageLine, "scripts/board-mirror.ts USAGE moved; this scan read the wrong line").toContain(
+      "rungate board-mirror --project",
+    );
+    expect(registry.includes(usageLine), `the registry and USAGE disagree:\n  ${registry.trim()}\n  ${usageLine}`).toBe(true);
+
+    // And the sweep, so a THIRD site added later cannot drift quietly. A
+    // bracketed `--spec` is documentation that it is optional; a bare one is
+    // either a command somebody will run or a flag they will believe
+    // mandatory, and both reintroduce SC-2610.
+    const bare: string[] = [];
+    let population = 0;
+    for (const file of ["lib/cli-commands.ts", "scripts/board-mirror.ts", "scripts/plan-issues.ts"]) {
+      for (const line of read(file).split("\n")) {
+        if (!line.includes("board-mirror") || !line.includes("--spec")) continue;
+        population++;
+        if (!line.includes("[--spec")) bare.push(`${file}: ${line.trim()}`);
+      }
+    }
+    // The control. Without it a rename of the command empties the population
+    // and this passes having examined nothing.
+    expect(population, "no site mentions board-mirror and --spec, so this scan proves nothing").toBeGreaterThanOrEqual(
+      2,
+    );
+    expect(bare, "a site spells --spec as required, or passes it to a write").toEqual([]);
+  });
+
+  /**
    * Both readers of a spec, agreeing by construction rather than by having
    * been fixed twice.
    *

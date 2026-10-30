@@ -642,7 +642,10 @@ export async function main(
     `\n  Then re-run both, in this order — a demotion changes the phase sizes and\n` +
       `  the board column is a mirror of the body, not a second source:\n` +
       `    rungate plan-deps --repo ${repo} --write\n` +
-      `    rungate board-mirror --project <id> --spec <spec> --ready --write`,
+      // NO `--spec`. Narrowing the sweep while WRITING blanks the Criteria
+      // cell of every issue serving any other spec — SC-2610 — so a printed
+      // command carrying it hands the reader the defect as advice.
+      `    rungate board-mirror --project <id> --ready --write`,
   );
   if (failed.length > 0 || refusedRows.length > 0) {
     console.error(
