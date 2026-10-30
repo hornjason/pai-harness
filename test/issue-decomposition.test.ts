@@ -222,6 +222,35 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     expect(r.rows).toHaveLength(4);
   });
 
+  test("an outcome with an INLINE backtick can still be referenced", () => {
+    // Two normalisations: the outcome stripped every backtick and a cell
+    // entry stripped only boundary ones. They agree on everything except a
+    // title naming a function — which is most titles — so a blocked-by
+    // quoting the row character for character missed, and the plan was
+    // refused about a row that was right there. Found by the AI review.
+    const r = parseDecompositionPlan(
+      plan(
+        "| CRC-C2 | add bounds check to `cells()` | lib/a.ts | — | — |",
+        "| CRC-C2 | the work that comes after it | lib/b.ts | — | add bounds check to `cells()` |",
+      ),
+    );
+    expect(r.reading, r.unmeasuredReasons.join(" | ")).toBe("MEASURED");
+    expect(r.rows[0].outcome).toBe("add bounds check to cells()");
+    expect(r.rows[1].blockedBy).toEqual(["add bounds check to cells()"]);
+  });
+
+  test("ONE normalisation, not two that agree on most inputs", () => {
+    // The control for the case above. Both sides must land on the same
+    // string for a value where a boundary-only strip and an all-strip give
+    // different answers — asserting the agreement, not just one output.
+    const r = parseDecompositionPlan(
+      plan("| CRC-C2 | wraps `a` and `b` tightly | `lib/a.ts`, lib/`b`.ts | — | — |"),
+    );
+    expect(r.reading, r.unmeasuredReasons.join(" | ")).toBe("MEASURED");
+    expect(r.rows[0].outcome).toBe("wraps a and b tightly");
+    expect(r.rows[0].files).toEqual(["lib/a.ts", "lib/b.ts"]);
+  });
+
   test("a blocker naming neither #<n> nor another row is refused, never dropped", () => {
     const r = parseDecompositionPlan(
       plan("| CRC-C2 | an outcome long enough to pass | lib/a.ts | — | some work elsewhere |"),

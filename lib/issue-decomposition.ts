@@ -113,14 +113,32 @@ function rowCells(line: string): string[] {
   return out.slice(1, -1).map(s => s.trim());
 }
 
+/**
+ * The ONE normalisation every value this module compares passes through.
+ *
+ * There were two. An outcome was `replaceAll("`", "")` and a cell entry was
+ * `replace(/^`|`$/g, "")` — all backticks against boundary backticks — and
+ * they agree on every value except the one that matters: an outcome with an
+ * INLINE backtick, which is how anybody writes a title naming a function.
+ * "add bounds check to `cells()`" is stored as `add bounds check to cells()`
+ * and a blocked-by cell quoting it character for character normalised to
+ * "add bounds check to `cells()", so the reference missed and the plan was
+ * refused with "neither #<issue> nor the outcome of another row" about a
+ * row that was right there. Found by the AI review of this change.
+ *
+ * Two functions answering one question are behaviourally one function with
+ * a disagreement nobody can see — `.claude/rules/checks-must-be-able-to-fail.md`,
+ * the fourth shape. Hence one binding rather than two kept in step.
+ */
+function plain(text: string): string {
+  return text.replaceAll("`", "").trim();
+}
+
 /** Split a cell on commas, drop the empties. `—` and `-` both mean "none". */
 function cells(text: string): string[] {
   const t = text.trim();
   if (t === "" || t === "—" || t === "-") return [];
-  return t
-    .split(",")
-    .map(s => s.trim().replace(/^`|`$/g, ""))
-    .filter(s => s !== "");
+  return t.split(",").map(plain).filter(s => s !== "");
 }
 
 /**
@@ -232,7 +250,7 @@ export function parseDecompositionPlan(content: string): DecompositionReading {
       );
       continue;
     }
-    const outcome = c[1].replaceAll("`", "").trim();
+    const outcome = plain(c[1]);
     if (outcome.length < MIN_OUTCOME) {
       reject(`outcome "${outcome}" is ${outcome.length} characters — it becomes the issue title`);
       continue;
