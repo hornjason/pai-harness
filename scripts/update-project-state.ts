@@ -94,9 +94,31 @@ function scanSpecSCStatus(): Record<string, boolean> {
   return status;
 }
 
+/**
+ * Whether a phase with no SCs declares itself complete, read from the
+ * LEADING word of its note and nothing else.
+ *
+ * It used to be `note.includes("complete")`, and `"incomplete".includes(
+ * "complete")` is true — so `Status: incomplete, 9 of 56 criteria bound`
+ * rendered as COMPLETE, and once the headline was derived from the same
+ * reading it skipped the phase and printed "All phases complete" above a
+ * section describing unfinished work.
+ *
+ * Every note in this repository's state begins with its status word:
+ * `COMPLETE — 25 SCs`, `IN PROGRESS 2026-10-23`, `P0 PRIORITY`, `SHIPPED`.
+ * So the convention the data already follows is the one that is read.
+ * `completed` is NOT credited, and that is the direction this is allowed to
+ * be wrong in — an uncredited phase costs one word in a note, while the
+ * other direction puts a false headline on the document every session is
+ * told to read first.
+ */
+function noteDeclaresComplete(note: string | undefined): boolean {
+  return note?.trim().match(/^[A-Za-z]+/)?.[0]?.toLowerCase() === "complete";
+}
+
 function phaseEmoji(phase: Phase): string {
   if (phase.scs.length === 0) {
-    return phase.note?.toLowerCase().includes("complete") ? "✅" : "⬜";
+    return noteDeclaresComplete(phase.note) ? "✅" : "⬜";
   }
   const done = phase.scs.filter(sc => sc.done).length;
   if (done === phase.scs.length) return "✅";

@@ -198,6 +198,39 @@ describe("update-project-state", () => {
    * phases complete" is satisfiable by deleting the string, and the headline
    * would be wrong in the other direction on a genuinely finished project.
    */
+  /**
+   * `"incomplete".includes("complete")` is TRUE.
+   *
+   * An SC-less phase's status was inferred by testing whether its note
+   * contained the substring "complete" anywhere, so a note reading
+   * `Status: incomplete, 9 of 56 criteria bound` rendered `✅ (COMPLETE)` —
+   * and once the headline was derived from the same reading, it skipped the
+   * phase and printed "All phases complete" above a section describing
+   * unfinished work. The same contradiction the headline fix removed,
+   * arriving by a different route. Raised by the AI review of #1684.
+   *
+   * Every note in this repo's own state begins with its status word —
+   * `COMPLETE — 25 SCs`, `IN PROGRESS 2026-10-23`, `P0 PRIORITY`, `SHIPPED` —
+   * so the leading token is read and nothing else is. A note reading
+   * "completed" is therefore NOT credited, which is the direction this is
+   * allowed to be wrong in: an uncredited phase costs one word in a note,
+   * and the other direction puts a false headline on the handoff document.
+   */
+  test.each([
+    ["Status: incomplete, 9 of 56 criteria bound", "⬜", "NOT STARTED"],
+    ["not complete yet", "⬜", "NOT STARTED"],
+    ["IN PROGRESS — nowhere near complete", "⬜", "NOT STARTED"],
+    ["COMPLETE — 25 SCs, all done", "✅", "COMPLETE"],
+    ["complete", "✅", "COMPLETE"],
+  ])("a note reading %j is %s", (note, emoji, status) => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [{ name: "Phase X", scs: [], note }],
+      sessions: []
+    });
+    expect(run()).toContain(`## ${emoji} Phase X (${status})`);
+  });
+
   test("the headline still reads complete when every phase is", () => {
     writeTestJson({
       updated: "2026-01-01", priorities: [],
