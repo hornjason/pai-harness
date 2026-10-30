@@ -85,10 +85,22 @@ function phaseStatus(phase: Phase): string {
 function render(state: ProjectState): string {
   const lines: string[] = [];
 
-  // Find current phase
-  const current = state.phases.find(p => p.scs.length > 0 && p.scs.some(sc => !sc.done));
-  const openCount = current ? current.scs.filter(sc => !sc.done).length : 0;
-  const currentLabel = current ? `${current.name} — ${openCount} SCs open` : "All phases complete";
+  // The current phase is the first one `phaseEmoji` does not call complete.
+  //
+  // It used to be the first phase with an OPEN SC, which is a second notion
+  // of "complete" answering the same question as `phaseEmoji` — and a phase
+  // carrying no SCs at all, the shape every planning phase has before its
+  // criteria are bound, is invisible to it. So the document opened with
+  // "All phases complete" above a section reading "NOT STARTED" whose own
+  // note said 30 engineering items remained. One decider now, and the label
+  // falls back to the phase's status word when there are no SCs to count,
+  // because "0 SCs open" is exactly as misleading.
+  const current = state.phases.find(p => phaseEmoji(p) !== "✅");
+  const currentLabel = !current
+    ? "All phases complete"
+    : current.scs.length > 0
+      ? `${current.name} — ${current.scs.filter(sc => !sc.done).length} SCs open`
+      : `${current.name} — ${phaseStatus(current)}`;
 
   lines.push("# Project State");
   lines.push("");

@@ -164,6 +164,52 @@ describe("update-project-state", () => {
     expect(md).toContain("**Current phase: Phase 1 — Next — 2 SCs open**");
   });
 
+  /**
+   * The headline and the phase sections must agree about what "complete"
+   * means, because they are two readings of one question.
+   *
+   * `render`'s `current` had its own: the first phase with an open SC. A
+   * phase carrying no SCs at all — the shape every planning phase has before
+   * its criteria are bound — is invisible to it, so the document opened with
+   * "All phases complete" while a section further down read "NOT STARTED"
+   * with a note saying 30 engineering items remain. That is the file
+   * AGENTS.md tells every session to read first, and its first line was
+   * false. Raised by the AI review of #1684.
+   */
+  test("the headline does not say complete while a phase section says otherwise", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [
+        { name: "Phase 0 — Done", scs: [{ id: "SC-9441", what: "A", done: true }] },
+        { name: "Phase 1 — Unbound", scs: [], note: "IN PROGRESS — 9 of 56 criteria bound" },
+      ],
+      sessions: []
+    });
+    const md = run();
+    expect(md).toContain("## ⬜ Phase 1 — Unbound (NOT STARTED)");
+    expect(md, "the headline claims completion the section below contradicts").not.toContain(
+      "All phases complete",
+    );
+    expect(md).toContain("**Current phase: Phase 1 — Unbound — NOT STARTED**");
+  });
+
+  /**
+   * The negative control for the case above. Without it, "never say All
+   * phases complete" is satisfiable by deleting the string, and the headline
+   * would be wrong in the other direction on a genuinely finished project.
+   */
+  test("the headline still reads complete when every phase is", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [
+        { name: "Phase 0 — Done", scs: [{ id: "SC-9441", what: "A", done: true }] },
+        { name: "Phase 1 — Also done", scs: [], note: "complete" },
+      ],
+      sessions: []
+    });
+    expect(run()).toContain("**Current phase: All phases complete**");
+  });
+
   test("promote-only: spec [x] promotes SC, spec [ ] does not demote", () => {
     writeFileSync(join(SPECS_DIR, "test-promote.md"), `- [x] SC-9441: promoted\n- [ ] SC-9442: still open in spec`);
     writeTestJson({

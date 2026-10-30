@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: All phases complete**
+**Current phase: Code Review Convergence (CRC) — the active plan — NOT STARTED**
 
 **Session 68 (2026-10-30)** — THE PIPELINE WAS RUN AGAINST ITS OWN GOVERNING SPEC FOR THE FIRST TIME, AND IT FOUND THAT I HAD UNDER-COUNTED THE GAP BY A THIRD.
 
