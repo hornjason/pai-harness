@@ -159,11 +159,36 @@ export interface DecomposeGitHub {
 }
 
 const LIVE_DECOMPOSE: DecomposeGitHub = {
+  /**
+   * Every open issue, PAGINATED.
+   *
+   * `gh issue list --limit 1000` stops at a thousand and says nothing about
+   * it, and this map is the idempotence key: a title past the cutoff reads as
+   * "not created yet", so `--write` files a duplicate of an issue that
+   * already exists. That is the module's own "a shorter list looks like a
+   * clean plan" failure, arriving on the tracker-read side instead of the
+   * plan-read side. Found by the AI review of this change.
+   *
+   * `--paginate` walks every page, and the REST issues endpoint returns pull
+   * requests too, so anything carrying `pull_request` is dropped — a PR whose
+   * title matched a row would otherwise read as the issue already existing
+   * and skip creating it.
+   */
   openTitles: async repo => {
-    const rows = JSON.parse(
-      gh(["issue", "list", "--repo", repo, "--state", "open", "--limit", "1000", "--json", "number,title"]),
-    ) as { number: number; title: string }[];
-    return new Map(rows.map(r => [r.title, r.number]));
+    const out = gh([
+      "api",
+      "--paginate",
+      `repos/${repo}/issues?state=open&per_page=100`,
+      "--jq",
+      ".[] | select(.pull_request == null) | [.number, .title] | @json",
+    ]);
+    const map = new Map<string, number>();
+    for (const line of out.split("\n")) {
+      if (line.trim() === "") continue;
+      const [number, title] = JSON.parse(line) as [number, string];
+      map.set(title, number);
+    }
+    return map;
   },
   milestones: async repo => {
     const rows = JSON.parse(gh(["api", `repos/${repo}/milestones?state=all&per_page=100`])) as {

@@ -101,7 +101,15 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     {
       why: "too few cells to be a row at all",
       row: "| CRC-C2 | an outcome long enough to pass |",
-      reason: /cells, need 5/,
+      reason: /only 2 cells, need 5/,
+    },
+    {
+      // `c.length < 5` let this through and only c[0]..c[4] were read, so
+      // the tail was silently truncated — the one thing this module promises
+      // not to do. Found by the AI review of this change.
+      why: "TOO MANY cells — an unescaped `|` leaked into a cell",
+      row: "| CRC-C2 | an outcome with a | pipe in it | lib/a.ts | — | — |",
+      reason: /6 cells, need 5/,
     },
   ];
 
@@ -133,6 +141,19 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     );
     expect(r.reading).toBe("UNMEASURED");
     expect(r.unmeasuredReasons.join(" ")).toMatch(/appears twice/);
+  });
+
+  test("a row blocked by ITSELF is refused — it would never start", () => {
+    // `byOutcome` holds every row INCLUDING this one, so the membership test
+    // was true for the row's own outcome even though the message two lines
+    // below said "another row". On --write both ends of the edge resolved to
+    // one freshly created number and the issue was filed blocked by itself.
+    // Found by the AI review of this change.
+    const r = parseDecompositionPlan(
+      plan("| CRC-C2 | an outcome long enough to pass | lib/a.ts | — | an outcome long enough to pass |"),
+    );
+    expect(r.reading).toBe("UNMEASURED");
+    expect(r.unmeasuredReasons.join(" ")).toMatch(/blocked by itself/);
   });
 
   test("a blocker naming neither #<n> nor another row is refused, never dropped", () => {

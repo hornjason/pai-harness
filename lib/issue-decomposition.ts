@@ -107,8 +107,17 @@ export function parseDecompositionPlan(content: string): DecompositionReading {
     const reject = (why: string): void => {
       rejected.push({ line: at, text: line.slice(0, 70), why });
     };
-    if (c.length < 5) {
-      reject(`only ${c.length} cells, need 5`);
+    // Exactly five. `< 5` let a row with a leaked `|` — an unescaped pipe in
+    // an outcome or a blocked-by — through, and only c[0]..c[4] are ever
+    // read, so its tail was silently truncated. That is the one thing this
+    // module promises not to do. Found by the AI review of this change.
+    if (c.length !== 5) {
+      reject(
+        c.length < 5
+          ? `only ${c.length} cells, need 5`
+          : `${c.length} cells, need 5 — an unescaped \`|\` in a cell splits the row, and the ` +
+            `extra cells would be dropped without this refusal; write it as \`\\|\``,
+      );
       continue;
     }
     const criteria = [...c[0].matchAll(CRITERION)].map(m => m[0]);
@@ -168,6 +177,16 @@ export function parseDecompositionPlan(content: string): DecompositionReading {
   for (const r of rows) {
     for (const b of r.blockedBy) {
       if (/^#\d+$/.test(b)) continue;
+      // ANOTHER row, which the message below already said and the check did
+      // not: `byOutcome` holds every row including this one, so a row naming
+      // its own outcome passed. `--write` then resolved both ends of the edge
+      // to one freshly created number and called `addBlockedBy(n, n)` — an
+      // issue blocked by itself, which is never startable. Found by the AI
+      // review of this change.
+      if (b === r.outcome) {
+        reasons.push(`line ${r.line}: blocked by itself — an issue that blocks itself never starts`);
+        continue;
+      }
       if (byOutcome.has(b)) continue;
       reasons.push(
         `line ${r.line}: blocked by "${b}", which is neither #<issue> nor the outcome of another row`,
