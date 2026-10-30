@@ -507,6 +507,54 @@ describe("every live list read proves it is complete", () => {
     // reads, the issue list and the milestone list.
     expect(apiCalls().length).toBeGreaterThanOrEqual(4);
   });
+
+  /**
+   * The same N-sites shape, on a second axis, and the reason this is a
+   * property rather than a fourth point fix.
+   *
+   * The AI review of #1674 named the pattern across the whole branch: an
+   * incomplete read or result treated as complete, repaired call site by
+   * call site. Pagination on `openTitles`, then independently on
+   * `milestones`, then the missing try/catch around the pre-flight reads,
+   * then `--json` ignored on every refusal. Four instances, each fixed where
+   * it was found. The case above closed the pagination axis for good; this
+   * closes the reporting axis the same way.
+   *
+   * Every refusal in `decompose()` must leave through `refuse()`, which is
+   * the single place that knows whether the caller asked for JSON. A branch
+   * that prints its own message is the `--json` bug returning, and it would
+   * be invisible to any behavioural test that does not happen to exercise
+   * that one branch with that one flag.
+   */
+  const decomposeBody = (): string => {
+    const at = SRC.indexOf("async function decompose(");
+    const end = SRC.indexOf("export async function main(", at);
+    // Both anchors asserted, because a slice that silently ran to the end of
+    // the file would sweep `main()`'s own refusals into the population and a
+    // slice that came back empty would satisfy any `toEqual([])` below.
+    expect(at, "decompose() was renamed, so this scan examines nothing").toBeGreaterThan(-1);
+    expect(end, "main() was renamed, so this slice overruns into it").toBeGreaterThan(at);
+    return SRC.slice(at, end);
+  };
+
+  test("EVERY refusal in decompose() leaves through the one reporter", () => {
+    const body = decomposeBody();
+    // `plan-issues:` is the refusal prefix. Progress output inside the
+    // function — the per-row FAILED list — is not a refusal and is not in
+    // the population.
+    expect(
+      body.split("\n").filter(l => l.includes("console.error(") && l.includes("plan-issues:")),
+      "a refusal in decompose() that prints for itself cannot honour --json, which is the " +
+        "exact gap the AI review found after three rounds of fixing this class one site at a " +
+        "time. Route it through `refuse(headline, reasons, rejected?)`.",
+    ).toEqual([]);
+    // The control: the scan really is looking at a function with refusals
+    // in it, and at the right one.
+    expect(
+      body.split("\n").filter(l => l.includes("return refuse(")).length,
+      "no refusal was found in decompose(), so the assertion above is vacuous",
+    ).toBeGreaterThanOrEqual(3);
+  });
 });
 
 describe("planDecomposition resolves rows against the tracker as it is now", () => {

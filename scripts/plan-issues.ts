@@ -278,6 +278,44 @@ const LIVE_DECOMPOSE: DecomposeGitHub = {
  * in one pass would silently drop every forward reference — AGENTS.md rule 4
  * says ordering is data, and an edge that was never written is not data.
  */
+/**
+ * THE one place a `decompose()` refusal is reported, in whichever form the
+ * caller asked for.
+ *
+ * `--json` documents itself as "the whole reading", and all three refusal
+ * paths printed prose to stderr and nothing to stdout — so a caller parsing
+ * stdout got a parse error instead of the `unmeasuredReasons` it came for,
+ * and the structured half of the contract was missing exactly when there was
+ * something to report. The `--repair` path already branched on `values.json`;
+ * these did not. Found by the AI review of #1674.
+ *
+ * It lives at module scope rather than inside `decompose()` so that
+ * "`decompose()` prints no refusal of its own" is a property a scan can state
+ * plainly — the review's standing finding about this file is that this class
+ * of bug kept being repaired one call site at a time, and a nested helper
+ * would put the one legitimate printer inside the population being checked.
+ */
+export function refusalReporter(
+  json: boolean,
+): (
+  headline: string,
+  reasons: readonly string[],
+  rejected?: readonly { line: number; why: string; text: string }[],
+) => number {
+  return (headline, reasons, rejected = []) => {
+    if (json) {
+      console.log(
+        JSON.stringify({ reading: "UNMEASURED", unmeasuredReasons: reasons, rejected }, null, 2),
+      );
+    } else {
+      console.error(`plan-issues: ${headline}`);
+      for (const r of reasons) console.error(`  - ${r}`);
+      for (const r of rejected) console.error(`  line ${r.line}: ${r.why}\n    ${r.text}`);
+    }
+    return REFUSAL_EXIT;
+  };
+}
+
 async function decompose(
   planPath: string,
   /**
@@ -292,32 +330,7 @@ async function decompose(
   json: boolean,
   api: DecomposeGitHub,
 ): Promise<number> {
-  /**
-   * A refusal, in whichever form the caller asked for.
-   *
-   * `--json` documents itself as "the whole reading", and all three refusal
-   * paths below printed prose to stderr and nothing to stdout — so a caller
-   * parsing stdout got a parse error instead of the `unmeasuredReasons` it
-   * came for, and the structured half of the contract was missing exactly
-   * when there was something to report. The `--repair` path already branched
-   * on `values.json`; these did not. Found by the AI review of this change.
-   */
-  const refuse = (
-    headline: string,
-    reasons: readonly string[],
-    rejected: readonly { line: number; why: string; text: string }[] = [],
-  ): number => {
-    if (json) {
-      console.log(
-        JSON.stringify({ reading: "UNMEASURED", unmeasuredReasons: reasons, rejected }, null, 2),
-      );
-    } else {
-      console.error(`plan-issues: ${headline}`);
-      for (const r of reasons) console.error(`  - ${r}`);
-      for (const r of rejected) console.error(`  line ${r.line}: ${r.why}\n    ${r.text}`);
-    }
-    return REFUSAL_EXIT;
-  };
+  const refuse = refusalReporter(json);
 
   const reading = parseDecompositionPlan(readFileSync(planPath, "utf-8"));
   if (reading.reading === "UNMEASURED") {
