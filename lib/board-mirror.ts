@@ -87,6 +87,24 @@ export const NOT_A_SPEC = ["specs/SPEC-TEMPLATE.md"] as const;
  * order (*Silent Default Substitution*, `.claude/rules/config-access.md`).
  */
 /**
+ * The criterion ids ONE spec states, de-duplicated.
+ *
+ * `parseCriteria` matches every `- [ ] ID:` line independently and does not
+ * dedupe, so a spec stating an id twice yields it twice. Downstream that is
+ * a cell reading `SC-10 SC-10`, or — once the ids are pooled across specs —
+ * a criterion that looks ambiguous because it collided with itself.
+ *
+ * Exported and used by BOTH readers. The sweep was fixed first and the
+ * `--spec` path was left parsing for itself, so the two paths of one script
+ * disagreed about the very case the fix was written for: two deciders, and
+ * no behavioural test of either one can see the other going wrong. Both
+ * findings came from the AI review of #1679, one round apart.
+ */
+export function criterionIdsIn(specText: string): string[] {
+  return [...new Set(parseCriteria(specText).map(c => c.id))];
+}
+
+/**
  * Directory entries whose real parent cannot be established.
  *
  * Its own function so a case can hand it an entry with no `parentPath` —
@@ -162,7 +180,7 @@ export function specCriteriaIn(root: string): SpecSweep {
       // misreported as ambiguous, with a nonsensical reason. Found by the
       // AI review of #1679; zero specs state a duplicate today, so nothing
       // observable changes and the guard is for the case that arrives.
-      ids = [...new Set(parseCriteria(readFileSync(join(root, path), "utf-8")).map(c => c.id))];
+      ids = criterionIdsIn(readFileSync(join(root, path), "utf-8"));
     } catch (e) {
       // One unreadable spec does not make a SHORTER id list — it makes the
       // whole sweep unmeasured, because a shorter list is exactly what a

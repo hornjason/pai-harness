@@ -38,8 +38,14 @@ import { existsSync, readFileSync } from "fs";
 import { isAbsolute, join } from "path";
 import { parseArgs } from "util";
 import { createGitHubClient } from "../lib/github";
-import { parseCriteria } from "../lib/spec-evidence";
-import { mirrorRows, isReady, openFrontier, phaseOf, specCriteriaIn } from "../lib/board-mirror";
+import {
+  criterionIdsIn,
+  isReady,
+  mirrorRows,
+  openFrontier,
+  phaseOf,
+  specCriteriaIn,
+} from "../lib/board-mirror";
 
 /**
  * THE one non-zero exit, so `test/board-mirror.test.ts` can build a mutant
@@ -147,7 +153,9 @@ export async function main(argv: string[]): Promise<number> {
       console.error(`board-mirror: no such spec: ${specPath}`);
       return REFUSAL_EXIT;
     }
-    ids = parseCriteria(readFileSync(specPath, "utf-8")).map(c => c.id);
+    // Through the SAME reader as the sweep below, or the two paths of
+    // this one script disagree about a spec that states an id twice.
+    ids = criterionIdsIn(readFileSync(specPath, "utf-8"));
     if (ids.length === 0) {
       console.error(`board-mirror: ${specPath} declares no criteria — nothing could be mirrored`);
       return REFUSAL_EXIT;

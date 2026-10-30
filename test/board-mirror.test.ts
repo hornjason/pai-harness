@@ -40,6 +40,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  criterionIdsIn,
   criteriaNamedBy,
   declaresOwnCriterion,
   isReady,
@@ -238,6 +239,36 @@ describe("SC-2610: every spec contributes, not the one on the command line", () 
       r.specs.some(s => s.path.includes("/bootstrap-data-flow/")),
       "no nested spec was located, so flattening would be invisible here",
     ).toBe(true);
+  });
+
+  /**
+   * Both readers of a spec, agreeing by construction rather than by having
+   * been fixed twice.
+   *
+   * The sweep was de-duplicated first and the `--spec` path was left parsing
+   * for itself, so the two paths of ONE script disagreed about the very case
+   * the fix was written for: `--spec` produced `SC-10 SC-10` in the cell
+   * where the sweep produced `SC-10`. Two deciders, and no behavioural test
+   * of either can see the other going wrong — so this asserts the property
+   * across the call SITES, not just the behaviour of the shared one.
+   */
+  test("both readers of a spec collapse a repeated id, and neither parses alone", () => {
+    const text = spec("SC-10", "SC-10", "SC-20");
+    expect(criterionIdsIn(text)).toEqual(["SC-10", "SC-20"]);
+    // The premise: without the dedupe there really would be two.
+    expect(parseCriteria(text).filter(c => c.id === "SC-10").length).toBe(2);
+    // And the cell that would have been written.
+    expect(mirrorText(criterionIdsIn(text))).toBe("SC-10 SC-20");
+
+    // The site property. A second `parseCriteria` anywhere in the CLI is a
+    // second decider, which is how this bug survived the first fix.
+    const cli = readFileSync(join(import.meta.dir, "..", "scripts", "board-mirror.ts"), "utf-8");
+    expect(cli.includes("criterionIdsIn"), "the CLI no longer uses the shared reader").toBe(true);
+    expect(
+      cli.split("\n").filter(l => l.includes("parseCriteria(")),
+      "scripts/board-mirror.ts reads a spec for itself instead of through criterionIdsIn, so " +
+        "the --spec path and the default sweep can disagree about the same file",
+    ).toEqual([]);
   });
 
   test("a specs/ directory stating nothing is UNMEASURED, not an empty reading", () => {
