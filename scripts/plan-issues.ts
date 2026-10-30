@@ -103,11 +103,23 @@ const LIVE_GITHUB: PlanIssuesGitHub = {
     ) as { number: number; body: string | null; milestone: { title: string } | null };
     const dep = (kind: "blocked_by" | "blocking"): number[] => {
       try {
-        return (
-          JSON.parse(gh(["api", `repos/${repo}/issues/${number}/dependencies/${kind}`])) as {
-            number: number;
-          }[]
-        ).map(d => d.number);
+        // PAGINATED, and `--jq` per row rather than one JSON array, because
+        // `--paginate` concatenates each page's response and the result is
+        // not parseable as a single document. An unpaginated read here made
+        // a demotion clear only the first page of an issue's edges while
+        // clearing the milestone regardless, orphaning the rest permanently
+        // — the stuck-ordering failure this file's own docblock describes.
+        // Found by the AI review of this change.
+        return gh([
+          "api",
+          "--paginate",
+          `repos/${repo}/issues/${number}/dependencies/${kind}?per_page=100`,
+          "--jq",
+          ".[].number",
+        ])
+          .split("\n")
+          .filter(l => l.trim() !== "")
+          .map(Number);
       } catch {
         // A read that failed is not an issue with no edges. Rethrow: a silent
         // [] here would make a demotion skip the cleanup it exists to do.
@@ -244,7 +256,13 @@ const LIVE_DECOMPOSE: DecomposeGitHub = {
     gh(["issue", "edit", String(blocked), "--repo", repo, "--add-blocked-by", String(blocker)]);
   },
   blockedBy: async (repo, issue) => {
-    const out = gh(["api", `repos/${repo}/issues/${issue}/dependencies/blocked_by`, "--jq", ".[].number"]);
+    const out = gh([
+      "api",
+      "--paginate",
+      `repos/${repo}/issues/${issue}/dependencies/blocked_by?per_page=100`,
+      "--jq",
+      ".[].number",
+    ]);
     return out
       .split("\n")
       .filter(l => l.trim() !== "")

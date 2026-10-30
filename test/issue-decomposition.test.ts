@@ -338,25 +338,37 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
 describe("every live list read proves it is complete", () => {
   const SRC = readFileSync(join(import.meta.dir, "..", "scripts", "plan-issues.ts"), "utf8");
 
-  test("a `gh` call asking for a page size also asks for every page", () => {
-    const unpaginated = [...SRC.matchAll(/gh\(\[([\s\S]*?)\]\)/g)]
-      .map(m => m[1])
-      .filter(call => call.includes("per_page") && !call.includes("--paginate"));
+  /**
+   * The first version of this keyed on `per_page`: it flagged a call that
+   * asked for a page size without asking for every page. That could not
+   * fail for the population it was written about — the two sites it missed
+   * (`dep()` in the repair path, `blockedBy` in the decompose path) carried
+   * NO `per_page`, so the predicate never looked at them, and the check
+   * certified a completeness it had not examined. It was a control written
+   * against the two defects already fixed rather than against the property.
+   * Found by the AI review of this change, one round after the check landed.
+   *
+   * The predicate is now the property: a `gh api` call reads every page.
+   */
+  const apiCalls = (): string[] =>
+    [...SRC.matchAll(/gh\(\[([\s\S]*?)\]\)/g)].map(m => m[1]).filter(c => c.includes('"api"'));
+
+  test("EVERY `gh api` call reads every page", () => {
     expect(
-      unpaginated,
-      "a `per_page` with no `--paginate` reads the FIRST page and reports it as the whole " +
-        "answer. Add `--paginate`, or say in a comment why one page is the complete set.",
+      apiCalls().filter(c => !c.includes("--paginate")),
+      "a `gh api` read with no `--paginate` returns the FIRST page and reports it as the " +
+        "whole answer. Add `--paginate` (and `--jq` per row — `--paginate` concatenates each " +
+        "page's response, so the result is not one JSON document). If the endpoint really " +
+        "returns a single resource rather than a list, say so in a comment on the call.",
     ).toEqual([]);
   });
 
   test("the scan can see the calls at all — the control", () => {
-    // Without this, deleting the fetchers or renaming `gh` makes the case
+    // Without this, renaming `gh` or deleting the readers makes the case
     // above green by matching nothing, which is the failure it exists to
-    // catch wearing the costume of a pass.
-    const withPageSize = [...SRC.matchAll(/gh\(\[([\s\S]*?)\]\)/g)].filter(m =>
-      m[1].includes("per_page"),
-    );
-    expect(withPageSize.length).toBeGreaterThanOrEqual(2);
+    // catch wearing the costume of a pass. Four today: two dependency
+    // reads, the issue list and the milestone list.
+    expect(apiCalls().length).toBeGreaterThanOrEqual(4);
   });
 });
 
