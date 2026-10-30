@@ -8,9 +8,9 @@
  * (`.claude/rules/checks-must-be-able-to-fail.md`, the seventh shape).
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, relative } from "path";
 import { REFUSAL_EXIT, main as planIssuesMain } from "../scripts/plan-issues";
 import type { DecomposeGitHub } from "../scripts/plan-issues";
 import {
@@ -507,6 +507,54 @@ describe("every live list read proves it is complete", () => {
     // reads, the issue list and the milestone list.
     expect(apiCalls().length).toBeGreaterThanOrEqual(4);
   });
+
+  /**
+   * The same N-sites shape, on a second axis, and the reason this is a
+   * property rather than a fourth point fix.
+   *
+   * The AI review of #1674 named the pattern across the whole branch: an
+   * incomplete read or result treated as complete, repaired call site by
+   * call site. Pagination on `openTitles`, then independently on
+   * `milestones`, then the missing try/catch around the pre-flight reads,
+   * then `--json` ignored on every refusal. Four instances, each fixed where
+   * it was found. The case above closed the pagination axis for good; this
+   * closes the reporting axis the same way.
+   *
+   * Every refusal in `decompose()` must leave through `refuse()`, which is
+   * the single place that knows whether the caller asked for JSON. A branch
+   * that prints its own message is the `--json` bug returning, and it would
+   * be invisible to any behavioural test that does not happen to exercise
+   * that one branch with that one flag.
+   */
+  const decomposeBody = (): string => {
+    const at = SRC.indexOf("async function decompose(");
+    const end = SRC.indexOf("export async function main(", at);
+    // Both anchors asserted, because a slice that silently ran to the end of
+    // the file would sweep `main()`'s own refusals into the population and a
+    // slice that came back empty would satisfy any `toEqual([])` below.
+    expect(at, "decompose() was renamed, so this scan examines nothing").toBeGreaterThan(-1);
+    expect(end, "main() was renamed, so this slice overruns into it").toBeGreaterThan(at);
+    return SRC.slice(at, end);
+  };
+
+  test("EVERY refusal in decompose() leaves through the one reporter", () => {
+    const body = decomposeBody();
+    // `plan-issues:` is the refusal prefix. Progress output inside the
+    // function — the per-row FAILED list — is not a refusal and is not in
+    // the population.
+    expect(
+      body.split("\n").filter(l => l.includes("console.error(") && l.includes("plan-issues:")),
+      "a refusal in decompose() that prints for itself cannot honour --json, which is the " +
+        "exact gap the AI review found after three rounds of fixing this class one site at a " +
+        "time. Route it through `refuse(headline, reasons, rejected?)`.",
+    ).toEqual([]);
+    // The control: the scan really is looking at a function with refusals
+    // in it, and at the right one.
+    expect(
+      body.split("\n").filter(l => l.includes("return refuse(")).length,
+      "no refusal was found in decompose(), so the assertion above is vacuous",
+    ).toBeGreaterThanOrEqual(3);
+  });
 });
 
 describe("planDecomposition resolves rows against the tracker as it is now", () => {
@@ -685,6 +733,148 @@ describe("scripts/plan-issues --decompose: what reaches GitHub", () => {
    * a one-pass implementation drops every forward reference — silently, since
    * an absent edge looks exactly like an order nobody asked for.
    */
+  /**
+   * Found on the first real run of this command, 2026-10-30: issues #1675 to
+   * #1678 each carry
+   * `rungate plan-issues --decompose /Users/jhorn/Projects/rg-wt-step4/docs/adr/ADR-008-…`
+   * in their body. The absolute path is a reading of ONE machine's filesystem
+   * at one moment, written into the one artefact the whole pipeline exists to
+   * make readable by somebody else. Nobody can run it, and a worktree that is
+   * deleted next week makes the provenance line point at nothing.
+   *
+   * `main()` resolves the plan to an absolute path because `readFileSync`
+   * needs one, and then the same string is used as the label. Two different
+   * needs, one variable.
+   */
+  test("the body names the plan by its path in the REPOSITORY, not on this disk", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-decompose-root-"));
+    try {
+      const bodies: string[] = [];
+      const api: DecomposeGitHub = {
+        openTitles: async () => new Map(),
+        milestones: async () => new Set(["Phase 3"]),
+        blockedBy: async () => [],
+        create: async (_repo, issue) => {
+          bodies.push(issue.body);
+          return 2000;
+        },
+        addBlockedBy: async () => {},
+      };
+      // A plan INSIDE the project root, reached by an absolute path — which
+      // is how the CLI always reaches it, since `main()` resolves it before
+      // anything downstream sees it.
+      mkdirSync(join(dir, "docs", "adr"), { recursive: true });
+      const rel = join("docs", "adr", "ADR-009-plan.md");
+      writeFileSync(join(dir, rel), plan(GOOD));
+      const code = await planIssuesMain(
+        ["--decompose", join(dir, rel), "--repo", "o/r", "--project-root", dir, "--write"],
+        undefined as never,
+        api,
+      );
+      expect(code).toBe(0);
+      expect(bodies, "nothing was created, so the assertion below is vacuous").toHaveLength(1);
+      expect(bodies[0]).toContain(`--decompose ${rel}\``);
+      // The control the line above needs: `toContain` of the relative path
+      // also passes on the absolute one, because the absolute path ENDS with
+      // it. This is the half that can actually fail.
+      expect(
+        bodies[0].includes(dir),
+        `the body leaks the author's filesystem path:\n${bodies[0]}`,
+      ).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * `relative()` says "outside the root" only when its result is exactly
+   * `..` or begins with `..` AND a separator. A bare `startsWith("..")` also
+   * catches `..config/plan.md` — a legal filename INSIDE the root — and the
+   * consequence is the absolute path going into the issue body, which is the
+   * leak the case above exists to close. Found by the AI review of #1674.
+   */
+  test("a file whose NAME starts with two dots is inside the root, not outside it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-decompose-dots-"));
+    try {
+      const bodies: string[] = [];
+      const api: DecomposeGitHub = {
+        openTitles: async () => new Map(),
+        milestones: async () => new Set(["Phase 3"]),
+        blockedBy: async () => [],
+        create: async (_repo, issue) => {
+          bodies.push(issue.body);
+          return 2000;
+        },
+        addBlockedBy: async () => {},
+      };
+      mkdirSync(join(dir, "..config"), { recursive: true });
+      const rel = join("..config", "plan.md");
+      writeFileSync(join(dir, rel), plan(GOOD));
+      // The premise, proved rather than assumed: this path really is inside
+      // the root, so treating it as an escape would be wrong.
+      expect(relative(dir, join(dir, rel)), "the fixture is not inside the root").toBe(rel);
+      expect(
+        await planIssuesMain(
+          ["--decompose", join(dir, rel), "--repo", "o/r", "--project-root", dir, "--write"],
+          undefined as never,
+          api,
+        ),
+      ).toBe(0);
+      expect(bodies, "nothing was created, so the assertion below is vacuous").toHaveLength(1);
+      expect(bodies[0].includes(dir), `the body leaks the author's path:\n${bodies[0]}`).toBe(false);
+      expect(bodies[0]).toContain(`--decompose ${rel}\``);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * `--json` documents itself as "the whole reading". All three refusal
+   * paths printed prose to stderr and nothing to stdout, so a caller parsing
+   * stdout got a parse error instead of the reasons it came for — the
+   * structured half of the contract missing exactly when there is something
+   * to report. The `--repair` path already branched on it. Found by the AI
+   * review of #1674.
+   */
+  test("--json makes a REFUSAL parseable too, not only a success", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-decompose-json-"));
+    const said: string[] = [];
+    const real = console.log;
+    console.log = (...a: unknown[]) => void said.push(a.join(" "));
+    try {
+      const p = join(dir, "plan.md");
+      // A milestone no tracker has: the "does not fit the tracker" refusal.
+      writeFileSync(p, plan("| CRC-C2 | a well formed outcome here | lib/a.ts | Phase 9 | — |"));
+      const api: DecomposeGitHub = {
+        openTitles: async () => new Map(),
+        milestones: async () => new Set(["Phase 3"]),
+        blockedBy: async () => [],
+        create: async () => {
+          throw new Error("must not create on a refusal");
+        },
+        addBlockedBy: async () => {},
+      };
+      const code = await planIssuesMain(
+        ["--decompose", p, "--repo", "o/r", "--json"],
+        undefined as never,
+        api,
+      );
+      expect(code).toBe(REFUSAL_EXIT);
+      expect(said.length, "nothing reached stdout, so there is nothing to parse").toBeGreaterThan(0);
+      const payload = JSON.parse(said.join("\n")) as {
+        reading: string;
+        unmeasuredReasons: string[];
+      };
+      expect(payload.reading).toBe("UNMEASURED");
+      // The control: the payload must carry the REASON, not merely be valid
+      // JSON. An empty `{}` parses too.
+      expect(payload.unmeasuredReasons.join(" ")).toContain("Phase 9");
+    } finally {
+      console.log = real;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("an edge to a row created in the same run is wired, not dropped", async () => {
     const { api, calls } = recorder();
     const code = await run(
