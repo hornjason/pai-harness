@@ -46,13 +46,9 @@ Measured across `specs/` on 2026-10-30:
 
 They are satisfied by a name being present in a file, not by the behaviour
 working. The live proof is SC-2609, which requires `lib/board-mirror.ts` to
-contain `NAMES_NONE`:
-
-```ts
-lib/board-mirror.ts:277   export const NAMES_NONE = "";
-```
-
-The criterion is satisfiable. The thing it exists to guarantee — that *this
+contain `NAMES_NONE`. It does, and its declaration reads
+`export const NAMES_NONE = ""` — an empty string, returned whenever an issue
+names no criterion. The criterion is satisfiable. The thing it exists to guarantee — that *this
 issue serves no criterion* is spelled out rather than left blank — is false.
 This is the mechanism by which a plan reads as implemented when it is a
 collection of parts.
