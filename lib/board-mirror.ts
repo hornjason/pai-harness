@@ -31,7 +31,118 @@
  * matcher was built and removed earlier in #1647, so the trap is not
  * hypothetical here.
  */
+import { readdirSync, readFileSync } from "fs";
+import { join, relative, sep } from "path";
 import { oneScMentionPattern } from "./sc-ids";
+import { parseCriteria } from "./spec-evidence";
+
+/** One spec, and the criterion ids it states. */
+export interface SpecCriteria {
+  /** Repo-relative, with `/` separators, so a reading is comparable across machines. */
+  readonly path: string;
+  readonly ids: readonly string[];
+}
+
+/** What `specCriteriaIn` found, including what it could not resolve. */
+export interface SpecSweep {
+  readonly reading: "MEASURED" | "UNMEASURED";
+  readonly specs: readonly SpecCriteria[];
+  /** The union, in (spec path, then spec) order. Deterministic across runs. */
+  readonly ids: readonly string[];
+  /** An id two specs both state — reported, never silently merged. */
+  readonly collisions: readonly { readonly id: string; readonly specs: readonly string[] }[];
+  readonly unmeasuredReasons: readonly string[];
+}
+
+/**
+ * The one spec whose ids are illustrative rather than stated.
+ *
+ * `specs/SPEC-TEMPLATE.md` is the frame a new spec is copied from, and its
+ * criteria read `- [ ] SC-1: [first criterion]`. Those ids are the lowest and
+ * most collidable in the whole namespace, so including them credits any issue
+ * mentioning `SC-1` to a criterion nobody ever wrote.
+ *
+ * It is named rather than detected. A heuristic — "skip drafts", "skip
+ * `testable: false`" — would also drop `DA-COMPLIANCE-SPEC.md`, which states
+ * real criteria, and blanking a real cell is the exact failure SC-2610 is
+ * about. `test/board-mirror.test.ts` asserts the file still exists, so this
+ * cannot rot into an exclusion pointing at nothing.
+ */
+export const NOT_A_SPEC = ["specs/SPEC-TEMPLATE.md"] as const;
+
+/**
+ * Every criterion id in `<root>/specs`, from every spec, including nested ones.
+ *
+ * **Why this is not a `--spec` argument.** The column answers "which criteria
+ * does this issue serve", and an issue does not know which spec the person at
+ * the keyboard happened to name. Filtering the id set to one spec means every
+ * issue serving any of the other 25 specs' criteria renders as an EMPTY cell —
+ * and a blank cell reads as *not yet filled in*, *the tool could not tell* and
+ * *deliberately none* at once. 28 cells on the live board were blank for this
+ * reason on 2026-10-29, which is the measurement behind SC-2610.
+ *
+ * A directory that exists and yields no criteria at all is UNMEASURED rather
+ * than an empty set: a tree with no specs and a tree whose specs could not be
+ * parsed produce the same empty list, and only one of them is a board in good
+ * order (*Silent Default Substitution*, `.claude/rules/config-access.md`).
+ */
+export function specCriteriaIn(root: string): SpecSweep {
+  const dir = join(root, "specs");
+  let files: string[];
+  try {
+    files = readdirSync(dir, { recursive: true, withFileTypes: true })
+      .filter(e => e.isFile() && e.name.endsWith(".md"))
+      .map(e => relative(root, join(e.parentPath ?? dir, e.name)).split(sep).join("/"))
+      .filter(p => !(NOT_A_SPEC as readonly string[]).includes(p))
+      .sort();
+  } catch (e) {
+    return {
+      reading: "UNMEASURED",
+      specs: [],
+      ids: [],
+      collisions: [],
+      unmeasuredReasons: [`could not read ${dir}: ${(e as Error).message}`],
+    };
+  }
+
+  const specs: SpecCriteria[] = [];
+  const reasons: string[] = [];
+  const seen = new Map<string, string[]>();
+  for (const path of files) {
+    let ids: string[];
+    try {
+      ids = parseCriteria(readFileSync(join(root, path), "utf-8")).map(c => c.id);
+    } catch (e) {
+      // One unreadable spec does not make a SHORTER id list — it makes the
+      // whole sweep unmeasured, because a shorter list is exactly what a
+      // repository with fewer criteria produces.
+      reasons.push(`could not read ${path}: ${(e as Error).message}`);
+      continue;
+    }
+    specs.push({ path, ids });
+    for (const id of ids) seen.set(id, [...(seen.get(id) ?? []), path]);
+  }
+
+  // An id two specs both state is AMBIGUOUS, and the column has one cell per
+  // issue with no room to say which spec was meant. #312 mentions `SC-A1`
+  // meaning another repository's criterion; three specs here state `SC-A1`,
+  // so writing it attributes the issue to a criterion at random. Dropped from
+  // the id set and reported — the issue keeps whatever unambiguous ids it
+  // also names, so this narrows a cell rather than blanking it.
+  const ids = [...seen.keys()].filter(id => (seen.get(id) as string[]).length === 1);
+  if (reasons.length === 0 && ids.length === 0) {
+    reasons.push(`no spec under ${dir} states a criterion, so no cell could be filled`);
+  }
+  return {
+    reading: reasons.length > 0 ? "UNMEASURED" : "MEASURED",
+    specs,
+    ids,
+    collisions: [...seen.entries()]
+      .filter(([, where]) => where.length > 1)
+      .map(([id, where]) => ({ id, specs: where })),
+    unmeasuredReasons: reasons,
+  };
+}
 
 /** What the board is told about one issue. */
 export interface MirrorRow {
@@ -69,6 +180,28 @@ export function mirrorText(criteria: readonly string[]): string {
 }
 
 /**
+ * An issue STATING a criterion of its own, rather than naming one it serves.
+ *
+ * `- [ ] SC-1 — A test fails when a hook name exists in both trees` is #713
+ * writing its own acceptance criteria in the shape a spec uses. It is not a
+ * reference to `specs/bootstrap-data-flow/success-criteria.md`'s `SC-1`, and
+ * the two are indistinguishable to a bare mention test. Measured 2026-10-30:
+ * reading every spec made #713's cell read `SC-1 SC-2 SC-3 SC-4 SC-5 SC-6`,
+ * six criteria it has nothing to do with.
+ *
+ * A wrong cell is worse than the blank one SC-2609 is about. A blank says
+ * "nothing known"; a populated cell is read as a fact.
+ *
+ * The checkbox is the whole signal, and it is the right one: ADR-003 step 3
+ * says an issue names what it serves under a CRITERIA heading as plain text.
+ * Nothing in this repository's issue template writes a served criterion as a
+ * task checkbox.
+ */
+export function declaresOwnCriterion(text: string, id: string): boolean {
+  return new RegExp(`^[ \\t]*[-*][ \\t]*\\[[ xX]\\][ \\t]*${id}\\b`, "m").test(text);
+}
+
+/**
  * Which of `criterionIds` this issue's text names.
  *
  * Order follows `criterionIds`, so the column reads in spec order rather than
@@ -81,7 +214,9 @@ export function criteriaNamedBy(
   criterionIds: readonly string[],
 ): string[] {
   const text = `${issue.title}\n${issue.body ?? ""}`;
-  return criterionIds.filter(id => oneScMentionPattern(id).test(text));
+  return criterionIds.filter(
+    id => oneScMentionPattern(id).test(text) && !declaresOwnCriterion(text, id),
+  );
 }
 
 export function mirrorRows(

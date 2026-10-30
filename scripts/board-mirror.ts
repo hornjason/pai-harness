@@ -39,7 +39,7 @@ import { isAbsolute, join } from "path";
 import { parseArgs } from "util";
 import { createGitHubClient } from "../lib/github";
 import { parseCriteria } from "../lib/spec-evidence";
-import { mirrorRows, isReady, openFrontier, phaseOf } from "../lib/board-mirror";
+import { mirrorRows, isReady, openFrontier, phaseOf, specCriteriaIn } from "../lib/board-mirror";
 
 /**
  * THE one non-zero exit, so `test/board-mirror.test.ts` can build a mutant
@@ -48,10 +48,13 @@ import { mirrorRows, isReady, openFrontier, phaseOf } from "../lib/board-mirror"
  */
 export const REFUSAL_EXIT = 1;
 
-const USAGE = `rungate board-mirror --project <node-id> --spec <spec.md> [--field <name>] [--write] [--ready] [--json]
+const USAGE = `rungate board-mirror --project <node-id> [--spec <spec.md>] [--field <name>] [--write] [--ready] [--json]
 
   --project  the ProjectV2 node id, e.g. PVT_kwHO…
-  --spec     the spec whose criteria the issues declare.
+  --spec     narrow the column to ONE spec's criteria. Omit it — which is the
+             normal case — and every spec under specs/ is read. An issue does
+             not know which spec you had in mind, so narrowing blanks the cell
+             of every issue serving any other spec (SC-2610).
   --field    the TEXT field to mirror into. Default "Criteria". It must
              already exist on the project — this does not create one, because
              a typo would silently add a column nobody looks at.
@@ -131,21 +134,40 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`board-mirror: --project is required\n\n${USAGE}`);
     return REFUSAL_EXIT;
   }
-  if (!values.spec) {
-    console.error(`board-mirror: --spec is required\n\n${USAGE}`);
-    return REFUSAL_EXIT;
-  }
-
   const root = values["project-root"] ?? process.cwd();
-  const specPath = isAbsolute(values.spec) ? values.spec : join(root, values.spec);
-  if (!existsSync(specPath)) {
-    console.error(`board-mirror: no such spec: ${specPath}`);
-    return REFUSAL_EXIT;
-  }
-  const ids = parseCriteria(readFileSync(specPath, "utf-8")).map(c => c.id);
-  if (ids.length === 0) {
-    console.error(`board-mirror: ${specPath} declares no criteria — nothing could be mirrored`);
-    return REFUSAL_EXIT;
+
+  // The id set the column is drawn from. Default: every spec in the tree —
+  // see SC-2610 and `specCriteriaIn`. `--spec` narrows it, which is useful
+  // for inspecting one spec and wrong for writing the board.
+  let ids: string[];
+  let sourceDescription: string;
+  if (values.spec) {
+    const specPath = isAbsolute(values.spec) ? values.spec : join(root, values.spec);
+    if (!existsSync(specPath)) {
+      console.error(`board-mirror: no such spec: ${specPath}`);
+      return REFUSAL_EXIT;
+    }
+    ids = parseCriteria(readFileSync(specPath, "utf-8")).map(c => c.id);
+    if (ids.length === 0) {
+      console.error(`board-mirror: ${specPath} declares no criteria — nothing could be mirrored`);
+      return REFUSAL_EXIT;
+    }
+    sourceDescription = `${values.spec} only — every other spec's criteria will render as an empty cell`;
+  } else {
+    const sweep = specCriteriaIn(root);
+    if (sweep.reading === "UNMEASURED") {
+      console.error(`board-mirror: UNMEASURED — the criteria could not be read:`);
+      for (const r of sweep.unmeasuredReasons) console.error(`  - ${r}`);
+      return REFUSAL_EXIT;
+    }
+    // Reported, not refused: an id two specs both state still produces one
+    // correct cell. What it breaks is the reader's ability to tell which
+    // spec the cell meant, and that is worth saying out loud once.
+    for (const c of sweep.collisions) {
+      console.error(`board-mirror: note — ${c.id} is stated by ${c.specs.join(" and ")}`);
+    }
+    ids = [...sweep.ids];
+    sourceDescription = `${sweep.specs.filter(s => s.ids.length > 0).length} specs under specs/`;
   }
 
   const client = createGitHubClient();
@@ -246,7 +268,7 @@ export async function main(argv: string[]): Promise<number> {
   } else {
     const named = rows.filter(r => r.criteria.length > 0);
     console.log(`\nboard-mirror — ${values.field} on ${items.length} item(s)\n`);
-    console.log(`  ${ids.length} criteria in the spec`);
+    console.log(`  ${ids.length} criteria, read from ${sourceDescription}`);
     console.log(`  ${named.length} of ${items.length} items name at least one`);
     console.log(`  ${new Set(named.flatMap(r => r.criteria)).size} distinct criteria reached\n`);
     for (const c of fieldChanges) {

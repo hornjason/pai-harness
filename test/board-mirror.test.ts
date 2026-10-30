@@ -46,9 +46,15 @@ import {
   mirrorRows,
   mirrorText,
   NAMES_NONE,
+  NOT_A_SPEC,
   openFrontier,
   phaseOf,
+  specCriteriaIn,
 } from "../lib/board-mirror";
+import { parseCriteria } from "../lib/spec-evidence";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 const SPEC_ORDER = [
   "CRC-A4",
@@ -67,6 +73,179 @@ const SPEC_ORDER = [
   "CRC-M11",
   "CRC-N2",
 ];
+
+/**
+ * SC-2610 — the mirror reads every spec in `specs/`, not one named on the
+ * command line.
+ *
+ * The defect this binds is not a crash. `--spec X` filtered the id set to X's
+ * criteria, so an issue serving any OTHER spec's criterion got an empty cell,
+ * which is indistinguishable from an issue that genuinely serves none. 28
+ * cells on the live board were blank on 2026-10-29 and the column was unusable
+ * for exactly the question it was built to answer.
+ */
+describe("SC-2610: every spec contributes, not the one on the command line", () => {
+  /** A tree with the spec shapes that matter: two flat, one nested. */
+  function tree(specs: Record<string, string>): string {
+    const root = mkdtempSync(join(tmpdir(), "rg-mirror-specs-"));
+    for (const [rel, text] of Object.entries(specs)) {
+      const at = join(root, "specs", rel);
+      mkdirSync(join(at, ".."), { recursive: true });
+      writeFileSync(at, text);
+    }
+    return root;
+  }
+
+  const spec = (...ids: string[]) =>
+    ["# A spec", "", "## Success Criteria", "", ...ids.map(id => `- [ ] ${id}: it holds`), ""].join(
+      "\n",
+    );
+
+  test("two specs in the tree contribute BOTH their ids", () => {
+    const root = tree({ "A-SPEC.md": spec("SC-10", "SC-11"), "B-SPEC.md": spec("SC-20") });
+    try {
+      const r = specCriteriaIn(root);
+      expect(r.reading).toBe("MEASURED");
+      // The whole point, stated as the union. A one-spec reader returns
+      // either the first two or the last one, and both are a strict subset.
+      expect(r.ids).toEqual(["SC-10", "SC-11", "SC-20"]);
+      expect(r.specs.map(s => s.path)).toEqual(["specs/A-SPEC.md", "specs/B-SPEC.md"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a spec in a SUBDIRECTORY is read too", () => {
+    // `specs/bootstrap-data-flow/` holds six of this repository's specs. A
+    // non-recursive walk finds none of them and still reports MEASURED.
+    const root = tree({ "A-SPEC.md": spec("SC-10"), "nested/B-SPEC.md": spec("SC-20") });
+    try {
+      expect(specCriteriaIn(root).ids).toEqual(["SC-10", "SC-20"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the order is deterministic — spec path, then the order inside the spec", () => {
+    // Two issues serving the same pair must render the SAME cell, or the
+    // column cannot be scanned down a group. A `Set` iteration order that
+    // follows the filesystem would break that silently between machines.
+    const root = tree({ "Z-SPEC.md": spec("SC-30"), "A-SPEC.md": spec("SC-11", "SC-10") });
+    try {
+      expect(specCriteriaIn(root).ids).toEqual(["SC-11", "SC-10", "SC-30"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * An id two specs both state cannot be attributed by a cell that has room
+   * for the id and not for the spec. Writing it picks one spec at random and
+   * the reader has no way to know a choice was made — so it is dropped and
+   * reported, and the issue keeps the unambiguous ids it also names.
+   */
+  test("an id two specs both state is DROPPED and reported, never guessed at", () => {
+    const root = tree({ "A-SPEC.md": spec("SC-10"), "B-SPEC.md": spec("SC-10", "SC-20") });
+    try {
+      const r = specCriteriaIn(root);
+      expect(r.ids, "an ambiguous id reached the column").toEqual(["SC-20"]);
+      expect(r.collisions).toEqual([{ id: "SC-10", specs: ["specs/A-SPEC.md", "specs/B-SPEC.md"] }]);
+      // The control: dropping is not the same as the sweep failing. The
+      // unambiguous id from the SAME spec still arrives.
+      expect(r.reading).toBe("MEASURED");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The other way a cell goes wrong once every spec is read: the issue is
+   * writing its OWN acceptance criteria in a spec's shape.
+   */
+  test("a checkbox line is the issue STATING a criterion, not serving one", () => {
+    const serves = { title: "x", body: "## Criteria this serves\n\nSC-10\n" };
+    const states = { title: "x", body: "- [ ] SC-10 — a test fails when the trees diverge\n" };
+    expect(criteriaNamedBy(serves, ["SC-10"])).toEqual(["SC-10"]);
+    expect(criteriaNamedBy(states, ["SC-10"]), "#713's shape reached the column").toEqual([]);
+    // Ticked, starred, and indented are the same act.
+    expect(criteriaNamedBy({ title: "x", body: "  * [x] SC-10 done" }, ["SC-10"])).toEqual([]);
+    // The control: a checkbox for a DIFFERENT id must not suppress this one.
+    expect(
+      criteriaNamedBy({ title: "x", body: "- [ ] SC-99 other\n\nserves SC-10" }, ["SC-10"]),
+    ).toEqual(["SC-10"]);
+  });
+
+  test("a specs/ directory stating nothing is UNMEASURED, not an empty reading", () => {
+    const root = tree({ "EMPTY-SPEC.md": "# A spec with no criteria\n" });
+    try {
+      const r = specCriteriaIn(root);
+      expect(r.reading).toBe("UNMEASURED");
+      expect(r.ids).toEqual([]);
+      expect(r.unmeasuredReasons.join(" ")).toContain("no spec");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("no specs/ directory at all is UNMEASURED, naming the path it looked at", () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-mirror-nospecs-"));
+    try {
+      const r = specCriteriaIn(root);
+      expect(r.reading).toBe("UNMEASURED");
+      expect(r.unmeasuredReasons.join(" ")).toContain(join(root, "specs"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The live control. Every case above builds its own tree, so all of them
+   * would still pass against a walk that works on two-file fixtures and finds
+   * one spec in the real one. This reads THIS repository.
+   */
+  test("against this repository, the sweep spans many specs and both id shapes", () => {
+    const r = specCriteriaIn(join(import.meta.dir, ".."));
+    expect(r.reading).toBe("MEASURED");
+    const stating = r.specs.filter(s => s.ids.length > 0);
+    expect(stating.length, "a one-spec reader would report 1 here").toBeGreaterThan(10);
+    // Two different id namespaces live in different specs, so a cell can only
+    // carry both if the sweep really crossed spec boundaries.
+    expect(r.ids.some(id => /^SC-\d+$/.test(id)), "no SC- id was found").toBe(true);
+    expect(r.ids.some(id => /^CRC-/.test(id)), "no CRC- id was found").toBe(true);
+    // And the spec this criterion is stated in is itself in the reading.
+    expect(r.ids).toContain("SC-2610");
+  });
+
+  /**
+   * An exclusion naming a file that no longer exists excludes nothing, and
+   * reads in review exactly like one that works.
+   *
+   * What it changes is narrower than it first looks, and the first version of
+   * this case asserted the wrong thing. Every id the template states —
+   * `SC-1`, `SC-2`, `SC-A1`, `SC-A2` — is ALSO stated by a real spec, so
+   * excluding it removes no id from the column. What it removes is four false
+   * collision reports, each naming the template as a spec that states a
+   * criterion. That is the claim worth binding, so it is the one asserted.
+   */
+  test("the excluded file exists, states criteria, and leaves the sweep", () => {
+    const root = join(import.meta.dir, "..");
+    expect(NOT_A_SPEC).toEqual(["specs/SPEC-TEMPLATE.md"]);
+    const sweep = specCriteriaIn(root);
+    for (const p of NOT_A_SPEC) {
+      expect(existsSync(join(root, p)), `${p} is excluded but does not exist`).toBe(true);
+      // The control: it really would have contributed. A template that had
+      // stopped stating criteria would make this exclusion a no-op nobody
+      // could see, and the case above would still be green.
+      const stated = parseCriteria(readFileSync(join(root, p), "utf-8")).map(c => c.id);
+      expect(stated.length, `${p} states nothing, so excluding it does nothing`).toBeGreaterThan(0);
+      expect(sweep.specs.map(s => s.path), `${p} is still in the reading`).not.toContain(p);
+      expect(
+        sweep.collisions.flatMap(c => c.specs),
+        `${p} is still named as a colliding spec`,
+      ).not.toContain(p);
+    }
+  });
+});
 
 describe("#1647: the Criteria column", () => {
   describe("mirrorText carries every id", () => {
