@@ -33,7 +33,7 @@ Suite: 25/25 SCs done.
 
 **Next priorities:**
 1. THE GOAL (2026-10-30, supersedes the 2026-10-23 SCOPE LOCK below). A spec in git becomes a readable board with nothing hand-run: open the board and see every issue, its milestone, the criterion it serves and what blocks it, without opening an issue. One command reports the same thing so nothing depends on an agent reading. Decision record docs/adr/ADR-009-engine-goal-and-build-order.md.
-2. NEXT ACTION: PR #1685 is Stage A and needs Jason. It carries ADR-009, the board identifiers, ten behavioural criteria and AGENTS.md rule 8. Stage B does not start before it merges, because Stage B derives issues from the criteria it adds. THE BOARD IDENTIFIERS ARE IN .claude/rungate/config.json UNDER THE KEY `board` — node id, six field ids, seven view ids, read back from the live API on 2026-10-30. Read them from there. Do not expect --project to be optional yet: the config reader is SC-2636 and is not built, so commands still take --project <node-id> and you get the value from that file.
+2. NEXT ACTION: PR #1685 is Stage A and needs Jason. It carries ADR-009, the board identifiers, ten behavioural criteria and AGENTS.md rule 8. Stage B does not start before it merges, because Stage B derives issues from the criteria it adds. THE BOARD IDENTIFIERS LAND WITH THAT SAME PR, in .claude/rungate/config.json under the key `board` — so they are on main only once #1685 merges, and on branch rg/codify-engine-goal until then — node id, six field ids, seven view ids, read back from the live API on 2026-10-30. Read them from there. Do not expect --project to be optional yet: the config reader is SC-2636 and is not built, so commands still take --project <node-id> and you get the value from that file.
 3. BASELINES measured 2026-10-30 on origin/main at eae12e11, so a later reading can tell whether anything moved: 1 of 15 pipeline criteria proved by a test naming the id; 2 of 27 top-level specs carrying a Phase placement table; 71 open issues of which 46 name a criterion and 0 carry a blocked-by edge; 1131 of 1485 ticked criteria repo-wide satisfied by a symbol being present rather than a behaviour; 0 claims in SUCCESS.md naming the board, backlog or tracker; 0 repository locations recording the board node id before this PR.
 4. THE DEFECT THIS EXISTS TO STOP. A criterion of the form `<file> contains [<symbol>]` is satisfied by a name being present. SC-2609 requires lib/board-mirror.ts to contain NAMES_NONE; it does, and its value is the empty string — satisfiable and false. That is how partial work reads as a finished plan. No criterion added under ADR-009 may be satisfied by a symbol existing.
 5. LOOSE ENDS, both unmerged and invisible from GitHub: commit 9f12ffd6 in /Users/jhorn/Projects/rg-wt-m12-proposal is on no remote branch — 90 lines adding an increment-1 build plan to specs/CODE-REVIEW-CONVERGENCE-SPEC.md, containing a section headed the decision this needs from Jason; and specs/HELP-SPEC.md is untracked in /Users/jhorn/Projects/rg-wt-threads2 and not on main.
@@ -50,7 +50,7 @@ Suite: 25/25 SCs done.
 
 ## 🔄 Engine — a spec becomes a readable board, with nothing hand-run (ADR-009) (IN PROGRESS)
 
-## 🔄 Code Review Convergence (CRC) — the active plan (IN PROGRESS)
+## 🔄 Code Review Convergence (CRC) — the PAYLOAD, sequenced behind the engine (IN PROGRESS)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
