@@ -160,9 +160,39 @@ export function scMentionPattern(): RegExp {
   return new RegExp(`\\b${SC_ID_SOURCE}(?![\\w-])`, "g");
 }
 
+/**
+ * An id as a regex LITERAL, for anything building a pattern around one.
+ *
+ * Exported because it is a decider, and a second copy of it would be a second
+ * decider answering the same question — no behavioural test can tell two
+ * copies apart, and a mutation of either leaves the other holding the case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`). `declaresOwnCriterion` in
+ * `lib/board-mirror.ts` interpolated an id without escaping it; found by the
+ * AI review of #1679, which saw the asymmetry with this function.
+ */
+export function idAsLiteral(id: string): string {
+  return id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * `<before><id>`, with the id escaped and CLOSED the one correct way.
+ *
+ * Two things have to be right at every site that matches an id, and both
+ * have been got wrong once: the id must be a literal, and it must be closed
+ * with `(?![\w-])` rather than `\b`. `\b` fires on a word-to-non-word
+ * transition, so a trailing hyphen counts as a boundary and `SC-1` matches
+ * the front of `SC-1-draft` — #148, and found again in `declaresOwnCriterion`
+ * by the AI review of #1679, one round after the escaping half was fixed.
+ *
+ * Both halves live here so there is one decider rather than two that agree.
+ */
+export function idBoundedPattern(before: string, id: string, flags = ""): RegExp {
+  return new RegExp(`${before}${idAsLiteral(id)}(?![\\w-])`, flags);
+}
+
 /** One specific id, for asking "does this text name THIS criterion". */
 export function oneScMentionPattern(id: string): RegExp {
-  return new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`);
+  return idBoundedPattern("\\b", id);
 }
 
 /**

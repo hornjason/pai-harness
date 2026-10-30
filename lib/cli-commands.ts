@@ -193,11 +193,20 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
   // `projectRootFlag` for the same reason as its neighbours — the spec path
   // resolves against the root, and without it a consumer would mirror
   // RUNGATE's criteria onto their own board.
+  // `--spec` is BRACKETED, and that is load-bearing rather than cosmetic.
+  // Spelling it as required tells a reader to narrow the sweep to one spec,
+  // which blanks the cell of every issue serving any other spec — SC-2610,
+  // the defect the flag was made optional to fix. This registry is a second
+  // place that documents the same contract as `USAGE` in
+  // `scripts/board-mirror.ts`, so `test/board-mirror.test.ts` asserts the two
+  // agree: the AI review of #1679 raised this stale string on ten rounds
+  // running and each round found it unswept, because a fix applied to the
+  // script never reached the sibling that describes it.
   "board-mirror": {
     script: "scripts/board-mirror.ts",
-    summary: "Show a spec's criteria, and what is ready to pick up, on the project board",
+    summary: "Show every spec's criteria, and what is ready to pick up, on the project board",
     usage:
-      "rungate board-mirror --project <node-id> --spec <spec.md> [--field <name>] [--write] [--ready]",
+      "rungate board-mirror --project <node-id> [--spec <spec.md>] [--field <name>] [--write] [--ready] [--json]",
     projectRootFlag: true,
   },
   // Step 4 of ADR-003, in reverse. The issue template's own footer says a
