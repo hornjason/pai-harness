@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-29",
+  "updated": "2026-10-30",
   "priorities": [
     "SCOPE LOCK (2026-10-23): all work is locked to specs/CODE-REVIEW-CONVERGENCE-SPEC.md. The build order is the section 'The order to build the remainder in' in that spec (landed via PR #1466). Do not pick criteria opportunistically — that is what produced three sessions in a row that ended in an analysis comment instead of code.",
     "THE NUMBER THIS MOVES. Measured 2026-10-23 over the 44 most recent PRs that carried a ledger: passed-after-one-round 39.4% (blog before 65%, after 78%); five-or-more-rounds 20.5% (8.9% / 1.5%); mean rounds-to-pass 2.64 (2.08 / 1.32). We are WORSE than the state the source improved from, on all three. The tail is the damage, not the median — 20.5% is over twice their starting figure while the mean is only a quarter above it.",
@@ -218,6 +218,12 @@
     }
   ],
   "sessions": [
+    {
+      "date": "2026-10-30 session 68",
+      "items": [
+        "THE PIPELINE WAS RUN AGAINST ITS OWN GOVERNING SPEC FOR THE FIRST TIME, AND IT FOUND THAT I HAD UNDER-COUNTED THE GAP BY A THIRD.\n\n#1674 merged (10c53e1d) carrying ADR-008, the decomposition plan for SPEC-TO-BOARD-PIPELINE-SPEC.md. That spec merged the night before with 15 criteria and nothing naming 14 of them, which was the whole forward gap. Six issues now name six of them — #1675 SC-2602, #1676 SC-2610, #1677 SC-2613, #1678 SC-2612, #1680 SC-2606, #1681 SC-2611 — each in a Pipeline Phase milestone created by plan-spec, with one blocked-by edge: #1678's promotion tool creates issues, so it must not land before #1677 meters createIssue. criterion-inventory now reaches them: NOT STARTED fell from 14 of 15 to 10 of 15, and the ten remaining are criteria that are already true and need a binding rather than an issue.\n\nIT WAS FOUR ISSUES UNTIL THE REVIEW CORRECTED TWO READINGS. SC-2606 and SC-2611 were recorded as already-present on the strength of `adjacent` in lib/spec-deps.ts and `coverage` in lib/spec-placement.ts. Each occurs exactly once, inside a prose comment, neither as a declared identifier. The reading was taken with grep and reported as if it were a symbol table. Both errors shrank the backlog, which is the direction nobody notices — a smaller plan and a smaller problem produce the same document — and uncorrected they would have left Phase 2 and Phase 4 looking finished. It matters beyond the count: `contains [adjacent]` is satisfied by a text match, so both criteria could be ticked by a conformity run while nothing of that name exists.\n\nTHE BOARD NOW ANSWERS THE QUESTION IT WAS BUILT FOR. board-mirror filtered its id set to one spec named on the command line, so every issue serving any of the other 25 specs rendered as an empty cell — 28 blank on 2026-10-29. It now sweeps specs/ recursively (#1679, open). Running it against the live board exposed two ways the cell goes WRONG once every spec is read, and a wrong cell is worse than a blank: #713 writes its own acceptance criteria as `- [ ] SC-1 —`, which is a declaration and not a reference, and #312's `SC-A1` is stated by three specs so it cannot be attributed. Both are now excluded. 62 of 91 board items carry their criteria; the 29 that do not are reviewer findings that legitimately serve none.\n\nTHE BACKWARD DIRECTION IS NOT CLOSED AND SHOULD NOT BE READ AS CLOSED. Tonight moved the forward direction only — every criterion reachable from the board. 24 open issues still name no criterion, almost all labelled follow-up or external-audit, and the tool that would turn those into criteria is SC-2612, which is #1678 and unbuilt.\n\nONE RECURRING DEFECT, NAMED BY THE REVIEWER AND ANSWERED STRUCTURALLY. Across #1672 and #1674 the same bug was repaired four times at four call sites: an incomplete read or result treated as complete. Pagination on openTitles, then independently on milestones, then a missing try/catch around the pre-flight reads, then --json ignored on every refusal. Both axes are now properties rather than point fixes — every `gh api` call in scripts/plan-issues.ts is asserted to paginate, and every refusal in decompose() is asserted to leave through one reporter. #1679 showed the same shape in miniature: escaping an id was unified one round, and the round after caught that the TERMINATOR was still duplicated, with `\\b` matching SC-1 inside SC-1-draft."
+      ]
+    },
     {
       "date": "2026-10-29 session 67",
       "items": [
@@ -895,35 +901,18 @@
     }
   ],
   "session": {
-    "number": 67,
-    "date": "2026-10-29",
-    "suite": "No full local suite — other sessions hold worktrees and .claude/rules/parallel-sessions.md forbids a concurrent full run. Targeted via the set scripts/census-routing.ts derived per diff: 63 pass 0 fail on test/plan-deps.test.ts + test/plan-issues.test.ts, and 1,592 pass 0 fail across the census-routed set for the #1669 diff. Typecheck 0, matching baseline. Nine mutations run across two commits, nine matching their predicted membership; one row read 0 on its first pass and was reported as a hole rather than a pass, the case added, and the mutant re-run to watch it go red.",
+    "number": 68,
+    "date": "2026-10-30",
+    "suite": "No full local suite — other sessions hold worktrees and .claude/rules/parallel-sessions.md forbids a concurrent full run. Targeted via scripts/census-routing.ts per diff: 63 pass 0 fail on test/issue-decomposition.test.ts, 42 pass 0 fail on test/board-mirror.test.ts, 1,320 pass 0 fail across the census-routed conformity and closure set, 17 pass 0 fail on the line-citation ratchet. Typecheck 0, matching baseline. Fifteen mutations across the two branches, every one predicted by MEMBERSHIP before running and every one matching; two cases went red on their own first write and were fixed rather than reported as passes.",
     "issues_created": [
-      1650,
-      1651,
-      1652,
-      1653,
-      1654,
-      1655,
-      1656,
-      1657,
-      1658,
-      1659,
-      1660,
-      1661,
-      1662,
-      1663,
-      1664,
-      1665,
-      1666,
-      1667,
-      1668
+      1675,
+      1676,
+      1677,
+      1678,
+      1680,
+      1681
     ],
-    "issues_closed": [
-      1548,
-      1440,
-      1404
-    ],
-    "summary": "THE SPEC-TO-BOARD PIPELINE GOT TWO MORE TOOLS, ITS FIRST HONEST AUDIT, AND A CORRECTION ABOUT WHO WRITES THIS FILE.\n\n#1647 and #1648 merged, putting plan-spec, board-mirror, the issue template and ADR-003/004 on main. plan-deps and plan-issues --repair are built and in #1669; the repair has ALREADY been applied to live state, taking phase issues naming no criterion from 11 to 0.\n\nTHE BOARD AUDIT FOUND THE COLUMN LYING IN THE DIRECTION THAT HIDES A GAP. board-mirror declares NAMES_NONE as the text for an issue naming no criterion and sets it to the empty string, so measured-and-none is byte-identical to never-visited. The mirror itself is healthy — 0 stale, 0 disagreeing across 65 open issues — which is why the 28 blanks read as a coverage gap rather than as the defect they are.\n\nTHE UNALIGNED BACKLOG HAS NO ORDERING SIGNAL OF ANY KIND: 22 issues, zero dependency edges in both directions, Priority set on 0 of 65 board items, Size on 0 of 65. And they are not safely swarmable — 11 of the 22 share a file with another, four of them lib/bash-write-guard.ts.\n\nONE OF 26 SPECS HAS A PHASE PLACEMENT TABLE, which is why only convergence is orderable. A criterion id does not carry order; the placement table does.\n\nTWO PIPELINE STEPS HAVE NO TOOL AT ALL: turning a criterion into the right NUMBER of issues, and turning a reviewer finding into a criterion in a spec. The pipeline runs one way and findings arrive from the other end, so the 22 unordered issues ARE the unmanaged return path.\n\nAND THE CORRECTION THAT MATTERS MOST: I spent this session telling Jason that project-state.json was his to write. It is not. DA-owned means the Digital Assistant owns it — me — and #296 (2026-10-11) says so in its own commit message: PROJECT-STATE.md is DA-owned, stop instructing AGENTS to write it. The prohibition names a PLACE I may not write from, a worktree, and I resolved it into a PERSON. The cost was four hours of red main and three blocked pull requests, in a file I could have fixed at any point."
+    "issues_closed": [],
+    "summary": "THE PIPELINE WAS RUN AGAINST ITS OWN GOVERNING SPEC FOR THE FIRST TIME, AND IT FOUND THAT I HAD UNDER-COUNTED THE GAP BY A THIRD.\n\n#1674 merged (10c53e1d) carrying ADR-008, the decomposition plan for SPEC-TO-BOARD-PIPELINE-SPEC.md. That spec merged the night before with 15 criteria and nothing naming 14 of them, which was the whole forward gap. Six issues now name six of them — #1675 SC-2602, #1676 SC-2610, #1677 SC-2613, #1678 SC-2612, #1680 SC-2606, #1681 SC-2611 — each in a Pipeline Phase milestone created by plan-spec, with one blocked-by edge: #1678's promotion tool creates issues, so it must not land before #1677 meters createIssue. criterion-inventory now reaches them: NOT STARTED fell from 14 of 15 to 10 of 15, and the ten remaining are criteria that are already true and need a binding rather than an issue.\n\nIT WAS FOUR ISSUES UNTIL THE REVIEW CORRECTED TWO READINGS. SC-2606 and SC-2611 were recorded as already-present on the strength of `adjacent` in lib/spec-deps.ts and `coverage` in lib/spec-placement.ts. Each occurs exactly once, inside a prose comment, neither as a declared identifier. The reading was taken with grep and reported as if it were a symbol table. Both errors shrank the backlog, which is the direction nobody notices — a smaller plan and a smaller problem produce the same document — and uncorrected they would have left Phase 2 and Phase 4 looking finished. It matters beyond the count: `contains [adjacent]` is satisfied by a text match, so both criteria could be ticked by a conformity run while nothing of that name exists.\n\nTHE BOARD NOW ANSWERS THE QUESTION IT WAS BUILT FOR. board-mirror filtered its id set to one spec named on the command line, so every issue serving any of the other 25 specs rendered as an empty cell — 28 blank on 2026-10-29. It now sweeps specs/ recursively (#1679, open). Running it against the live board exposed two ways the cell goes WRONG once every spec is read, and a wrong cell is worse than a blank: #713 writes its own acceptance criteria as `- [ ] SC-1 —`, which is a declaration and not a reference, and #312's `SC-A1` is stated by three specs so it cannot be attributed. Both are now excluded. 62 of 91 board items carry their criteria; the 29 that do not are reviewer findings that legitimately serve none.\n\nTHE BACKWARD DIRECTION IS NOT CLOSED AND SHOULD NOT BE READ AS CLOSED. Tonight moved the forward direction only — every criterion reachable from the board. 24 open issues still name no criterion, almost all labelled follow-up or external-audit, and the tool that would turn those into criteria is SC-2612, which is #1678 and unbuilt.\n\nONE RECURRING DEFECT, NAMED BY THE REVIEWER AND ANSWERED STRUCTURALLY. Across #1672 and #1674 the same bug was repaired four times at four call sites: an incomplete read or result treated as complete. Pagination on openTitles, then independently on milestones, then a missing try/catch around the pre-flight reads, then --json ignored on every refusal. Both axes are now properties rather than point fixes — every `gh api` call in scripts/plan-issues.ts is asserted to paginate, and every refusal in decompose() is asserted to leave through one reporter. #1679 showed the same shape in miniature: escaping an id was unified one round, and the round after caught that the TERMINATOR was still duplicated, with `\\b` matching SC-1 inside SC-1-draft."
   }
 }
