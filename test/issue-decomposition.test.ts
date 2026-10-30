@@ -8,7 +8,7 @@
  * (`.claude/rules/checks-must-be-able-to-fail.md`, the seventh shape).
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { REFUSAL_EXIT, main as planIssuesMain } from "../scripts/plan-issues";
@@ -685,6 +685,59 @@ describe("scripts/plan-issues --decompose: what reaches GitHub", () => {
    * a one-pass implementation drops every forward reference — silently, since
    * an absent edge looks exactly like an order nobody asked for.
    */
+  /**
+   * Found on the first real run of this command, 2026-10-30: issues #1675 to
+   * #1678 each carry
+   * `rungate plan-issues --decompose /Users/jhorn/Projects/rg-wt-step4/docs/adr/ADR-008-…`
+   * in their body. The absolute path is a reading of ONE machine's filesystem
+   * at one moment, written into the one artefact the whole pipeline exists to
+   * make readable by somebody else. Nobody can run it, and a worktree that is
+   * deleted next week makes the provenance line point at nothing.
+   *
+   * `main()` resolves the plan to an absolute path because `readFileSync`
+   * needs one, and then the same string is used as the label. Two different
+   * needs, one variable.
+   */
+  test("the body names the plan by its path in the REPOSITORY, not on this disk", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-decompose-root-"));
+    try {
+      const bodies: string[] = [];
+      const api: DecomposeGitHub = {
+        openTitles: async () => new Map(),
+        milestones: async () => new Set(["Phase 3"]),
+        blockedBy: async () => [],
+        create: async (_repo, issue) => {
+          bodies.push(issue.body);
+          return 2000;
+        },
+        addBlockedBy: async () => {},
+      };
+      // A plan INSIDE the project root, reached by an absolute path — which
+      // is how the CLI always reaches it, since `main()` resolves it before
+      // anything downstream sees it.
+      mkdirSync(join(dir, "docs", "adr"), { recursive: true });
+      const rel = join("docs", "adr", "ADR-009-plan.md");
+      writeFileSync(join(dir, rel), plan(GOOD));
+      const code = await planIssuesMain(
+        ["--decompose", join(dir, rel), "--repo", "o/r", "--project-root", dir, "--write"],
+        undefined as never,
+        api,
+      );
+      expect(code).toBe(0);
+      expect(bodies, "nothing was created, so the assertion below is vacuous").toHaveLength(1);
+      expect(bodies[0]).toContain(`--decompose ${rel}\``);
+      // The control the line above needs: `toContain` of the relative path
+      // also passes on the absolute one, because the absolute path ENDS with
+      // it. This is the half that can actually fail.
+      expect(
+        bodies[0].includes(dir),
+        `the body leaks the author's filesystem path:\n${bodies[0]}`,
+      ).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("an edge to a row created in the same run is wired, not dropped", async () => {
     const { api, calls } = recorder();
     const code = await run(

@@ -29,7 +29,7 @@
  * cleanup are one action.
  */
 import { existsSync, readFileSync } from "fs";
-import { isAbsolute, join } from "path";
+import { isAbsolute, join, relative } from "path";
 import { parseArgs } from "util";
 import {
   CRITERIA_HEADING,
@@ -280,6 +280,13 @@ const LIVE_DECOMPOSE: DecomposeGitHub = {
  */
 async function decompose(
   planPath: string,
+  /**
+   * How the plan is NAMED in the issues this creates, which is a different
+   * need from how it is read. `planPath` is absolute because `readFileSync`
+   * requires it; a body that quotes it records one machine's filesystem in
+   * the artefact the pipeline exists to make readable by somebody else.
+   */
+  planLabel: string,
   repo: string,
   write: boolean,
   json: boolean,
@@ -310,7 +317,7 @@ async function decompose(
     );
     return REFUSAL_EXIT;
   }
-  const planned = planDecomposition(reading.rows, live, planPath, CRITERIA_HEADING);
+  const planned = planDecomposition(reading.rows, live, planLabel, CRITERIA_HEADING);
   if (planned.reading === "UNMEASURED") {
     console.error(`plan-issues: UNMEASURED — the plan does not fit the tracker:`);
     for (const r of planned.unmeasuredReasons) console.error(`  - ${r}`);
@@ -477,7 +484,13 @@ export async function main(
     return REFUSAL_EXIT;
   }
   if (values.decompose) {
-    return await decompose(planPath, repo, values.write, values.json, gh3);
+    // A plan OUTSIDE the project keeps its absolute path rather than being
+    // spelled `../../tmp/…`: it genuinely is not a path in this repository,
+    // and saying so is the honest reading. Only a plan inside the tree gets
+    // the repo-relative name, because only that one is reproducible.
+    const within = relative(root, planPath);
+    const planLabel = within === "" || within.startsWith("..") ? planPath : within;
+    return await decompose(planPath, planLabel, repo, values.write, values.json, gh3);
   }
 
   const reading = parseRepairPlan(readFileSync(planPath, "utf-8"));
