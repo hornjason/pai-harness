@@ -242,6 +242,62 @@ describe("SC-2610: every spec contributes, not the one on the command line", () 
   });
 
   /**
+   * The refusal itself, driven through `specCriteriaIn` rather than through
+   * the predicate it calls.
+   *
+   * The case above tests `unlocatableEntries` with hand-built objects and
+   * separately asserts the live tree reads MEASURED — so nothing executed the
+   * `SpecSweep` the refusal assembles, and a wrong field or a broken message
+   * inside it would have gone unobserved. A predicate is not the object built
+   * from it. Raised by the AI review of #1679.
+   *
+   * `readdirSync` on a runtime that HAS `parentPath` cannot produce an entry
+   * without one, so the listing is a parameter and the case supplies it. The
+   * CONTROL is the first half: the same entries WITH `parentPath` go through
+   * the same injected seam and read MEASURED, so the refusal below is the
+   * missing field and not the injection.
+   */
+  test("the refusal returns an UNMEASURED sweep that names what it could not locate", () => {
+    const root = tree({
+      "A-SPEC.md": spec("SC-10"),
+      "nested/B-SPEC.md": spec("SC-20"),
+    });
+    const entries = (withParent: boolean) => [
+      { name: "A-SPEC.md", parentPath: join(root, "specs"), isFile: () => true },
+      {
+        name: "B-SPEC.md",
+        ...(withParent ? { parentPath: join(root, "specs", "nested") } : {}),
+        isFile: () => true,
+      },
+    ];
+    try {
+      // Control: the seam carries a normal listing through to a real read.
+      const ok = specCriteriaIn(root, () => entries(true));
+      expect(ok.reading, "the injected listing cannot reach a real sweep").toBe("MEASURED");
+      expect(ok.ids).toEqual(["SC-10", "SC-20"]);
+
+      const r = specCriteriaIn(root, () => entries(false));
+      expect(r.reading).toBe("UNMEASURED");
+      // Every field of the object, because the object is what was untested.
+      // A sweep that refuses must report NOTHING read — a partial list is the
+      // flattening it refused, delivered quietly.
+      expect(r.ids).toEqual([]);
+      expect(r.specs).toEqual([]);
+      expect(r.collisions).toEqual([]);
+      expect(r.unmeasuredReasons.length).toBe(1);
+      const why = r.unmeasuredReasons[0]!;
+      expect(why).toContain("1 spec file(s)");
+      expect(why).toContain(join(root, "specs"));
+      expect(why).toContain("B-SPEC.md");
+      // The id the locatable spec DID state must not appear anywhere in the
+      // refusal: reporting it would read as a partial result.
+      expect(why).not.toContain("SC-10");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
    * Both readers of a spec, agreeing by construction rather than by having
    * been fixed twice.
    *

@@ -118,13 +118,33 @@ export function unlocatableEntries<T extends { name: string; parentPath?: string
   return entries.filter(e => typeof e.parentPath !== "string" || e.parentPath === "");
 }
 
-export function specCriteriaIn(root: string): SpecSweep {
+/** The shape `specCriteriaIn` needs from a directory entry, and nothing more. */
+export interface SpecDirEntry {
+  name: string;
+  parentPath?: string;
+  isFile(): boolean;
+}
+
+/**
+ * How the sweep lists `specs/`. A parameter, not a hardcoded call, because
+ * `readdirSync` on a runtime that HAS `parentPath` can never produce an entry
+ * without one — so with the call inlined the refusal below is unreachable from
+ * any test, and an unreachable refusal is indistinguishable from a working one
+ * (`.claude/rules/checks-must-be-able-to-fail.md`). Testing
+ * `unlocatableEntries` alone does not close that: the predicate is not the
+ * `SpecSweep` the refusal assembles, and a wrong field or a broken message in
+ * that object would go unobserved. Found by the AI review of #1679.
+ */
+export type SpecDirReader = (dir: string) => readonly SpecDirEntry[];
+
+export const readSpecDir: SpecDirReader = dir =>
+  readdirSync(dir, { recursive: true, withFileTypes: true });
+
+export function specCriteriaIn(root: string, readDir: SpecDirReader = readSpecDir): SpecSweep {
   const dir = join(root, "specs");
   let files: string[];
   try {
-    const entries = readdirSync(dir, { recursive: true, withFileTypes: true }).filter(
-      e => e.isFile() && e.name.endsWith(".md"),
-    );
+    const entries = readDir(dir).filter(e => e.isFile() && e.name.endsWith(".md"));
     // `parentPath` is the ONLY field that can be trusted to name a nested
     // entry's real parent. There is no fallback: `Dirent.path` under a
     // recursive readdir historically resolved to the top-level directory
@@ -151,8 +171,12 @@ export function specCriteriaIn(root: string): SpecSweep {
         ],
       };
     }
+    // `as string` rather than a second `typeof e.parentPath === "string"`:
+    // the refusal above already decided that question for every entry here,
+    // and a second decider answering it again is one no behavioural test can
+    // tell apart from the first.
     files = entries
-      .map(e => relative(root, join(e.parentPath, e.name)).split(sep).join("/"))
+      .map(e => relative(root, join(e.parentPath as string, e.name)).split(sep).join("/"))
       .filter(p => !(NOT_A_SPEC as readonly string[]).includes(p))
       .sort();
   } catch (e) {
