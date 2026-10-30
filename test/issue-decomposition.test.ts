@@ -251,6 +251,32 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     expect(r.rows[0].files).toEqual(["lib/a.ts", "lib/b.ts"]);
   });
 
+  test("TWO backslashes before a pipe: the pipe stays escaped, as GFM reads it", () => {
+    // Round 11 reported this as a column merge — "GFM renders these as two
+    // columns and rowCells() merges them". MEASURED against POST /markdown
+    // mode=gfm on 2026-10-30, it does not:
+    //
+    //   | CRC-C2 | ends in backslash\\| lib/a.ts | x | y |
+    //     -> ['CRC-C2', 'ends in backslash| lib/a.ts', 'x', 'y', '']
+    //   | CRC-C2 | has a \| pipe here | lib/a.ts | x |      (the control)
+    //     -> ['CRC-C2', 'has a | pipe here', 'lib/a.ts', 'x', '']
+    //
+    // Identical shape. GFM's table splitter uses a ONE-character lookbehind,
+    // so a pipe preceded by a backslash is never a delimiter however many
+    // backslashes precede THAT. The renderer pads the short row to the
+    // header width; this parser refuses it on the cell count, which is the
+    // safe direction and the one #1671 established.
+    //
+    // Written as a case rather than only as a reply because the premise was
+    // asserted about a renderer, and on #1671 accepting exactly that kind of
+    // unmeasured premise introduced a real bypass.
+    const r = parseDecompositionPlan(
+      plan("| CRC-C2 | ends in backslash\\| lib/a.ts | Phase 3 | — |"),
+    );
+    expect(r.reading).toBe("UNMEASURED");
+    expect(r.rejected.map(x => x.why).join(" ")).toMatch(/only 4 cells, need 5/);
+  });
+
   test("a backticked MILESTONE matches the live one — the third normalisation site", () => {
     // The outcome and the cells were collapsed onto one `plain()` and this
     // was left on a bare trim, so `` `Phase 3` `` kept its backticks, missed
