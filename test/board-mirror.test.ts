@@ -41,6 +41,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   criteriaNamedBy,
+  declaresOwnCriterion,
   isReady,
   isUnblocked,
   mirrorRows,
@@ -227,6 +228,35 @@ describe("SC-2610: every spec contributes, not the one on the command line", () 
    * collision reports, each naming the template as a spec that states a
    * criterion. That is the claim worth binding, so it is the one asserted.
    */
+  /**
+   * Every site that builds a pattern around an id must escape it the same
+   * way, and the property is asserted across the SITES rather than repaired
+   * at one of them: two escapers that agree are behaviourally one, and a
+   * mutation of either leaves the other holding the case up
+   * (`.claude/rules/checks-must-be-able-to-fail.md`).
+   *
+   * Found by the AI review of #1679 — `declaresOwnCriterion` interpolated the
+   * id raw while its sibling `oneScMentionPattern` escaped it. Today's id
+   * grammar contains no metacharacter, so no behavioural case could separate
+   * them; what the review saw was the asymmetry.
+   */
+  test("an id carrying a regex metacharacter is matched LITERALLY, at every site", () => {
+    // `.` is the metacharacter, and the id still ENDS in a word character,
+    // because both patterns terminate on a boundary and a `)` would fail
+    // that for reasons unrelated to escaping.
+    const id = "SC-1.5";
+    const text = `- [ ] ${id} — the issue states its own\n`;
+    // Unescaped, the `.` matches any character, so `SC-115` satisfies the
+    // pattern. The positive case cannot show this — it passes either way —
+    // so the NEGATIVE is the half that can fail.
+    expect(declaresOwnCriterion(text, id), "the literal case stopped matching").toBe(true);
+    expect(declaresOwnCriterion("- [ ] SC-115 — something else\n", id)).toBe(false);
+    expect(criteriaNamedBy({ title: "x", body: "serves SC-115" }, [id])).toEqual([]);
+    // Both sites agree on the same input, which is the property.
+    expect(criteriaNamedBy({ title: "x", body: `serves ${id}` }, [id])).toEqual([id]);
+    expect(criteriaNamedBy({ title: "x", body: text }, [id]), "a declaration counted").toEqual([]);
+  });
+
   test("the excluded file exists, states criteria, and leaves the sweep", () => {
     const root = join(import.meta.dir, "..");
     expect(NOT_A_SPEC).toEqual(["specs/SPEC-TEMPLATE.md"]);

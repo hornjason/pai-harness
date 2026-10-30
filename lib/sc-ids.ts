@@ -160,9 +160,23 @@ export function scMentionPattern(): RegExp {
   return new RegExp(`\\b${SC_ID_SOURCE}(?![\\w-])`, "g");
 }
 
+/**
+ * An id as a regex LITERAL, for anything building a pattern around one.
+ *
+ * Exported because it is a decider, and a second copy of it would be a second
+ * decider answering the same question — no behavioural test can tell two
+ * copies apart, and a mutation of either leaves the other holding the case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`). `declaresOwnCriterion` in
+ * `lib/board-mirror.ts` interpolated an id without escaping it; found by the
+ * AI review of #1679, which saw the asymmetry with this function.
+ */
+export function idAsLiteral(id: string): string {
+  return id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** One specific id, for asking "does this text name THIS criterion". */
 export function oneScMentionPattern(id: string): RegExp {
-  return new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`);
+  return new RegExp(`\\b${idAsLiteral(id)}(?![\\w-])`);
 }
 
 /**
