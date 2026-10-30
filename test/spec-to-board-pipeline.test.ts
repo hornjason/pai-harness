@@ -77,10 +77,22 @@ describe("SPEC-TO-BOARD-PIPELINE-SPEC.md is readable by the pipeline it governs"
     );
     expect(mine.length, "no reservation was declared for this spec's ids").toBe(1);
 
-    const used = parseCriteria(SPEC)
-      .map(c => Number(/^SC-(\d+)$/.exec(c.id)?.[1]))
-      .filter(n => Number.isInteger(n));
-    expect(used.length, "no SC ids were read, so the range check is vacuous").toBeGreaterThan(0);
+    // An id this check cannot parse must FAIL it, never be filtered out of
+    // the population. `.filter(Number.isInteger)` dropped anything that was
+    // not exactly `SC-<digits>`, and the only guard was that SOME id parsed
+    // — so a single differently-shaped criterion sitting outside the
+    // reserved block would have been skipped silently while the check went
+    // green. "Assertions that hold vacuously", in
+    // `.claude/rules/checks-must-be-able-to-fail.md`. Found by the AI review
+    // of this change.
+    const ids = parseCriteria(SPEC).map(c => c.id);
+    expect(ids.length, "no criteria were read, so the range check is vacuous").toBeGreaterThan(0);
+    expect(
+      ids.filter(id => !/^SC-\d+$/.test(id)),
+      "an id this check cannot parse would be dropped from the range test below rather " +
+        "than examined by it, so a criterion outside the reservation could pass unseen",
+    ).toEqual([]);
+    const used = ids.map(id => Number(/^SC-(\d+)$/.exec(id)![1]));
     expect(
       used.filter(n => n < mine[0].from || n > mine[0].to),
       `ids outside the reserved ${mine[0].from}..${mine[0].to}`,
