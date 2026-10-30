@@ -278,7 +278,15 @@ export function parseDecompositionPlan(content: string): DecompositionReading {
       reject(`names ${files.length} files and the limit is ${MAX_FILES} — AGENTS.md rule 3`);
       continue;
     }
-    const m = c[3].trim();
+    // THIRD normalisation site, and it was doing none. The fix for "two
+    // normalisations that agree on most inputs" collapsed the outcome and
+    // the cell entries onto `plain()` and left this one doing a bare trim,
+    // so a milestone written `` `Phase 3` `` kept its backticks, missed a
+    // live milestone that genuinely exists, and the plan was refused
+    // telling the author to create it. Replacing one name is not the fix;
+    // sweeping for the others is. Found by the AI review of this change,
+    // one round after the collapse.
+    const m = plain(c[3]);
     rows.push({
       criterion: criteria[0],
       outcome,

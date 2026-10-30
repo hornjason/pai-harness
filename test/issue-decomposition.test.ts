@@ -251,6 +251,18 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     expect(r.rows[0].files).toEqual(["lib/a.ts", "lib/b.ts"]);
   });
 
+  test("a backticked MILESTONE matches the live one — the third normalisation site", () => {
+    // The outcome and the cells were collapsed onto one `plain()` and this
+    // was left on a bare trim, so `` `Phase 3` `` kept its backticks, missed
+    // a milestone that exists, and the plan was refused telling the author
+    // to create it. Found by the AI review one round after that collapse.
+    const r = parseDecompositionPlan(
+      plan("| CRC-C2 | an outcome long enough to pass | lib/a.ts | `Phase 3` | — |"),
+    );
+    expect(r.reading, r.unmeasuredReasons.join(" | ")).toBe("MEASURED");
+    expect(r.rows[0].milestone).toBe("Phase 3");
+  });
+
   test("a blocker naming neither #<n> nor another row is refused, never dropped", () => {
     const r = parseDecompositionPlan(
       plan("| CRC-C2 | an outcome long enough to pass | lib/a.ts | — | some work elsewhere |"),
