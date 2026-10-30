@@ -156,6 +156,12 @@ export interface DecomposeGitHub {
     issue: { title: string; body: string; milestone: string | null },
   ) => Promise<number>;
   addBlockedBy: (repo: string, blocked: number, blocker: number) => Promise<void>;
+  /**
+   * The issues already blocking `issue`. The idempotence key for EDGES, and
+   * the counterpart to `openTitles` for issues — without it a re-run has one
+   * safe half and one unsafe one. See the edge pass in `decompose`.
+   */
+  blockedBy: (repo: string, issue: number) => Promise<number[]>;
 }
 
 const LIVE_DECOMPOSE: DecomposeGitHub = {
@@ -237,6 +243,13 @@ const LIVE_DECOMPOSE: DecomposeGitHub = {
   addBlockedBy: async (repo, blocked, blocker) => {
     gh(["issue", "edit", String(blocked), "--repo", repo, "--add-blocked-by", String(blocker)]);
   },
+  blockedBy: async (repo, issue) => {
+    const out = gh(["api", `repos/${repo}/issues/${issue}/dependencies/blocked_by`, "--jq", ".[].number"]);
+    return out
+      .split("\n")
+      .filter(l => l.trim() !== "")
+      .map(Number);
+  },
 };
 
 /**
@@ -290,6 +303,21 @@ async function decompose(
   }
 
   const edges: string[] = [];
+  /**
+   * Edges already on the tracker, read once per blocked issue.
+   *
+   * Without this the re-run story had a safe half and an unsafe one: an
+   * issue that already exists is skipped by `openTitles`, but every edge was
+   * re-issued unconditionally. Measured against the live API on 2026-10-30 —
+   * re-adding an existing edge exits 1 with "Validation failed: Target issue
+   * has already been taken", which `gh()` turns into a throw — so a perfectly
+   * clean re-run reported every correctly-wired edge as a FAILED edge and the
+   * command refused. The tracker was right and the report was wrong, which is
+   * the worse direction: it is the reading somebody acts on. Found by the AI
+   * review of this change.
+   */
+  const alreadyWired: string[] = [];
+  const existing = new Map<number, Set<number>>();
   if (write) {
     for (const e of planned.edges) {
       const blocked = numbers.get(e.blocked);
@@ -301,7 +329,17 @@ async function decompose(
         continue;
       }
       try {
+        if (!existing.has(blocked)) existing.set(blocked, new Set(await api.blockedBy(repo, blocked)));
+        if (existing.get(blocked)!.has(blocker)) {
+          // Reported apart from `edges`, never folded into it: "we wired this"
+          // and "this was already wired" are different facts, and a re-run
+          // that claims to have written what it found is how a plan appears
+          // to have been applied twice.
+          alreadyWired.push(`#${blocked} already blocked by #${blocker}`);
+          continue;
+        }
         await api.addBlockedBy(repo, blocked, blocker);
+        existing.get(blocked)!.add(blocker);
         edges.push(`#${blocked} blocked by #${blocker}`);
       } catch (err) {
         failed.push(`edge #${blocked} blocked by #${blocker}: ${(err as Error).message}`);
@@ -320,6 +358,7 @@ async function decompose(
           wrote: write,
           created,
           edges,
+          alreadyWired,
           failed,
         },
         null,
@@ -338,7 +377,11 @@ async function decompose(
     console.log(`\nNothing written. Re-run with --write to apply.`);
     return 0;
   }
-  console.log(`\nCreated ${created.length}, wired ${edges.length} edge(s).`);
+  console.log(
+    `\nCreated ${created.length}, wired ${edges.length} edge(s), ` +
+      `${alreadyWired.length} edge(s) already present.`,
+  );
+  for (const w of alreadyWired) console.log(`  kept    ${w}`);
   for (const f of failed) console.error(`  FAILED: ${f}`);
   return failed.length > 0 ? REFUSAL_EXIT : 0;
 }

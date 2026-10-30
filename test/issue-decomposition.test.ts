@@ -472,12 +472,19 @@ describe("decomposedBody writes what the issue has to carry", () => {
 
 describe("scripts/plan-issues --decompose: what reaches GitHub", () => {
   /** Records every call, so a case asserts on what was DONE, not what was returned. */
-  function recorder(seed: { open?: [string, number][]; milestones?: string[] } = {}) {
+  function recorder(
+    seed: { open?: [string, number][]; milestones?: string[]; wired?: [number, number[]][] } = {},
+  ) {
     const calls: string[] = [];
     let next = 2000;
+    const wired = new Map(seed.wired ?? []);
     const api: DecomposeGitHub = {
       openTitles: async () => new Map(seed.open ?? []),
       milestones: async () => new Set(seed.milestones ?? []),
+      blockedBy: async (_repo, issue) => {
+        calls.push(`read blocked-by of #${issue}`);
+        return wired.get(issue) ?? [];
+      },
       create: async (_repo, issue) => {
         const n = next++;
         calls.push(`create #${n} "${issue.title}" milestone=${issue.milestone ?? "-"}`);
@@ -543,6 +550,10 @@ describe("scripts/plan-issues --decompose: what reaches GitHub", () => {
     expect(calls).toEqual([
       'create #2000 "the first half of the work" milestone=-',
       'create #2001 "the second half of the work" milestone=-',
+      // The edge pass READS before it writes. Asserted in the sequence
+      // rather than as a separate case, so a version that writes blind
+      // cannot satisfy this list.
+      "read blocked-by of #2001",
       "edge #2001 blocked by #2000",
     ]);
   });
@@ -559,8 +570,67 @@ describe("scripts/plan-issues --decompose: what reaches GitHub", () => {
     );
     expect(calls).toEqual([
       'create #2000 "the second half of the work" milestone=-',
+      "read blocked-by of #2000",
       "edge #2000 blocked by #1700",
     ]);
+  });
+
+  /**
+   * The other half of the re-run story. `openTitles` made issue creation
+   * idempotent and nothing made the EDGES idempotent, so every already-wired
+   * edge was re-issued.
+   *
+   * Measured against the live API on 2026-10-30 rather than assumed:
+   * `gh issue edit 1667 --add-blocked-by 1658` on an edge that already
+   * existed exited **1** with "Validation failed: Target issue has already
+   * been taken", and the edge was neither duplicated nor removed. `gh()`
+   * turns a non-zero exit into a throw, so a perfectly clean re-run put every
+   * correct edge in `failed` and the command refused. The tracker was right
+   * and the report was wrong — the worse direction, because the report is
+   * what somebody acts on.
+   */
+  test("RE-RUN does not re-issue an edge the tracker already has", async () => {
+    const { api, calls } = recorder({
+      open: [
+        ["the first half of the work", 1700],
+        ["the second half of the work", 1701],
+      ],
+      wired: [[1701, [1700]]],
+    });
+    const code = await run(
+      [
+        "| CRC-C2 | the first half of the work | lib/a.ts | — | — |",
+        "| CRC-C2 | the second half of the work | lib/b.ts | — | the first half of the work |",
+      ],
+      api,
+      ["--write"],
+    );
+    expect(code, "a clean re-run refused").toBe(0);
+    expect(calls).toEqual(["read blocked-by of #1701"]);
+  });
+
+  test("the SAME plan against a tracker with no edge DOES wire it — the control", async () => {
+    // Identical input, one field different: nothing is wired yet. Without
+    // this, a version that skipped every edge unconditionally would pass the
+    // case above and write no orders at all.
+    const { api, calls } = recorder({
+      open: [
+        ["the first half of the work", 1700],
+        ["the second half of the work", 1701],
+      ],
+      wired: [],
+    });
+    expect(
+      await run(
+        [
+          "| CRC-C2 | the first half of the work | lib/a.ts | — | — |",
+          "| CRC-C2 | the second half of the work | lib/b.ts | — | the first half of the work |",
+        ],
+        api,
+        ["--write"],
+      ),
+    ).toBe(0);
+    expect(calls).toEqual(["read blocked-by of #1701", "edge #1701 blocked by #1700"]);
   });
 
   test("RE-RUN creates nothing the second time", async () => {
@@ -591,6 +661,7 @@ describe("scripts/plan-issues --decompose: what reaches GitHub", () => {
     const api: DecomposeGitHub = {
       openTitles: async () => new Map(),
       milestones: async () => new Set(["Phase 3"]),
+      blockedBy: async () => [],
       create: async () => {
         throw new Error("rate limited");
       },
