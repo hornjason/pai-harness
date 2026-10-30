@@ -51,6 +51,7 @@ import {
   openFrontier,
   phaseOf,
   specCriteriaIn,
+  unlocatableEntries,
 } from "../lib/board-mirror";
 import { parseCriteria } from "../lib/spec-evidence";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
@@ -206,6 +207,37 @@ describe("SC-2610: every spec contributes, not the one on the command line", () 
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * There is no safe fallback for a missing `parentPath`, so there is none.
+   *
+   * `Dirent.path` under a recursive `readdir` historically resolved to the
+   * top-level directory rather than the entry's parent — that bug is WHY
+   * `parentPath` exists — so on a runtime old enough to lack `parentPath`,
+   * `path` carries the wrong value rather than a usable one. `?? dir` and
+   * `?? e.path` are the same guess wearing different names, and both flatten
+   * a nested spec silently. I wrote both, one round apart, and the AI review
+   * of #1679 caught both.
+   */
+  test("an entry whose parent cannot be established refuses the sweep", () => {
+    // `readdirSync` cannot be asked to omit the field, so the predicate is
+    // its own function and the case hands it the shape directly. Without
+    // this the refusal is unreachable from a test and reads exactly like a
+    // refusal that works.
+    expect(unlocatableEntries([{ name: "a.md", parentPath: "specs" }])).toEqual([]);
+    expect(unlocatableEntries([{ name: "a.md" }]).map(e => e.name)).toEqual(["a.md"]);
+    expect(unlocatableEntries([{ name: "a.md", parentPath: "" }]).map(e => e.name)).toEqual([
+      "a.md",
+    ]);
+    // The control against the live tree: this runtime DOES report it, so the
+    // sweep above is measuring specs rather than refusing on every run.
+    const r = specCriteriaIn(join(import.meta.dir, ".."));
+    expect(r.reading, "this runtime cannot locate its own spec files").toBe("MEASURED");
+    expect(
+      r.specs.some(s => s.path.includes("/bootstrap-data-flow/")),
+      "no nested spec was located, so flattening would be invisible here",
+    ).toBe(true);
   });
 
   test("a specs/ directory stating nothing is UNMEASURED, not an empty reading", () => {

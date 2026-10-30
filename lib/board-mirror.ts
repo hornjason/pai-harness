@@ -86,13 +86,55 @@ export const NOT_A_SPEC = ["specs/SPEC-TEMPLATE.md"] as const;
  * parsed produce the same empty list, and only one of them is a board in good
  * order (*Silent Default Substitution*, `.claude/rules/config-access.md`).
  */
+/**
+ * Directory entries whose real parent cannot be established.
+ *
+ * Its own function so a case can hand it an entry with no `parentPath` —
+ * `readdirSync` cannot be asked to omit the field, so the refusal would
+ * otherwise be unreachable from a test and would read exactly like a
+ * refusal that works.
+ */
+export function unlocatableEntries<T extends { name: string; parentPath?: string }>(
+  entries: readonly T[],
+): T[] {
+  return entries.filter(e => typeof e.parentPath !== "string" || e.parentPath === "");
+}
+
 export function specCriteriaIn(root: string): SpecSweep {
   const dir = join(root, "specs");
   let files: string[];
   try {
-    files = readdirSync(dir, { recursive: true, withFileTypes: true })
-      .filter(e => e.isFile() && e.name.endsWith(".md"))
-      .map(e => relative(root, join(e.parentPath ?? e.path ?? dir, e.name)).split(sep).join("/"))
+    const entries = readdirSync(dir, { recursive: true, withFileTypes: true }).filter(
+      e => e.isFile() && e.name.endsWith(".md"),
+    );
+    // `parentPath` is the ONLY field that can be trusted to name a nested
+    // entry's real parent. There is no fallback: `Dirent.path` under a
+    // recursive readdir historically resolved to the top-level directory
+    // rather than the entry's parent — that bug is why `parentPath` exists —
+    // so on a runtime old enough to lack `parentPath`, `path` carries the
+    // wrong value rather than a usable one. `?? dir` and `?? e.path` are the
+    // same guess wearing different names, and both FLATTEN a nested spec
+    // silently. Both were written here and both were caught by the AI review
+    // of #1679, one round apart.
+    //
+    // So: refuse. A sweep that cannot locate a file it can see is UNMEASURED,
+    // not a sweep with fewer specs in it.
+    const unlocatable = unlocatableEntries(entries);
+    if (unlocatable.length > 0) {
+      return {
+        reading: "UNMEASURED",
+        specs: [],
+        ids: [],
+        collisions: [],
+        unmeasuredReasons: [
+          `this runtime does not report Dirent.parentPath, so ${unlocatable.length} spec file(s) ` +
+            `under ${dir} cannot be located — a nested spec would be read as a top-level one. ` +
+            `Nothing was read: ${unlocatable.map(e => e.name).sort().join(", ")}`,
+        ],
+      };
+    }
+    files = entries
+      .map(e => relative(root, join(e.parentPath, e.name)).split(sep).join("/"))
       .filter(p => !(NOT_A_SPEC as readonly string[]).includes(p))
       .sort();
   } catch (e) {
