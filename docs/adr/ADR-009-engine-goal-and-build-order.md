@@ -193,8 +193,9 @@ from a command run that day, not from recall.
   second opinion, a different route — before it is logged and left. Recorded as
   a standing rule in `AGENTS.md`, because it governs every agent and is not
   specific to this plan.
-- **This ADR is `accepted`, not `proposed`.** Four of the six before it are
-  `proposed` and nothing acts on any of them. A proposed ADR is this
+- **This ADR is `accepted`, not `proposed`.** Six of the eight before it are
+  `proposed` — ADR-001 through ADR-006; only 007 and 008 are accepted — and
+  nothing acts on any of them. A proposed ADR is this
   repository's documented way of writing something down and having nothing
   happen.
 

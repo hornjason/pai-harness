@@ -8,7 +8,7 @@ governs: >-
   serves without anybody opening it
 created: 2026-10-29
 status: active
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 
 # The spec-to-board pipeline
@@ -129,7 +129,8 @@ run time. ADR-009 draws the boundary.
 
 - [ ] SC-2618: one command reports the board's conformance and exits non-zero while any reading is short of its target, so a loop has a terminal condition that is not an agent's opinion
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
-- [ ] SC-2619: on/ directory exists — `criterion-inventory` required a hand-built snapshot directory on 2026-10-30, so its numbers were reproducible by nobody else
+- [ ] SC-2619: every input that command reads comes from the repository or the live API, and a step that reads a file an agent assembled by hand is a refusal naming it — `criterion-inventory` needed a hand-built snapshot handed to it on 2026-10-30, so its numbers were reproducible by nobody else
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-2620: the conformance command runs as a test on main, so a board that drifts reddens CI rather than waiting for somebody to look at it
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-2621: the project board's identifiers are read from project config, so a session told nothing can address the board, and an absent board config is UNMEASURED rather than an empty reading — the node id appeared in 0 repository locations on 2026-10-30 and lived only in agent prompts
