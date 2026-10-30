@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Code Review Convergence (CRC) — the active plan — NOT STARTED**
+**Current phase: Code Review Convergence (CRC) — the active plan — IN PROGRESS**
 
 **Session 68 (2026-10-30)** — THE PIPELINE WAS RUN AGAINST ITS OWN GOVERNING SPEC FOR THE FIRST TIME, AND IT FOUND THAT I HAD UNDER-COUNTED THE GAP BY A THIRD.
 
@@ -42,7 +42,7 @@ Suite: 25/25 SCs done.
 8. WHAT WOULD FALSIFY THE PHASE ORDER. Re-take the CRC-M11 reading now #1449 and #1452 have landed. The 2.64 was measured across a harness defect that raised a blocking finding on EVERY pull request editing .claude/ or CLAUDE.md, which in this repository is how conventions ship. If the tail collapses on its own, Phases 1 and 2 are ordered against a baseline that no longer exists and the argument has to be made again rather than inherited.
 9. RELEASE: DO NOT CUT ONE YET. npm serves rungate@0.8.2, published 2026-10-23T14:04:13Z; v0.8.2 was tagged 13:44:28Z; main has taken ~78 commits since. The ONLY dormant surface is lib/scaffold/ai-review-findings.ts and what it imports, because `bunx rungate@0.8.2 ai-review-findings` is the single pinned call in CI — everything else reaches CI live, either through `bun test` from the checkout or through committed generated YAML. So CRC-B7 (#1435) is dormant and CRC-B1 (#1387) is LIVE. A release now still activates nothing: main() takes the changed-file list as argv[1] and the generated step passes one argument, so CRC-B7 published is still inert. Correct order is #1356 first, then a release, then re-measure. See the comment on #1226.
 
-## ⬜ Code Review Convergence (CRC) — the active plan (NOT STARTED)
+## 🔄 Code Review Convergence (CRC) — the active plan (IN PROGRESS)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -59,7 +59,7 @@ Suite: 25/25 SCs done.
 | ✅ | SC-467 | All other sections → quality |
 | ✅ | SC-468 | process_overrides frontmatter |
 
-## ⬜ AES Quality Gate + Pipeline Optimization (NOT STARTED)
+## 🔄 AES Quality Gate + Pipeline Optimization (IN PROGRESS)
 
 ## ✅ Scaffold Decomposition (COMPLETE)
 

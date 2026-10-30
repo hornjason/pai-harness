@@ -116,9 +116,30 @@ function noteDeclaresComplete(note: string | undefined): boolean {
   return note?.trim().match(/^[A-Za-z]+/)?.[0]?.toLowerCase() === "complete";
 }
 
+/**
+ * THREE buckets for a phase with no SCs, because there are three states and
+ * only two were spelled.
+ *
+ * "Does the note say complete" is a yes/no question and the answer was
+ * rendered as COMPLETE or NOT STARTED, so the CRC phase — `scs: []`, note
+ * `IN PROGRESS 2026-10-23. 9 of 56 criteria bound, 30 engineering items
+ * remaining` — rendered NOT STARTED, contradicting its own note one line
+ * below. The same contradiction the two commits before this one removed,
+ * one level down. Raised by the AI review of #1684.
+ *
+ * A note is somebody writing about the phase. If they wrote and did not say
+ * complete, the phase is under way; only the ABSENCE of a note means
+ * nothing is known, and that is the one reading that may say NOT STARTED.
+ * Three states, three readings, and no fourth to discover.
+ */
+function unboundPhaseEmoji(note: string | undefined): string {
+  if (note === undefined || note.trim() === "") return "⬜";
+  return noteDeclaresComplete(note) ? "✅" : "🔄";
+}
+
 function phaseEmoji(phase: Phase): string {
   if (phase.scs.length === 0) {
-    return noteDeclaresComplete(phase.note) ? "✅" : "⬜";
+    return unboundPhaseEmoji(phase.note);
   }
   const done = phase.scs.filter(sc => sc.done).length;
   if (done === phase.scs.length) return "✅";

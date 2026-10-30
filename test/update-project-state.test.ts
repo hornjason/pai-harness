@@ -186,11 +186,11 @@ describe("update-project-state", () => {
       sessions: []
     });
     const md = run();
-    expect(md).toContain("## ⬜ Phase 1 — Unbound (NOT STARTED)");
+    expect(md).toContain("## 🔄 Phase 1 — Unbound (IN PROGRESS)");
     expect(md, "the headline claims completion the section below contradicts").not.toContain(
       "All phases complete",
     );
-    expect(md).toContain("**Current phase: Phase 1 — Unbound — NOT STARTED**");
+    expect(md).toContain("**Current phase: Phase 1 — Unbound — IN PROGRESS**");
   });
 
   /**
@@ -217,15 +217,20 @@ describe("update-project-state", () => {
    * and the other direction puts a false headline on the handoff document.
    */
   test.each([
-    ["Status: incomplete, 9 of 56 criteria bound", "⬜", "NOT STARTED"],
-    ["not complete yet", "⬜", "NOT STARTED"],
-    ["IN PROGRESS — nowhere near complete", "⬜", "NOT STARTED"],
-    ["COMPLETE — 25 SCs, all done", "✅", "COMPLETE"],
-    ["complete", "✅", "COMPLETE"],
+    // A note that does not say complete is somebody writing about work in
+    // flight — IN PROGRESS, never NOT STARTED. Only an ABSENT note means
+    // nothing is known, and that is the third row's whole point.
+    ["Status: incomplete, 9 of 56 criteria bound", "\u{1F504}", "IN PROGRESS"],
+    ["not complete yet", "\u{1F504}", "IN PROGRESS"],
+    ["IN PROGRESS — nowhere near complete", "\u{1F504}", "IN PROGRESS"],
+    [undefined, "\u2B1C", "NOT STARTED"],
+    ["", "\u2B1C", "NOT STARTED"],
+    ["COMPLETE — 25 SCs, all done", "\u2705", "COMPLETE"],
+    ["complete", "\u2705", "COMPLETE"],
   ])("a note reading %j is %s", (note, emoji, status) => {
     writeTestJson({
       updated: "2026-01-01", priorities: [],
-      phases: [{ name: "Phase X", scs: [], note }],
+      phases: [{ name: "Phase X", scs: [], ...(note === undefined ? {} : { note }) }],
       sessions: []
     });
     expect(run()).toContain(`## ${emoji} Phase X (${status})`);
