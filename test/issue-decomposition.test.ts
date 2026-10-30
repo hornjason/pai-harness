@@ -251,6 +251,39 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     expect(r.rows[0].files).toEqual(["lib/a.ts", "lib/b.ts"]);
   });
 
+  test("a row indented up to THREE spaces is read, as GFM reads it", () => {
+    // `!line.startsWith("|")` ended the scan on a row the renderer shows,
+    // with no `rejected` entry — dropping it AND every row after it. A
+    // reviewer approves three rows and the tool creates one.
+    //
+    // MEASURED, POST /markdown mode=gfm, 2026-10-30: 0,1,2,3 leading spaces
+    // all render the row; 4 and 5 end the table.
+    const r = parseDecompositionPlan(
+      plan(
+        "| CRC-C2 | the first row of the plan | lib/a.ts | — | — |",
+        "   | CRC-C3 | indented by three spaces | lib/b.ts | — | — |",
+        "| CRC-C4 | the third row of the plan | lib/c.ts | — | — |",
+      ),
+    );
+    expect(r.reading, r.unmeasuredReasons.join(" | ")).toBe("MEASURED");
+    expect(r.rows.map(x => x.criterion)).toEqual(["CRC-C2", "CRC-C3", "CRC-C4"]);
+  });
+
+  test("FOUR spaces ends the table — the control, and GFM agrees", () => {
+    // Not a looser rule: at four spaces the renderer stops showing a table
+    // too, so ending the scan is what the reviewer saw. Without this case,
+    // stripping all leading whitespace unconditionally would pass the case
+    // above while disagreeing with the renderer in the other direction.
+    const r = parseDecompositionPlan(
+      plan(
+        "| CRC-C2 | the first row of the plan | lib/a.ts | — | — |",
+        "    | CRC-C3 | indented by four spaces | lib/b.ts | — | — |",
+      ),
+    );
+    expect(r.reading).toBe("MEASURED");
+    expect(r.rows.map(x => x.criterion)).toEqual(["CRC-C2"]);
+  });
+
   test("TWO backslashes before a pipe: the pipe stays escaped, as GFM reads it", () => {
     // Round 11 reported this as a column merge — "GFM renders these as two
     // columns and rowCells() merges them". MEASURED against POST /markdown

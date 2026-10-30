@@ -220,8 +220,24 @@ export function parseDecompositionPlan(content: string): DecompositionReading {
   const rows: DecompositionRow[] = [];
   const rejected: { line: number; text: string; why: string }[] = [];
   for (let i = start + 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.startsWith("|")) break;
+    // GFM accepts up to THREE leading spaces on a table row and reads four
+    // as an indented code block, which ends the table. MEASURED against
+    // POST /markdown mode=gfm on 2026-10-30: 0, 1, 2 and 3 all render the
+    // row; 4 and 5 end the table.
+    //
+    // A bare `!line.startsWith("|")` therefore ENDED THE SCAN on a row the
+    // renderer shows — silently, with no `rejected` entry — dropping that
+    // row and every row after it. A plan's reviewer approves three rows and
+    // the tool creates one, which is this module's cardinal failure arriving
+    // through whitespace an editor inserts. Found by the AI review of this
+    // change.
+    let width = 0;
+    let pos = 0;
+    for (; pos < lines[i].length && (lines[i][pos] === " " || lines[i][pos] === "\t"); pos++) {
+      width += lines[i][pos] === "\t" ? 4 : 1;
+    }
+    const line = lines[i].slice(pos);
+    if (width >= 4 || !line.startsWith("|")) break;
     if (/^\|[\s|:-]+\|$/.test(line)) continue;
     const c = rowCells(line);
     const at = i + 1;
