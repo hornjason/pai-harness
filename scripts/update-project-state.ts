@@ -37,8 +37,30 @@ interface CurrentSession {
   date: string;
   summary: string;
   suite: string;
-  issues_created?: string;
-  issues_closed?: string;
+  // The DA has always written these as arrays of issue numbers. They were
+  // declared `string`, and `render` interpolated them, so the document
+  // carried `1675,1676` through Array.prototype.toString where every other
+  // issue reference in it reads `#1675`. The union keeps the declared type
+  // honest about both shapes rather than renaming the fact.
+  issues_created?: readonly (number | string)[] | string;
+  issues_closed?: readonly (number | string)[] | string;
+}
+
+/**
+ * An issue list as issue REFERENCES, or nothing at all.
+ *
+ * Returning `null` for an empty list is the point. `[]` is truthy, so a
+ * session that closed nothing used to render the label `Issues closed:`
+ * with nothing after it — byte-identical to a session that never recorded
+ * the field. Two different facts, one rendering: *Silent Default
+ * Substitution* (`.claude/rules/config-access.md`), in the document every
+ * session is told to read first.
+ */
+function issueList(v: CurrentSession["issues_created"]): string | null {
+  if (v === undefined) return null;
+  const items = (Array.isArray(v) ? v : [v]).map(String).filter(s => s.trim() !== "");
+  if (items.length === 0) return null;
+  return items.map(s => (s.startsWith("#") ? s : `#${s}`)).join(", ");
 }
 
 interface ProjectState {
@@ -114,8 +136,17 @@ function render(state: ProjectState): string {
     lines.push(`**Session ${state.session.number} (${state.session.date})** — ${state.session.summary}`);
     lines.push("");
     lines.push(`Suite: ${state.session.suite}`);
-    if (state.session.issues_created) lines.push(`Issues opened: ${state.session.issues_created}`);
-    if (state.session.issues_closed) lines.push(`Issues closed: ${state.session.issues_closed}`);
+    // `!== null`, NOT truthiness. A truthy test re-decides "is there
+    // anything to show" here, which `issueList` has already decided, and two
+    // deciders agreeing means no case can tell them apart: with the empty
+    // guard removed, `issueList` returns `""` and the falsy test suppresses
+    // the line anyway, so the suppression reads as covered while the only
+    // thing holding it up is this line. Measured — a mutant that deleted the
+    // guard left the suite green.
+    const opened = issueList(state.session.issues_created);
+    const closed = issueList(state.session.issues_closed);
+    if (opened !== null) lines.push(`Issues opened: ${opened}`);
+    if (closed !== null) lines.push(`Issues closed: ${closed}`);
   }
 
   if (state.notes) lines.push(`\n${state.notes}`);

@@ -210,6 +210,65 @@ describe("update-project-state", () => {
     expect(run()).toContain("**Current phase: All phases complete**");
   });
 
+  /**
+   * `issues_created` is declared `string` and the DA has always written an
+   * array of numbers, so `render` interpolated it through
+   * `Array.prototype.toString` and produced a bare `1675,1676,1680` where
+   * every other issue reference in the same document reads `#1675`.
+   *
+   * The second half is the one the review did not name and is the worse of
+   * the two: `[]` is TRUTHY, so a session that closed nothing rendered the
+   * label `Issues closed:` with nothing after it — byte-identical to a
+   * session that never recorded the field. *Silent Default Substitution*,
+   * in the handoff document (`.claude/rules/config-access.md`). Raised by
+   * the AI review of #1684.
+   */
+  test("issue lists render as issue references, and an empty one is omitted rather than left blank", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [{ name: "Phase 0", scs: [{ id: "SC-9441", what: "A", done: true }] }],
+      session: { number: 1, date: "2026-01-01", summary: "s", suite: "t", issues_created: [1675, 1680], issues_closed: [] },
+      sessions: []
+    });
+    const md = run();
+    expect(md).toContain("Issues opened: #1675, #1680");
+    // The premise: without the formatting there really would be a bare list.
+    expect(md, "the raw Array.toString form survived").not.toContain("Issues opened: 1675,1680");
+    expect(md, "an empty list rendered a label with nothing after it").not.toContain("Issues closed:");
+  });
+
+  /**
+   * A field that was never written renders nothing — not `#undefined`.
+   *
+   * Absent and empty reach `issueList` by different routes and the first
+   * mutation battery had no case for the first, so `v === undefined` could
+   * be changed to `v === null` and stay green while the document grew a
+   * line reading `Issues opened: #undefined`.
+   */
+  test("a session with no issue fields renders no issue lines", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [{ name: "Phase 0", scs: [{ id: "SC-9441", what: "A", done: true }] }],
+      session: { number: 1, date: "2026-01-01", summary: "s", suite: "t" },
+      sessions: []
+    });
+    const md = run();
+    expect(md).not.toContain("Issues opened:");
+    expect(md).not.toContain("Issues closed:");
+    expect(md, "an absent field rendered as the string undefined").not.toContain("undefined");
+  });
+
+  /** The control: a NON-empty closed list must still render. */
+  test("a session that closed something still says so", () => {
+    writeTestJson({
+      updated: "2026-01-01", priorities: [],
+      phases: [{ name: "Phase 0", scs: [{ id: "SC-9441", what: "A", done: true }] }],
+      session: { number: 1, date: "2026-01-01", summary: "s", suite: "t", issues_closed: [1676] },
+      sessions: []
+    });
+    expect(run()).toContain("Issues closed: #1676");
+  });
+
   test("promote-only: spec [x] promotes SC, spec [ ] does not demote", () => {
     writeFileSync(join(SPECS_DIR, "test-promote.md"), `- [x] SC-9441: promoted\n- [ ] SC-9442: still open in spec`);
     writeTestJson({

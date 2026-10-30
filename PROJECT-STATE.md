@@ -21,8 +21,8 @@ THE SAME DEFECT CLASS RAN FOUR TIMES ON ONE PULL REQUEST AND THE ANSWER WAS NEVE
 #1683 FILED RATHER THAN FIXED, WITH THE REACHABILITY MEASURED FIRST. declaresOwnCriterion suppresses a criterion id across an issue's whole body rather than per mention, so an issue that both serves a criterion and carries a checklist line shaped like it renders an empty cell. Probed against 400 issues and 1,768 criterion ids: 11 instances across 6 issues, ALL CLOSED, so 0 open board cells are wrong today. 11 in 400 is not hypothetical, which is why it is an issue rather than a note. Tonight's ratio is 7 issues opened against 1 closed.
 
 Suite: No full local suite — other sessions hold worktrees and .claude/rules/parallel-sessions.md forbids a concurrent full run. Targeted via scripts/census-routing.ts per diff: 63 pass 0 fail on test/issue-decomposition.test.ts, 42 pass 0 fail on test/board-mirror.test.ts, 1,320 pass 0 fail across the census-routed conformity and closure set, 17 pass 0 fail on the line-citation ratchet. Typecheck 0, matching baseline. Fifteen mutations across the two branches, every one predicted by MEMBERSHIP before running and every one matching; two cases went red on their own first write and were fixed rather than reported as passes.
-Issues opened: 1675,1676,1677,1678,1680,1681,1683
-Issues closed: 1676
+Issues opened: #1675, #1676, #1677, #1678, #1680, #1681, #1683
+Issues closed: #1676
 
 Read this before anything else. The suite is green under a CLEAN ENVIRONMENT, which is a stronger claim than the one this file made yesterday — run `bun scripts/test-clean-env.ts`, not `bun test`, before believing any gate. Plain `bun test` passes on this machine for reasons that have nothing to do with the code.
 
