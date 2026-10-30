@@ -176,6 +176,38 @@ describe("SC-2610: every spec contributes, not the one on the command line", () 
     ).toEqual(["SC-10"]);
   });
 
+  /**
+   * One spec stating the same id twice is not two specs stating it once.
+   *
+   * `parseCriteria` matches every `- [ ] ID:` line independently and does
+   * not dedupe, so the duplicate pushed the spec's own path twice and read
+   * downstream as a cross-spec collision — the id dropped as ambiguous, and
+   * a note reading "stated by specs/A-SPEC.md and specs/A-SPEC.md". An
+   * unambiguous criterion misreported as ambiguous, for a nonsensical
+   * reason. Found by the AI review of #1679. Zero specs state a duplicate
+   * today, so this is the case that arrives rather than one that has.
+   */
+  test("one spec stating an id TWICE is not a collision with itself", () => {
+    const root = tree({ "A-SPEC.md": spec("SC-10", "SC-10", "SC-20") });
+    try {
+      const r = specCriteriaIn(root);
+      // The premise: the file really does state it twice, so the dedupe is
+      // doing work rather than the fixture being wrong.
+      const stated = parseCriteria(readFileSync(join(root, "specs/A-SPEC.md"), "utf-8"));
+      expect(stated.filter(c => c.id === "SC-10").length, "the fixture states it once").toBe(2);
+
+      expect(r.reading).toBe("MEASURED");
+      expect(r.ids, "a duplicate within one spec was read as ambiguous").toEqual([
+        "SC-10",
+        "SC-20",
+      ]);
+      expect(r.collisions, "a spec collided with itself").toEqual([]);
+      expect(r.specs[0].ids, "the per-spec list carries the duplicate").toEqual(["SC-10", "SC-20"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a specs/ directory stating nothing is UNMEASURED, not an empty reading", () => {
     const root = tree({ "EMPTY-SPEC.md": "# A spec with no criteria\n" });
     try {

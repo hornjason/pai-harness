@@ -111,7 +111,16 @@ export function specCriteriaIn(root: string): SpecSweep {
   for (const path of files) {
     let ids: string[];
     try {
-      ids = parseCriteria(readFileSync(join(root, path), "utf-8")).map(c => c.id);
+      // De-duplicated WITHIN the spec. `parseCriteria` matches every
+      // `- [ ] ID:` line independently and does not dedupe, so one spec
+      // stating an id twice — a pasted-twice criterion — would push its own
+      // path onto `seen` twice and read downstream as a cross-spec
+      // collision: the id dropped as ambiguous, and a note saying it is
+      // "stated by specs/A.md and specs/A.md". An unambiguous criterion
+      // misreported as ambiguous, with a nonsensical reason. Found by the
+      // AI review of #1679; zero specs state a duplicate today, so nothing
+      // observable changes and the guard is for the case that arrives.
+      ids = [...new Set(parseCriteria(readFileSync(join(root, path), "utf-8")).map(c => c.id))];
     } catch (e) {
       // One unreadable spec does not make a SHORTER id list — it makes the
       // whole sweep unmeasured, because a shorter list is exactly what a
