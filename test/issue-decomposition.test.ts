@@ -8,7 +8,7 @@
  * (`.claude/rules/checks-must-be-able-to-fail.md`, the seventh shape).
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { REFUSAL_EXIT, main as planIssuesMain } from "../scripts/plan-issues";
@@ -111,6 +111,13 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
       row: "| CRC-C2 | an outcome with a | pipe in it | lib/a.ts | — | — |",
       reason: /6 cells, need 5/,
     },
+    {
+      // Refused here rather than at the blocker check, where the message
+      // would blame the referencing row for a table that is correct.
+      why: "an outcome containing a comma — nothing could ever reference it",
+      row: "| CRC-C2 | fix off-by-one, add bounds check | lib/a.ts | — | — |",
+      reason: /contains a comma/,
+    },
   ];
 
   for (const r of refuse) {
@@ -184,9 +191,84 @@ describe("parseDecompositionPlan reads a reviewed table", () => {
     expect(parseDecompositionPlan(plan()).reading).toBe("UNMEASURED");
   });
 
+  /**
+   * The refusal above tells the author to write `\|`. These are the cases
+   * that make that sentence true rather than a loop they cannot escape — the
+   * previous round shipped the message while `split("|")` still read the
+   * escape as a separator, so following the advice reproduced the identical
+   * refusal.
+   *
+   * The expectations are what `POST /markdown` with `mode=gfm` returned on
+   * 2026-10-30, not what the escape ought to mean.
+   */
+  test("an ESCAPED pipe is one cell, and the backslash does not survive into the title", () => {
+    const r = parseDecompositionPlan(
+      plan("| CRC-C2 | an outcome with a \\| pipe in it | lib/a.ts | — | — |"),
+    );
+    expect(r.reading).toBe("MEASURED");
+    expect(r.rows[0].outcome).toBe("an outcome with a | pipe in it");
+  });
+
+  test("an escaped pipe in a FILES cell is part of the path, not a column break", () => {
+    const r = parseDecompositionPlan(
+      plan("| CRC-C2 | an outcome long enough to pass | lib/a\\|b.ts | — | — |"),
+    );
+    expect(r.reading).toBe("MEASURED");
+    expect(r.rows[0].files).toEqual(["lib/a|b.ts"]);
+  });
+
+  test("the escape is the ONLY thing that saves the row — the control", () => {
+    // Same bytes without the backslash. If this went MEASURED too, the case
+    // above would be green whether or not the escape was ever implemented.
+    expect(
+      parseDecompositionPlan(
+        plan("| CRC-C2 | an outcome with a | pipe in it | lib/a.ts | — | — |"),
+      ).reading,
+    ).toBe("UNMEASURED");
+  });
+
   test("the thresholds the refusals quote are the ones the module exports", () => {
     expect(MAX_FILES).toBe(9);
     expect(MIN_OUTCOME).toBe(12);
+  });
+});
+
+/**
+ * Four rounds of this PR found four defects and the AI review's fourth round
+ * named the thing they had in common: each was a read or a check that treated
+ * an incomplete result as a clean one, and each was repaired one call site at
+ * a time. Fixing `openTitles` did not prevent the identical miss in
+ * `milestones` one function away.
+ *
+ * `.claude/rules/checks-must-be-able-to-fail.md` calls that the N-sites shape
+ * and says what to do about it: **assert the property across the sites**
+ * rather than repairing them one at a time, because a behavioural suite
+ * catches only the last site to regress. This is that assertion. It reads the
+ * source because the completeness of a paginated read is not observable from
+ * a fake in a unit test — the fake returns whatever it was handed.
+ */
+describe("every live list read proves it is complete", () => {
+  const SRC = readFileSync(join(import.meta.dir, "..", "scripts", "plan-issues.ts"), "utf8");
+
+  test("a `gh` call asking for a page size also asks for every page", () => {
+    const unpaginated = [...SRC.matchAll(/gh\(\[([\s\S]*?)\]\)/g)]
+      .map(m => m[1])
+      .filter(call => call.includes("per_page") && !call.includes("--paginate"));
+    expect(
+      unpaginated,
+      "a `per_page` with no `--paginate` reads the FIRST page and reports it as the whole " +
+        "answer. Add `--paginate`, or say in a comment why one page is the complete set.",
+    ).toEqual([]);
+  });
+
+  test("the scan can see the calls at all — the control", () => {
+    // Without this, deleting the fetchers or renaming `gh` makes the case
+    // above green by matching nothing, which is the failure it exists to
+    // catch wearing the costume of a pass.
+    const withPageSize = [...SRC.matchAll(/gh\(\[([\s\S]*?)\]\)/g)].filter(m =>
+      m[1].includes("per_page"),
+    );
+    expect(withPageSize.length).toBeGreaterThanOrEqual(2);
   });
 });
 

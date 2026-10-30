@@ -71,6 +71,48 @@ export interface DecompositionReading {
 /** The header the table must open with, so another table is never read as one. */
 const HEADER = /^\|\s*Criterion\s*\|\s*Outcome\s*\|\s*Files\s*\|/;
 
+/**
+ * Split a row on its UNESCAPED pipes, and turn `\|` back into `|`.
+ *
+ * `line.split("|")` read the escape as a separator, which made the refusal
+ * message for an over-wide row a lie: it told the author to write `\|` and
+ * the parser then produced the identical cell count and the identical
+ * refusal, with nothing to distinguish the fixed plan from the broken one.
+ * Found by the AI review of this change.
+ *
+ * Measured against `POST /markdown` with `mode=gfm` on 2026-10-30, because
+ * the reviewer of a plan reads what GitHub RENDERS and this function reads
+ * bytes — a disagreement is a plan somebody approved without seeing:
+ *
+ * | the row says | GFM renders |
+ * |---|---|
+ * | `an outcome with a \| pipe in it` | 5 cells, cell 2 holds a literal `\|` |
+ * | `an outcome with a \| pipe in it` unescaped | 5 cells — split across two, and the row's LAST cell silently dropped |
+ *
+ * The second line is why `c.length !== 5` refuses rather than truncating. An
+ * over-wide row renders as a well-formed five-column row with a cell missing,
+ * so there is nothing in the rendered table for a reviewer to notice.
+ */
+function rowCells(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === "\\" && line[i + 1] === "|") {
+      cur += "|";
+      i++;
+      continue;
+    }
+    if (line[i] === "|") {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += line[i];
+  }
+  out.push(cur);
+  return out.slice(1, -1).map(s => s.trim());
+}
+
 /** Split a cell on commas, drop the empties. `—` and `-` both mean "none". */
 function cells(text: string): string[] {
   const t = text.trim();
@@ -102,7 +144,7 @@ export function parseDecompositionPlan(content: string): DecompositionReading {
     const line = lines[i];
     if (!line.startsWith("|")) break;
     if (/^\|[\s|:-]+\|$/.test(line)) continue;
-    const c = line.split("|").slice(1, -1).map(s => s.trim());
+    const c = rowCells(line);
     const at = i + 1;
     const reject = (why: string): void => {
       rejected.push({ line: at, text: line.slice(0, 70), why });
@@ -132,6 +174,20 @@ export function parseDecompositionPlan(content: string): DecompositionReading {
     const outcome = c[1].replaceAll("`", "").trim();
     if (outcome.length < MIN_OUTCOME) {
       reject(`outcome "${outcome}" is ${outcome.length} characters — it becomes the issue title`);
+      continue;
+    }
+    // A `Blocked by` cell is a comma-separated list, and an outcome is how a
+    // row is referenced, so an outcome containing a comma is a row no other
+    // row can ever name: `cells()` would split the reference into fragments
+    // and each fragment fails the "outcome of another row" test. Refused HERE
+    // rather than discovered there, because the failure lands on the row
+    // doing the referencing and the message blames a table that is correct.
+    // Found by the AI review of this change.
+    if (outcome.includes(",")) {
+      reject(
+        `outcome "${outcome}" contains a comma — a \`Blocked by\` cell is a comma-separated ` +
+          `list, so no other row could ever reference this one; rewrite the outcome without it`,
+      );
       continue;
     }
     const files = cells(c[2]);
