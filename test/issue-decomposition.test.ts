@@ -10,7 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, relative } from "path";
 import { REFUSAL_EXIT, main as planIssuesMain } from "../scripts/plan-issues";
 import type { DecomposeGitHub } from "../scripts/plan-issues";
 import {
@@ -734,6 +734,95 @@ describe("scripts/plan-issues --decompose: what reaches GitHub", () => {
         `the body leaks the author's filesystem path:\n${bodies[0]}`,
       ).toBe(false);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * `relative()` says "outside the root" only when its result is exactly
+   * `..` or begins with `..` AND a separator. A bare `startsWith("..")` also
+   * catches `..config/plan.md` — a legal filename INSIDE the root — and the
+   * consequence is the absolute path going into the issue body, which is the
+   * leak the case above exists to close. Found by the AI review of #1674.
+   */
+  test("a file whose NAME starts with two dots is inside the root, not outside it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-decompose-dots-"));
+    try {
+      const bodies: string[] = [];
+      const api: DecomposeGitHub = {
+        openTitles: async () => new Map(),
+        milestones: async () => new Set(["Phase 3"]),
+        blockedBy: async () => [],
+        create: async (_repo, issue) => {
+          bodies.push(issue.body);
+          return 2000;
+        },
+        addBlockedBy: async () => {},
+      };
+      mkdirSync(join(dir, "..config"), { recursive: true });
+      const rel = join("..config", "plan.md");
+      writeFileSync(join(dir, rel), plan(GOOD));
+      // The premise, proved rather than assumed: this path really is inside
+      // the root, so treating it as an escape would be wrong.
+      expect(relative(dir, join(dir, rel)), "the fixture is not inside the root").toBe(rel);
+      expect(
+        await planIssuesMain(
+          ["--decompose", join(dir, rel), "--repo", "o/r", "--project-root", dir, "--write"],
+          undefined as never,
+          api,
+        ),
+      ).toBe(0);
+      expect(bodies, "nothing was created, so the assertion below is vacuous").toHaveLength(1);
+      expect(bodies[0].includes(dir), `the body leaks the author's path:\n${bodies[0]}`).toBe(false);
+      expect(bodies[0]).toContain(`--decompose ${rel}\``);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * `--json` documents itself as "the whole reading". All three refusal
+   * paths printed prose to stderr and nothing to stdout, so a caller parsing
+   * stdout got a parse error instead of the reasons it came for — the
+   * structured half of the contract missing exactly when there is something
+   * to report. The `--repair` path already branched on it. Found by the AI
+   * review of #1674.
+   */
+  test("--json makes a REFUSAL parseable too, not only a success", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-decompose-json-"));
+    const said: string[] = [];
+    const real = console.log;
+    console.log = (...a: unknown[]) => void said.push(a.join(" "));
+    try {
+      const p = join(dir, "plan.md");
+      // A milestone no tracker has: the "does not fit the tracker" refusal.
+      writeFileSync(p, plan("| CRC-C2 | a well formed outcome here | lib/a.ts | Phase 9 | — |"));
+      const api: DecomposeGitHub = {
+        openTitles: async () => new Map(),
+        milestones: async () => new Set(["Phase 3"]),
+        blockedBy: async () => [],
+        create: async () => {
+          throw new Error("must not create on a refusal");
+        },
+        addBlockedBy: async () => {},
+      };
+      const code = await planIssuesMain(
+        ["--decompose", p, "--repo", "o/r", "--json"],
+        undefined as never,
+        api,
+      );
+      expect(code).toBe(REFUSAL_EXIT);
+      expect(said.length, "nothing reached stdout, so there is nothing to parse").toBeGreaterThan(0);
+      const payload = JSON.parse(said.join("\n")) as {
+        reading: string;
+        unmeasuredReasons: string[];
+      };
+      expect(payload.reading).toBe("UNMEASURED");
+      // The control: the payload must carry the REASON, not merely be valid
+      // JSON. An empty `{}` parses too.
+      expect(payload.unmeasuredReasons.join(" ")).toContain("Phase 9");
+    } finally {
+      console.log = real;
       rmSync(dir, { recursive: true, force: true });
     }
   });

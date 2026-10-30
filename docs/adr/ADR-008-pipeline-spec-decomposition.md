@@ -26,7 +26,7 @@ NOT STARTED  — 14 of 15
 That is the forward gap this ADR closes, and it is the first time the
 pipeline has been run against its own governing spec.
 
-## The decision, and why it is four issues and not fourteen
+## The decision, and why it is six issues and not fifteen
 
 **A criterion that is already true does not become an issue.** AGENTS.md rule
 1 says a spec states what must be true and is never the to-do list, so the

@@ -29,7 +29,7 @@
  * cleanup are one action.
  */
 import { existsSync, readFileSync } from "fs";
-import { isAbsolute, join, relative } from "path";
+import { isAbsolute, join, relative, sep } from "path";
 import { parseArgs } from "util";
 import {
   CRITERIA_HEADING,
@@ -292,12 +292,40 @@ async function decompose(
   json: boolean,
   api: DecomposeGitHub,
 ): Promise<number> {
+  /**
+   * A refusal, in whichever form the caller asked for.
+   *
+   * `--json` documents itself as "the whole reading", and all three refusal
+   * paths below printed prose to stderr and nothing to stdout — so a caller
+   * parsing stdout got a parse error instead of the `unmeasuredReasons` it
+   * came for, and the structured half of the contract was missing exactly
+   * when there was something to report. The `--repair` path already branched
+   * on `values.json`; these did not. Found by the AI review of this change.
+   */
+  const refuse = (
+    headline: string,
+    reasons: readonly string[],
+    rejected: readonly { line: number; why: string; text: string }[] = [],
+  ): number => {
+    if (json) {
+      console.log(
+        JSON.stringify({ reading: "UNMEASURED", unmeasuredReasons: reasons, rejected }, null, 2),
+      );
+    } else {
+      console.error(`plan-issues: ${headline}`);
+      for (const r of reasons) console.error(`  - ${r}`);
+      for (const r of rejected) console.error(`  line ${r.line}: ${r.why}\n    ${r.text}`);
+    }
+    return REFUSAL_EXIT;
+  };
+
   const reading = parseDecompositionPlan(readFileSync(planPath, "utf-8"));
   if (reading.reading === "UNMEASURED") {
-    console.error(`plan-issues: UNMEASURED — the decomposition plan could not be read:`);
-    for (const r of reading.unmeasuredReasons) console.error(`  - ${r}`);
-    for (const r of reading.rejected) console.error(`  line ${r.line}: ${r.why}\n    ${r.text}`);
-    return REFUSAL_EXIT;
+    return refuse(
+      `UNMEASURED — the decomposition plan could not be read:`,
+      reading.unmeasuredReasons,
+      reading.rejected,
+    );
   }
 
   // The two pre-flight reads were the only `api.*` calls in this function
@@ -310,18 +338,14 @@ async function decompose(
   try {
     live = { openTitles: await api.openTitles(repo), milestones: await api.milestones(repo) };
   } catch (e) {
-    console.error(
-      `plan-issues: UNMEASURED — could not read the tracker, so the plan was not applied:\n` +
-        `  - ${(e as Error).message}\n` +
-        `  Nothing was created. Re-run when the read succeeds.`,
-    );
-    return REFUSAL_EXIT;
+    return refuse(`UNMEASURED — could not read the tracker, so the plan was not applied:`, [
+      (e as Error).message,
+      `Nothing was created. Re-run when the read succeeds.`,
+    ]);
   }
   const planned = planDecomposition(reading.rows, live, planLabel, CRITERIA_HEADING);
   if (planned.reading === "UNMEASURED") {
-    console.error(`plan-issues: UNMEASURED — the plan does not fit the tracker:`);
-    for (const r of planned.unmeasuredReasons) console.error(`  - ${r}`);
-    return REFUSAL_EXIT;
+    return refuse(`UNMEASURED — the plan does not fit the tracker:`, planned.unmeasuredReasons);
   }
 
   /** Outcome → number, grown as issues are created, so pass two can resolve. */
@@ -488,8 +512,15 @@ export async function main(
     // spelled `../../tmp/…`: it genuinely is not a path in this repository,
     // and saying so is the honest reading. Only a plan inside the tree gets
     // the repo-relative name, because only that one is reproducible.
+    // `relative()` signals "outside root" only when the result is exactly
+    // `..` or begins with `..` AND a separator. A bare `startsWith("..")`
+    // also catches `..config/plan.md`, which is a legal filename INSIDE the
+    // root — and the consequence is the absolute path going into the issue
+    // body, which is the leak this change exists to close. Found by the AI
+    // review of this change.
     const within = relative(root, planPath);
-    const planLabel = within === "" || within.startsWith("..") ? planPath : within;
+    const escapes = within === ".." || within.startsWith(`..${sep}`);
+    const planLabel = within === "" || escapes ? planPath : within;
     return await decompose(planPath, planLabel, repo, values.write, values.json, gh3);
   }
 
