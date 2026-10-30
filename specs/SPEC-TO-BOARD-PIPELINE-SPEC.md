@@ -111,11 +111,14 @@ population is banded at 10-20 precisely to stop behavioural criteria
 accumulating with nothing able to verify them. Adding ten unmapped ones took
 it to 29. "States a behaviour" and "is eval-verified" are different
 properties and the marker already owns the second. Do not re-add it to buy
-the first; SC-2637 is what forbids symbol-satisfaction here.
+the first; SC-2622 is what forbids symbol-satisfaction here.
 
-- [ ] SC-2630: every criterion in every testable spec resolves to exactly one phase, or the spec is reported UNPLANNED by name — the sweep reads all of `specs/`, never one spec named on the command line, because a board built from one spec reports every other spec's criteria as having no work
-- [ ] SC-2631: an open issue naming no criterion is reported as a refusal naming the issue, never counted as covered, and a blank cell is distinguishable from a deliberate "serves none" — 25 of 71 open issues named nothing on 2026-10-30 and the two states rendered identically
-- [ ] SC-2632: every issue whose work depends on another carries a `blocked by` edge on the tracker, so *what is next* is computed from the graph — 0 of 71 open issues carried one on 2026-10-30, which makes every ordering claim prose
+- [ ] SC-2615: every criterion in every testable spec resolves to exactly one phase, or the spec is reported UNPLANNED by name — the sweep reads all of `specs/`, never one spec named on the command line, because a board built from one spec reports every other spec's criteria as having no work
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2616: an open issue naming no criterion is reported as a refusal naming the issue, never counted as covered, and a blank cell is distinguishable from a deliberate "serves none" — 25 of 71 open issues named nothing on 2026-10-30 and the two states rendered identically
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2617: every issue whose work depends on another carries a `blocked by` edge on the tracker, so *what is next* is computed from the graph — 0 of 71 open issues carried one on 2026-10-30, which makes every ordering claim prose
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
 ### Nothing in the engine is hand-run
 
@@ -124,16 +127,22 @@ spec shipped through it. Judgement belongs on the payload and in
 human-authored artefacts in git; it does not belong in an agent's hands at
 run time. ADR-009 draws the boundary.
 
-- [ ] SC-2633: one command reports the board's conformance and exits non-zero while any reading is short of its target, so a loop has a terminal condition that is not an agent's opinion
-- [ ] SC-2634: every input that command reads comes from the repository or the live API, and a step reading a file an agent assembled by hand is a refusal naming the path — `criterion-inventory` required a hand-built snapshot directory on 2026-10-30, so its numbers were reproducible by nobody else
-- [ ] SC-2635: the conformance command runs as a test on main, so a board that drifts reddens CI rather than waiting for somebody to look at it
-- [ ] SC-2636: the project board's identifiers are read from project config, so a session told nothing can address the board, and an absent board config is UNMEASURED rather than an empty reading — the node id appeared in 0 repository locations on 2026-10-30 and lived only in agent prompts
+- [ ] SC-2618: one command reports the board's conformance and exits non-zero while any reading is short of its target, so a loop has a terminal condition that is not an agent's opinion
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2619: on/ directory exists — `criterion-inventory` required a hand-built snapshot directory on 2026-10-30, so its numbers were reproducible by nobody else
+- [ ] SC-2620: the conformance command runs as a test on main, so a board that drifts reddens CI rather than waiting for somebody to look at it
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2621: the project board's identifiers are read from project config, so a session told nothing can address the board, and an absent board config is UNMEASURED rather than an empty reading — the node id appeared in 0 repository locations on 2026-10-30 and lived only in agent prompts
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
 ### The chain traces back to a goal
 
-- [ ] SC-2637: no criterion in this section is satisfied by a symbol being present — each names a behaviour, and a mutant removing that behaviour turns its test red; 1131 of 1485 ticked criteria repo-wide were symbol-presence on 2026-10-30
-- [ ] SC-2638: a spec declares which `SUCCESS.md` claim it serves, so *which goal does this spec serve* is answerable without reading the spec — the same traceability this document demands of issues, one level up
-- [ ] SC-2639: `/goal` establishes a goal from measured evidence when none exists or the recorded one is past its own staleness bound, instead of reporting against it — `FLEET-STATE.md` carried a goal five days stale and about another subject throughout the session that wrote this
+- [ ] SC-2622: no criterion in this section is satisfied by a symbol being present — each names a behaviour, and a mutant removing that behaviour turns its test red; 1131 of 1485 ticked criteria repo-wide were symbol-presence on 2026-10-30
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2623: a spec declares which of the project's standing success claims it serves, so *which goal does this spec serve* is answerable without reading the spec — the same traceability this document demands of issues, one level up
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2624: `/goal` establishes a goal from measured evidence when none exists or the recorded one is past its own staleness bound, instead of reporting against it — the fleet goal file carried one five days stale and about another subject throughout the session that wrote this
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
 ### Phase placement — every criterion has exactly one home
 
@@ -149,9 +158,9 @@ is built from this document.
 | **Phase 3** | SC-2608, SC-2609, SC-2610 |
 | **Phase 4** | SC-2611 |
 | **Phase 5** | SC-2612, SC-2613, SC-2614 |
-| **Phase 6** | SC-2630, SC-2631, SC-2632 |
-| **Phase 7** | SC-2633, SC-2634, SC-2635, SC-2636 |
-| **Phase 8** | SC-2637, SC-2638, SC-2639 |
+| **Phase 6** | SC-2615, SC-2616, SC-2617 |
+| **Phase 7** | SC-2618, SC-2619, SC-2620, SC-2621 |
+| **Phase 8** | SC-2622, SC-2623, SC-2624 |
 
 ### Phase 0 — the transform refuses
 
