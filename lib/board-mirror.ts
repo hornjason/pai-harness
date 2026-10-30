@@ -130,16 +130,28 @@ export function specCriteriaIn(root: string): SpecSweep {
   // the id set and reported — the issue keeps whatever unambiguous ids it
   // also names, so this narrows a cell rather than blanking it.
   const ids = [...seen.keys()].filter(id => (seen.get(id) as string[]).length === 1);
+  const collisions = [...seen.entries()]
+    .filter(([, where]) => where.length > 1)
+    .map(([id, where]) => ({ id, specs: where }));
+
+  // Two different ways to end up with no usable id, and they need different
+  // sentences. The caller refuses on UNMEASURED before it prints the
+  // collision notes, so if the empty set came from ambiguity the reason line
+  // is the ONLY place that can say so — and "no spec states a criterion" is
+  // then actively false. Raised by the AI review of #1679.
   if (reasons.length === 0 && ids.length === 0) {
-    reasons.push(`no spec under ${dir} states a criterion, so no cell could be filled`);
+    reasons.push(
+      seen.size === 0
+        ? `no spec under ${dir} states a criterion, so no cell could be filled`
+        : `every criterion under ${dir} is stated by more than one spec, so none can be ` +
+          `attributed to a single one: ${collisions.map(c => `${c.id} (${c.specs.join(", ")})`).join("; ")}`,
+    );
   }
   return {
     reading: reasons.length > 0 ? "UNMEASURED" : "MEASURED",
     specs,
     ids,
-    collisions: [...seen.entries()]
-      .filter(([, where]) => where.length > 1)
-      .map(([id, where]) => ({ id, specs: where })),
+    collisions,
     unmeasuredReasons: reasons,
   };
 }

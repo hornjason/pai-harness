@@ -188,6 +188,33 @@ describe("SC-2610: every spec contributes, not the one on the command line", () 
     }
   });
 
+  /**
+   * Two ways to reach an empty id set, and they are different facts. The
+   * caller refuses on UNMEASURED before printing the collision notes, so if
+   * the emptiness came from ambiguity the reason line is the only place that
+   * can say so — and the "no spec states a criterion" sentence is then false
+   * about a tree full of criteria. Raised by the AI review of #1679.
+   */
+  test("all-ambiguous is UNMEASURED for the AMBIGUITY, not for an absence", () => {
+    const root = tree({ "A-SPEC.md": spec("SC-10"), "B-SPEC.md": spec("SC-10") });
+    try {
+      const r = specCriteriaIn(root);
+      expect(r.reading).toBe("UNMEASURED");
+      expect(r.ids).toEqual([]);
+      const why = r.unmeasuredReasons.join(" ");
+      expect(why, "it blamed an absence in a tree that states a criterion").not.toContain(
+        "no spec",
+      );
+      expect(why).toContain("stated by more than one spec");
+      // The diagnostic the caller would otherwise never print must be IN the
+      // reason, not merely available on a field nothing reads on this path.
+      expect(why).toContain("SC-10");
+      expect(why).toContain("specs/A-SPEC.md");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("no specs/ directory at all is UNMEASURED, naming the path it looked at", () => {
     const root = mkdtempSync(join(tmpdir(), "rg-mirror-nospecs-"));
     try {
