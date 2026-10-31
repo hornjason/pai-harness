@@ -2,7 +2,7 @@
 doc-type: adr
 status: accepted
 created: 2026-10-11
-updated: 2026-10-11
+updated: 2026-10-31
 owner: jason
 governs: rungate config resolution — mandatory single-loader policy, unresolved-config sentinel semantics, dev/test key normalisation, and the mechanical checks that prevent a sixth reader
 ---
@@ -22,7 +22,6 @@ test for acceptance:
 
 Supersedes ADR-001.
 
-**Status:** Accepted 2026-10-31 — enforced by CONFIG-1/CONFIG-2
 **Deciders:** Serena Blackwood (architecture), Rayford (DA)
 **Trigger:** Issue #307 — four config-shape defects that all fire on DailyBriefDashboard's first harness run
 **Governing spec:** `specs/CONFIG-DIRECTORY-STRUCTURE-SPEC.md` (D-1, D-2, SC-478)

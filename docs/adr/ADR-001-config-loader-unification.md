@@ -2,7 +2,7 @@
 doc-type: adr
 status: superseded
 created: 2026-10-05
-updated: 2026-10-05
+updated: 2026-10-31
 owner: jason
 governs: rungate config access — single-loader policy, null-vs-throw contract, degradation observability, dogfood layout integrity
 ---
@@ -18,7 +18,6 @@ this one only described. Resolved under the A7 rule recorded in
 project-state Priority 2: an ADR whose content moved to another document is
 superseded, not accepted twice.
 
-**Status:** Superseded by ADR-002 — see the Status section above
 **Deciders:** Serena Blackwood (architecture), Rayford (DA)
 **Trigger:** Issue #70 — consumer project `agentgrit` generated all six agent briefs with no role configuration, silently
 **Governing spec:** `specs/CONFIG-DIRECTORY-STRUCTURE-SPEC.md`

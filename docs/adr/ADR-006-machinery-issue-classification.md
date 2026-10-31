@@ -2,7 +2,7 @@
 doc-type: adr
 status: accepted
 created: 2026-10-29
-updated: 2026-10-29
+updated: 2026-10-31
 ---
 
 # ADR-006: The six Convergence Machinery issues, classified

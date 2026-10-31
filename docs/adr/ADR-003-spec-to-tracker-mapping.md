@@ -2,7 +2,7 @@
 doc-type: adr
 status: superseded
 created: 2026-10-28
-updated: 2026-10-28
+updated: 2026-10-31
 owner: jason
 governs: how a spec's criteria reach the tracker — phase placement, milestones, and the issue-to-criterion citation
 ---
@@ -19,7 +19,6 @@ accepted, per the A7 rule recorded in project-state Priority 2.
 
 ADR-009 names the pipeline spec as the engine's governing document.
 
-**Status:** Superseded by specs/SPEC-TO-BOARD-PIPELINE-SPEC.md 2026-10-31
 **Deciders:** Jason (owner), Rayford (DA)
 **Trigger:** The board could not say what was done, in progress or next, and the
 reason was structural: 251 criteria were unticked across 23 specs and **six**
