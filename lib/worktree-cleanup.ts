@@ -656,11 +656,26 @@ export const RESCUE_BUDGET_MS = 180_000;
 
 export interface RescueResult {
   /**
-   * Branches examined. The DENOMINATOR, and the reason it is a field rather
-   * than a length somewhere: `pushed: []` with `examined: 0` is an instrument
-   * that did not run, and `pushed: []` with `examined: 14` is a clean tree.
-   * Those are different facts and a bare count of rescues spells them the
-   * same way — which is how "zero violations" comes to mean "nobody looked".
+   * Branches that reached the push loop: stranded, minus the default branch,
+   * minus anything `declined`. The DENOMINATOR, and the reason it is a field
+   * rather than a length somewhere: `pushed: []` with `examined: 14` is a
+   * clean tree, and a bare count of rescues spells those the same way —
+   * which is how "zero violations" comes to mean "nobody looked".
+   *
+   * **`examined: 0` is not self-describing and was never meant to be read
+   * alone.** Four different facts produce it, and the field that separates
+   * them is named in each case:
+   *
+   * | What happened | How to tell |
+   * |---|---|
+   * | the reading could not be taken | `unmeasured` is non-null |
+   * | nothing was stranded | `unmeasured` null, `declined` empty |
+   * | everything stranded is live work | `declined` non-empty |
+   * | only the default branch was stranded | `unmeasured` null, `declined` empty |
+   *
+   * The last two rows are why `declined` exists as a field rather than as
+   * silence. The first and second rows collapsing is the defect this whole
+   * module is about, and `unmeasured` is what keeps them apart.
    */
   examined: number;
   /** Held commits on no origin ref, and `git push` succeeded. */

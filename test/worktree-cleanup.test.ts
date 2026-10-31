@@ -461,6 +461,55 @@ describe("#1038: commits that exist here and nowhere else", () => {
   });
 
   /**
+   * Round 10: `examined: 0` is overdetermined, so the fields that separate
+   * its causes must actually differ.
+   *
+   * Adding `declined` created a third way to reach `examined: 0, pushed: [],
+   * unmeasured: null` — "every stranded branch is live work" — alongside
+   * "nothing was stranded". Those are different facts about somebody's
+   * machine: one means there is nothing to save, the other means there is
+   * unsaved work and this deliberately did not publish it.
+   *
+   * Asserted as a contrast over ONE varying input: the same repository, with
+   * and without the stranded branch being checked out. Both rows produce
+   * `examined: 0`, which is the point — the discriminator has to be
+   * something else, and it is `declined` and the log line.
+   */
+  test("examined: 0 from all-declined is distinguishable from examined: 0 from nothing-stranded", () => {
+    const a = plant();
+    const b = plant();
+    try {
+      // Row 1 — stranded AND checked out: live work, nothing to push.
+      commitOn(a.repo, "feat/live", "x\n");
+      git(a.repo, "checkout", "feat/live");
+      const allDeclined = rescueStrandedBranches(a.repo);
+
+      // Row 2 — genuinely nothing stranded.
+      const nothingStranded = rescueStrandedBranches(b.repo);
+
+      // The collision both rows share. If this stops holding the case is
+      // asserting something other than what it claims.
+      expect(allDeclined.examined, "row 1 reaches examined 0").toBe(0);
+      expect(nothingStranded.examined, "row 2 reaches examined 0").toBe(0);
+      expect(allDeclined.pushed).toEqual([]);
+      expect(nothingStranded.pushed).toEqual([]);
+      expect(allDeclined.unmeasured).toBeNull();
+      expect(nothingStranded.unmeasured).toBeNull();
+
+      // The discriminator.
+      expect(allDeclined.declined, "live work is named").toEqual(["feat/live"]);
+      expect(nothingStranded.declined, "and an empty tree names nothing").toEqual([]);
+      expect(rescueReportLines(allDeclined).join("\n"),
+        "a reader of the log is told work was held back").toContain("STRANDED declined: feat/live");
+      expect(rescueReportLines(nothingStranded),
+        "and told nothing at all when there is nothing to say").toEqual([]);
+    } finally {
+      rmSync(a.root, { recursive: true, force: true });
+      rmSync(b.root, { recursive: true, force: true });
+    }
+  });
+
+  /**
    * The fail-CLOSED contract, asserted where it can actually be driven.
    *
    * `null` and an empty Set must not be the same value: an empty set
