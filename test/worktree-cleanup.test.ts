@@ -5,7 +5,7 @@ import { existsSync } from "fs";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { spawnSync } from "child_process";
-import { strandedBranches, rescueStrandedBranches, rescueReportLines, protectedFromRescue } from "../lib/worktree-cleanup";
+import { strandedBranches, rescueStrandedBranches, rescueReportLines, protectedFromRescue, RESCUE_BUDGET_MS } from "../lib/worktree-cleanup";
 
 describe("worktree-cleanup", () => {
   test("cleanupWorktrees function exists and is importable", () => {
@@ -366,6 +366,75 @@ describe("#1038: commits that exist here and nowhere else", () => {
       // The half that makes the two readings distinguishable to a HUMAN, which
       // is the whole point: the clean tree above prints nothing, this prints.
       expect(rescueReportLines(r).join("\n")).toContain("STRANDED unreadable: feat-uncountable");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  /**
+   * Raised on #1687 round 8, and the most serious thing found in the whole
+   * PR: this arm pushes at EVERY SessionStart with no opt-in flag, from
+   * whatever checkout the session happens to be in — which is normally one
+   * somebody is working in, not an abandoned worktree. Commit WIP, start a
+   * session, and unfinished work is on the remote with nobody having asked.
+   *
+   * The control is the second half: a stranded branch that is NOT checked
+   * out still gets pushed in the same sweep. Without it, "decline
+   * everything" passes the first assertion and silently disables the
+   * feature — which is the state #1038 existed to get out of.
+   */
+  test("the branch this checkout is ON is never published, and the others still are", () => {
+    const { repo, root } = plant();
+    try {
+      commitOn(repo, "feat/left-behind", "x\n");   // stranded, not checked out
+      commitOn(repo, "feat/live-work", "y\n");     // stranded, about to be checked out
+      git(repo, "checkout", "feat/live-work");
+
+      expect(strandedBranches(repo)!.stranded.map(b => b.branch).sort(),
+        "precondition: both must be stranded, or this measures nothing")
+        .toEqual(["feat/left-behind", "feat/live-work"]);
+
+      const r = rescueStrandedBranches(repo);
+
+      expect(r.declined, "the checked-out branch is live work").toEqual(["feat/live-work"]);
+      expect(r.pushed.map(p => p.branch), "and it was not published").not.toContain("feat/live-work");
+      // The control. A rescue that declines everything also satisfies the two
+      // assertions above while doing nothing at all.
+      expect(r.pushed.map(p => p.branch), "the genuinely stranded branch still is")
+        .toEqual(["feat/left-behind"]);
+      expect(rescueReportLines(r).join("\n"), "and the log says WHY it was held back")
+        .toContain("STRANDED declined: feat/live-work");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  /**
+   * The other half of round 8: the sweep runs synchronously from
+   * SessionStart with a 120s timeout per push and no overall cap, so an
+   * unreachable origin costs 120s times the number of stranded branches.
+   * This machine had 14 when #1038 was written — 28 minutes before a
+   * session starts.
+   *
+   * Driven by setting the budget to zero rather than by waiting: the
+   * assertion is that the deadline is CONSULTED and that a branch it stops
+   * becomes a named `failed` row, which is the part that must not be a
+   * silent omission. A branch missing from every list reads as "nothing was
+   * stranded".
+   */
+  test("a spent budget stops the sweep and names what it did not attempt", () => {
+    const { repo, root } = plant();
+    try {
+      commitOn(repo, "feat/one", "x\n");
+      commitOn(repo, "feat/two", "y\n");
+      expect(strandedBranches(repo)!.stranded.length, "precondition: two stranded").toBe(2);
+
+      expect(RESCUE_BUDGET_MS, "the budget is a real wall-clock, not a sentinel").toBeGreaterThan(0);
+
+      // A deadline already in the past when the loop starts: every candidate
+      // takes the not-attempted branch, and none is dropped.
+      const r = rescueStrandedBranches(repo, 0);
+      expect(r.pushed, "nothing is pushed once the budget is spent").toEqual([]);
+      expect(r.failed.map(f => f.branch).sort(), "and every one is named, not omitted")
+        .toEqual(["feat/one", "feat/two"]);
+      for (const f of r.failed) expect(f.reason).toContain("budget");
+      expect(r.examined, "the denominator still counts what was in scope").toBe(2);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

@@ -617,6 +617,18 @@ export interface StrandedReading {
   unreadable: string[];
 }
 
+/**
+ * The wall-clock a whole rescue sweep may spend, against 120s for any one
+ * push. It runs synchronously at SessionStart, so an origin that hangs must
+ * cost a bounded wait rather than 120s times the number of stranded
+ * branches — this machine had 14 of them when #1038 was written, which is
+ * 28 minutes of a session refusing to start.
+ *
+ * One exported constant so a case can read the budget it is asserting
+ * against rather than restating the number.
+ */
+export const RESCUE_BUDGET_MS = 180_000;
+
 export interface RescueResult {
   /**
    * Branches examined. The DENOMINATOR, and the reason it is a field rather
@@ -630,6 +642,16 @@ export interface RescueResult {
   pushed: StrandedBranch[];
   /** Held commits on no origin ref, and the push did not succeed. */
   failed: { branch: string; commits: number; reason: string }[];
+  /**
+   * Stranded, and deliberately NOT pushed because the checkout is on it —
+   * somebody's live work rather than something left behind.
+   *
+   * Its own field rather than silence: a branch missing from both `pushed`
+   * and `failed` would be indistinguishable from one the sweep never saw,
+   * and "your work was not published, here is why" is the thing a reader of
+   * the log most needs to be told.
+   */
+  declined: string[];
   /**
    * Branches whose own count could not be read, so they are neither in
    * `pushed` nor in `failed` nor known to be clean. Carried out of
@@ -725,10 +747,14 @@ export function protectedFromRescue(projectRoot: string): string | null {
  * which is why this can run every session without a guard asking whether it
  * is needed.
  */
-export function rescueStrandedBranches(projectRoot: string): RescueResult {
+export function rescueStrandedBranches(
+  projectRoot: string,
+  /** Injectable so a case can drive the deadline instead of waiting it out. */
+  budgetMs: number = RESCUE_BUDGET_MS,
+): RescueResult {
   const found = strandedBranches(projectRoot);
   if (found === null) {
-    return { examined: 0, pushed: [], failed: [], unreadable: [], unmeasured: "could not list branches or remotes" };
+    return { examined: 0, pushed: [], failed: [], declined: [], unreadable: [], unmeasured: "could not list branches or remotes" };
   }
 
   // Nothing to rescue is a CLEAN reading, and it is reached without a
@@ -740,7 +766,7 @@ export function rescueStrandedBranches(projectRoot: string): RescueResult {
   // no remote and no stranded work. A clean tree would have been reported
   // as an instrument failure, which is this issue's own defect inverted.
   if (found.stranded.length === 0) {
-    return { examined: 0, pushed: [], failed: [], unreadable: found.unreadable, unmeasured: null };
+    return { examined: 0, pushed: [], failed: [], declined: [], unreadable: found.unreadable, unmeasured: null };
   }
 
   const skip = protectedFromRescue(projectRoot);
@@ -748,16 +774,47 @@ export function rescueStrandedBranches(projectRoot: string): RescueResult {
     // Refuse rather than guess. Rescuing with no idea which branch is the
     // default risks pushing the one branch this must never touch.
     return {
-      examined: 0, pushed: [], failed: [], unreadable: found.unreadable,
+      examined: 0, pushed: [], failed: [], declined: [], unreadable: found.unreadable,
       unmeasured: "could not establish the default branch from origin/HEAD or ls-remote",
     };
   }
 
-  const candidates = found.stranded.filter(b => b.branch !== skip);
+  // The branch this checkout is ON is work somebody is doing RIGHT NOW, not
+  // work that was stranded. Publishing it is the one outcome a person would
+  // be surprised by: commit WIP, start a session in the same checkout, and
+  // an unfinished branch is on the remote with nobody having asked. The
+  // delete arm is disarmed by default for the mirror-image reason, and this
+  // arm stays armed only because it now declines the active branch.
+  //
+  // `rev-parse --abbrev-ref HEAD` returns the literal "HEAD" on a detached
+  // checkout, which names no branch and so excludes nothing — correct, and
+  // the reason this is not compared against a branch list.
+  const head = cleanupGit(["rev-parse", "--abbrev-ref", "HEAD"], projectRoot, 5000);
+  const active = head.status === 0 ? head.stdout.trim() : "";
+  const declined = found.stranded
+    .filter(b => b.branch !== skip && b.branch === active && active !== "HEAD")
+    .map(b => b.branch);
+
+  const candidates = found.stranded.filter(
+    b => b.branch !== skip && !declined.includes(b.branch),
+  );
   const pushed: StrandedBranch[] = [];
   const failed: RescueResult["failed"] = [];
 
+  // A sweep runs synchronously from SessionStart, so an unreachable origin
+  // must cost a bounded wait rather than 120s per branch. The deadline is
+  // checked BEFORE each push, so the worst case is one timeout past it, and
+  // every branch not reached is a `failed` row naming the budget — never a
+  // silent omission, which would read as "nothing was stranded".
+  const deadline = Date.now() + budgetMs;
   for (const b of candidates) {
+    if (Date.now() >= deadline) {
+      failed.push({
+        branch: b.branch, commits: b.commits,
+        reason: `not attempted — the ${budgetMs / 1000}s rescue budget for this sweep was spent`,
+      });
+      continue;
+    }
     const res = cleanupGit(["push", "origin", b.branch], projectRoot, 120_000, "remote");
     if (res.status === 0) pushed.push(b);
     else {
@@ -766,7 +823,7 @@ export function rescueStrandedBranches(projectRoot: string): RescueResult {
     }
   }
 
-  return { examined: candidates.length, pushed, failed, unreadable: found.unreadable, unmeasured: null };
+  return { examined: candidates.length, pushed, failed, declined, unreadable: found.unreadable, unmeasured: null };
 }
 
 /**
@@ -789,6 +846,9 @@ export function rescueReportLines(r: RescueResult): string[] {
   // Spoken even when the rescue itself was refused: a branch nobody could
   // count is the likeliest hiding place for the work this feature exists to
   // find, so it must not be swallowed by the refusal line above it.
+  for (const b of r.declined) {
+    lines.push(`STRANDED declined: ${b} — this checkout is on it, so it is live work and was not published`);
+  }
   for (const b of r.unreadable) lines.push(`STRANDED unreadable: ${b} — could not count its commits`);
   return lines;
 }
