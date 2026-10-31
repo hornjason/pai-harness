@@ -573,3 +573,111 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
 
   return result;
 }
+
+/* ------------------------------------------------------------------ *
+ * Stranded work: commits that exist on this machine and nowhere else
+ * ------------------------------------------------------------------ */
+
+/** A local branch holding commits no `origin/*` ref contains. */
+export interface StrandedBranch {
+  branch: string;
+  commits: number;
+}
+
+export interface RescueResult {
+  /**
+   * Branches examined. The DENOMINATOR, and the reason it is a field rather
+   * than a length somewhere: `pushed: []` with `examined: 0` is an instrument
+   * that did not run, and `pushed: []` with `examined: 14` is a clean tree.
+   * Those are different facts and a bare count of rescues spells them the
+   * same way — which is how "zero violations" comes to mean "nobody looked".
+   */
+  examined: number;
+  /** Held commits on no origin ref, and `git push` succeeded. */
+  pushed: StrandedBranch[];
+  /** Held commits on no origin ref, and the push did not succeed. */
+  failed: { branch: string; commits: number; reason: string }[];
+  /** No reading could be taken at all. Not the same as "nothing stranded". */
+  unmeasured: string | null;
+}
+
+/**
+ * Every local branch holding commits reachable from no `origin/*` ref.
+ *
+ * This asks about BRANCHES, not worktrees, and that is the whole point.
+ * `unpushedKeepReason` above protects a *worktree* from deletion, so it only
+ * ever sees branches that still have one — and a worktree is removed at the
+ * end of an ordinary session while its branch stays in `.git` holding the
+ * commits. Measured on this machine 2026-10-31: 14 branches held 25 such
+ * commits and only 5 of them still had a worktree, so a worktree-shaped
+ * reading misses nine of fourteen.
+ *
+ * `null` is "could not tell", never an empty list. A repo with no `origin`
+ * returns an empty list rather than every branch: there is nowhere the work
+ * could have been pushed to, so the question does not apply — the same
+ * answer `unpushedCommitCount` gives, for the same reason.
+ */
+export function strandedBranches(projectRoot: string): StrandedBranch[] | null {
+  const remotes = cleanupGit(["remote"], projectRoot, 5000);
+  if (remotes.status !== 0) return null;
+  if (!remotes.stdout.split("\n").map(r => r.trim()).includes("origin")) return [];
+
+  const refs = cleanupGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"], projectRoot, 10_000);
+  if (refs.status !== 0) return null;
+
+  const out: StrandedBranch[] = [];
+  for (const branch of refs.stdout.split("\n").map(b => b.trim()).filter(Boolean)) {
+    const count = cleanupGit(["rev-list", "--count", branch, "--not", "--remotes=origin"], projectRoot, 10_000);
+    if (count.status !== 0) continue;
+    const n = parseInt(count.stdout.trim(), 10);
+    if (Number.isFinite(n) && n > 0) out.push({ branch, commits: n });
+  }
+  return out;
+}
+
+/**
+ * The default branch, which is never rescued.
+ *
+ * Pushing it is either a no-op or an attempt to move a protected ref, and a
+ * hook that runs unattended at session start has no business doing either.
+ */
+export function protectedFromRescue(projectRoot: string): string {
+  const head = cleanupGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], projectRoot, 5000);
+  if (head.status === 0) {
+    const name = head.stdout.trim().replace(/^origin\//, "");
+    if (name) return name;
+  }
+  return "main";
+}
+
+/**
+ * Push every branch holding commits that exist on no remote.
+ *
+ * Deliberately a plain `git push`, never `--force`: a branch that diverged
+ * from its remote is a `failed` row for a person to look at, not something to
+ * overwrite unattended. A branch already pushed costs one no-op round trip,
+ * which is why this can run every session without a guard asking whether it
+ * is needed.
+ */
+export function rescueStrandedBranches(projectRoot: string): RescueResult {
+  const found = strandedBranches(projectRoot);
+  if (found === null) {
+    return { examined: 0, pushed: [], failed: [], unmeasured: "could not list branches or remotes" };
+  }
+
+  const skip = protectedFromRescue(projectRoot);
+  const candidates = found.filter(b => b.branch !== skip);
+  const pushed: StrandedBranch[] = [];
+  const failed: RescueResult["failed"] = [];
+
+  for (const b of candidates) {
+    const res = cleanupGit(["push", "origin", b.branch], projectRoot, 120_000);
+    if (res.status === 0) pushed.push(b);
+    else {
+      const reason = `${res.stderr || res.stdout || "push failed"}`.split("\n").filter(Boolean).slice(-1)[0] ?? "push failed";
+      failed.push({ branch: b.branch, commits: b.commits, reason: reason.trim() });
+    }
+  }
+
+  return { examined: candidates.length, pushed, failed, unmeasured: null };
+}
