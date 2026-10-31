@@ -1,16 +1,27 @@
 ---
 doc-type: adr
-status: proposed
+status: accepted
 created: 2026-10-29
-updated: 2026-10-29
+updated: 2026-10-31
 owner: jason
 governs: the issues that close the convergence spec's forward coverage gap — what each one is for, which criteria it serves, which files it may touch, and what must land first
 ---
 
 # ADR-004 Increment 1: the issues that close the forward gap
 
-**Status:** Proposed — this file is the reservation. Nothing is created until
-it is committed.
+## Status
+
+**Accepted on 2026-10-31.** The pre-existing issues this plan edits are the
+three named in its own *edit before you file* table — #1162, #1167 and
+#1266 — and all three are open on the tracker carrying that scope.
+
+Scoped deliberately to those three. The *eighteen new issues* section lists
+unnumbered placeholders (P0-1, P1-1, …) that were never filed, so acceptance
+covers the edit-first half of the plan and not the creation half. An earlier
+draft of this note also cited #1425; that issue appears in this document only
+in an aside correcting a mistaken claim that it had closed, and is no part of
+the plan.
+
 **Deciders:** Jason (owner, authorised creation), Rayford (DA)
 
 ## This is a one-off record, not a step in the pipeline

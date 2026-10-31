@@ -1,15 +1,27 @@
 ---
 doc-type: adr
-status: proposed
+status: accepted
 created: 2026-10-11
-updated: 2026-10-11
+updated: 2026-10-31
 owner: jason
 governs: rungate config resolution — mandatory single-loader policy, unresolved-config sentinel semantics, dev/test key normalisation, and the mechanical checks that prevent a sixth reader
 ---
 
 # ADR-002: Single Config Loader and Unresolved-Config Semantics
 
-**Status:** Proposed
+## Status
+
+**Accepted on 2026-10-31.** Code enforces it today, which is the A7 rule's
+test for acceptance:
+
+- `lib/config-loader.ts` exists and exports `resolveConfig`, the
+  report-which-case-you-hit reader this ADR specifies.
+- `runConfigAccessValidation` (CONFIG-1) and `runPromptConfigAccessValidation`
+  (CONFIG-2) in `lib/conformity.ts` fail the suite rather than warn, over a
+  ratchet that refuses in both directions.
+
+Supersedes ADR-001.
+
 **Deciders:** Serena Blackwood (architecture), Rayford (DA)
 **Trigger:** Issue #307 — four config-shape defects that all fire on DailyBriefDashboard's first harness run
 **Governing spec:** `specs/CONFIG-DIRECTORY-STRUCTURE-SPEC.md` (D-1, D-2, SC-478)

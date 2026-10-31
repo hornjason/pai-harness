@@ -1,12 +1,28 @@
 ---
 doc-type: adr
-status: proposed
+status: accepted
 owner: jason
 created: 2026-10-29
-updated: 2026-10-29
+updated: 2026-10-31
 ---
 
 # ADR-005: Repairing the convergence backlog's criterion links
+
+## Status
+
+**Accepted on 2026-10-31.** It is a live rule rather than a proposal: three
+production files cite it — `lib/filing-plan.ts`, `lib/issue-repair.ts` and
+`scripts/plan-issues.ts` — so the classification it sets is read by code and
+not only by people.
+
+An earlier draft of this note said *four files under `lib/`, `scripts/`,
+`test/` and `gates/`*. That was `grep -rl … lib scripts test gates | wc -l`
+read as a per-directory claim when it is a file count, and the fourth match
+was not a citation at all: `test/organize-project.test.ts` writes a fixture
+named `ADR-005-caching.md`, an unrelated document that shares this one's
+number. No file under `gates/` or `test/` cites ADR-005. The command that
+distinguishes the two readings is the one without `wc`:
+`grep -rl "ADR-005" lib scripts test gates`, then read each match.
 
 ## The problem, measured 2026-10-29
 

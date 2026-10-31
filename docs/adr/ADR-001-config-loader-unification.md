@@ -1,15 +1,23 @@
 ---
 doc-type: adr
-status: proposed
+status: superseded
 created: 2026-10-05
-updated: 2026-10-05
+updated: 2026-10-31
 owner: jason
 governs: rungate config access — single-loader policy, null-vs-throw contract, degradation observability, dogfood layout integrity
 ---
 
 # ADR-001: Config Loader Unification
 
-**Status:** Accepted in part — D2 implemented, D1 and D4 overdue (see ADR-002)
+## Status
+
+**Superseded by ADR-002 on 2026-10-31.** Both ADRs govern rungate config
+access and reach the same decision; ADR-002 is the later and more complete
+statement, adding the unresolved-config sentinel and the mechanical checks
+this one only described. Resolved under the A7 rule recorded in
+project-state Priority 2: an ADR whose content moved to another document is
+superseded, not accepted twice.
+
 **Deciders:** Serena Blackwood (architecture), Rayford (DA)
 **Trigger:** Issue #70 — consumer project `agentgrit` generated all six agent briefs with no role configuration, silently
 **Governing spec:** `specs/CONFIG-DIRECTORY-STRUCTURE-SPEC.md`
