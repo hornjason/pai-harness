@@ -663,19 +663,29 @@ export interface RescueResult {
    * which is how "zero violations" comes to mean "nobody looked".
    *
    * **`examined: 0` is not self-describing and was never meant to be read
-   * alone.** Four different facts produce it, and the field that separates
-   * them is named in each case:
+   * alone.** These are the readings it can mean, and the field that
+   * separates each one:
    *
    * | What happened | How to tell |
    * |---|---|
    * | the reading could not be taken | `unmeasured` is non-null |
-   * | nothing was stranded | `unmeasured` null, `declined` empty |
-   * | everything stranded is live work | `declined` non-empty |
-   * | only the default branch was stranded | `unmeasured` null, `declined` empty |
+   * | the sweep ran but saw only part of the tree | `unmeasured` null, `unreadable` non-empty |
+   * | everything stranded is live work somewhere | `declined` non-empty |
+   * | there was nothing to rescue | `unmeasured` null, `unreadable` and `declined` both empty |
    *
-   * The last two rows are why `declined` exists as a field rather than as
-   * silence. The first and second rows collapsing is the defect this whole
-   * module is about, and `unmeasured` is what keeps them apart.
+   * Row one collapsing into row four is the defect this whole module is
+   * about, and `unmeasured` is what keeps them apart. `declined` exists as a
+   * field, rather than as silence, for row three.
+   *
+   * **An earlier version of this comment carried a fifth row — "only the
+   * default branch was stranded" — with a "how to tell" cell identical to
+   * row four's.** It was wrong twice over. It asserted a separation the
+   * type does not implement, and the state it named does not produce this
+   * reading at all: a default branch that is itself stranded has no ref on
+   * origin, so `protectedFromRescue` cannot resolve a default and the
+   * result is row ONE, `unmeasured` non-null. Measured 2026-10-31 on a
+   * planted repo with an origin and an unpushed `main`. The reachable way
+   * to reach row four is that nothing was stranded.
    */
   examined: number;
   /** Held commits on no origin ref, and `git push` succeeded. */

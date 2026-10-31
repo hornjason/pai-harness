@@ -509,6 +509,42 @@ describe("#1038: commits that exist here and nowhere else", () => {
     }
   });
 
+  // The `examined` doc comment used to list "only the default branch was
+  // stranded" as a cause of `examined: 0` alongside "nothing was stranded",
+  // with the same discriminators on both. This is the measurement that
+  // showed the row was not merely indistinguishable but unreachable: a
+  // default branch that is itself stranded has no ref on origin, so no
+  // default can be resolved and the honest answer is UNMEASURED. Asserting
+  // it here means the comment cannot quietly regain the wrong row.
+  test("a stranded default branch reports UNMEASURED, never a clean examined: 0", () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-strand-"));
+    try {
+      const remote = join(root, "remote.git");
+      const repo = join(root, "repo");
+      gitPlain("init", "--bare", "-b", "main", remote);
+      gitPlain("init", "-b", "main", repo);
+      writeFileSync(join(repo, "a.txt"), "a\n");
+      git(repo, "add", "-A"); git(repo, "commit", "-m", "base");
+      // An origin exists, so this is not the no-remote short circuit — but
+      // main was never pushed, so main is the one stranded branch.
+      git(repo, "remote", "add", "origin", remote);
+
+      const found = strandedBranches(repo);
+      expect(found?.stranded.map(b => b.branch),
+        "the premise: the default branch, and only it, is stranded").toEqual(["main"]);
+
+      const r = rescueStrandedBranches(repo);
+      expect(r.examined, "nothing reached the push loop").toBe(0);
+      expect(r.pushed, "and nothing was published").toEqual([]);
+      expect(r.unmeasured,
+        "an examined: 0 here must carry a reason — a null would spell this " +
+          "state the same way as a repository with nothing stranded at all",
+      ).toContain("default branch");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   /**
    * The fail-CLOSED contract, asserted where it can actually be driven.
    *
