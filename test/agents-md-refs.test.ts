@@ -117,9 +117,14 @@ describe("#380 SC-847: the real AGENTS.md produces no false positives and does n
     // population is now exactly one, asserted by name: the check is no
     // longer vacuous here, and a second path arriving is a deliberate
     // edit somebody should see in this diff.
-    expect(referencedPaths(content)).toEqual(["specs/CODE-REVIEW-CONVERGENCE-SPEC.md"]);
-    // And it resolves — the half that makes naming it worth anything.
-    expect(require("fs").existsSync(join(ROOT, "specs/CODE-REVIEW-CONVERGENCE-SPEC.md"))).toBe(true);
+    //
+    // The second one arrived on 2026-10-31: rule 9 names `project-state.json`
+    // because that is where an agreement has to land to count, and a rule
+    // that will not say which file is a rule nobody can comply with.
+    const named = ["specs/CODE-REVIEW-CONVERGENCE-SPEC.md", "project-state.json"];
+    expect(referencedPaths(content)).toEqual(named);
+    // And they resolve — the half that makes naming them worth anything.
+    for (const p of named) expect(require("fs").existsSync(join(ROOT, p))).toBe(true);
   });
 });
 
