@@ -169,6 +169,7 @@ population, and a criterion that belongs to neither is how 25 of 71 open
 issues came to name nothing at all.
 
 - [ ] SC-2625: the engine is finished when `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` reaches the board through the pipeline with no agent editing any issue, milestone, edge or field by hand — the acceptance test is a payload shipping untouched, not a count of criteria ticked here, because every criterion in this document can be green on a tool nobody else can run; a run in which any hand edit occurs fails it and names the edit
+<!-- REVIEW: unmatched (rewriting as file-exists would assert only that specs/CODE-REVIEW-CONVERGENCE-SPEC.md exists, while the criterion coordinates a further claim (field by hand — the acceptance test is a payload shipping untouched, not a count of criteria ticked here, because every criterion in this document can be green on a tool nobody else can run; a run in which any hand edit occurs fails it and names the edit) — the file is mentioned, not what the criterion is about) -->
 
 ### Phase placement — every criterion has exactly one home
 
@@ -206,8 +207,13 @@ with no placement table, which is Phase 4.
 
 ### Phase 3 — the board tells the truth
 
-The acceptance test for this whole spec: open the board, see every issue, its
-milestone, and the criteria it serves, without opening anything.
+What the board must show: open it and see every issue, its milestone, and the
+criteria it serves, without opening anything. This is the *readable board* half
+of the goal, and it is measured on the engine's own issues.
+
+It is not the acceptance test — that is Phase 9, and the two are different
+questions. This one can be satisfied by a board an agent populated by hand;
+Phase 9 cannot, because its subject is a spec the engine did not write.
 
 ### Phase 4 — every spec is planned
 
