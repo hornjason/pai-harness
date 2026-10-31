@@ -1,12 +1,18 @@
 ---
 doc-type: adr
-status: proposed
+status: accepted
 owner: jason
 created: 2026-10-29
 updated: 2026-10-29
 ---
 
 # ADR-005: Repairing the convergence backlog's criterion links
+
+## Status
+
+**Accepted on 2026-10-31.** It is a live rule rather than a proposal: four
+files under `lib/`, `scripts/`, `test/` and `gates/` cite ADR-005, so the
+classification it sets is read by code and not only by people.
 
 ## The problem, measured 2026-10-29
 

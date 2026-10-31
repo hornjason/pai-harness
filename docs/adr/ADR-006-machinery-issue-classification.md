@@ -1,6 +1,6 @@
 ---
 doc-type: adr
-status: proposed
+status: accepted
 created: 2026-10-29
 updated: 2026-10-29
 ---
@@ -9,11 +9,17 @@ updated: 2026-10-29
 
 ## Status
 
-**Proposed.** ADR-005 classified the eleven issues sitting in a numbered
-`Convergence Phase N` milestone that named no criterion. It scoped itself to
-those milestones and so missed this population entirely — six issues in a
-hand-made `Convergence Machinery` milestone, none of which names a criterion
-either. Jason found the gap from #1173 on the board.
+**Accepted on 2026-10-31** — the adjudication is correct and is the decision
+of record.
+
+**Its decision has NOT been applied to the tracker, and accepting it does not
+make that true.** Measured on 2026-10-31: neither #1242 nor #1495 cites
+CRC-C2 in its body, so the three issues this ADR reads as serving CRC-C2 are
+still, on the board, issues naming no criterion — the exact condition the ADR
+was written to resolve.
+
+Recorded here rather than silently ticked. Accepting the reading and applying
+it are two acts, and only the first has happened.
 
 ## The question this answers
 

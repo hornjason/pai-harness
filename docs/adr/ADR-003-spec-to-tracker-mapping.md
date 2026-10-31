@@ -1,6 +1,6 @@
 ---
 doc-type: adr
-status: proposed
+status: superseded
 created: 2026-10-28
 updated: 2026-10-28
 owner: jason
@@ -9,7 +9,17 @@ governs: how a spec's criteria reach the tracker — phase placement, milestones
 
 # ADR-003: How a spec becomes trackable work
 
-**Status:** Proposed — steps 1 and 2 executed for one spec, step 3 is the open gap
+## Status
+
+**Superseded by `specs/SPEC-TO-BOARD-PIPELINE-SPEC.md` on 2026-10-31.** This
+ADR states 0 criteria of its own; the pipeline spec states 25 covering the
+same subject — how a spec's criteria reach the tracker as milestones, issues
+and blocked-by edges. The content moved, so this is superseded rather than
+accepted, per the A7 rule recorded in project-state Priority 2.
+
+ADR-009 names the pipeline spec as the engine's governing document.
+
+**Status:** Superseded by specs/SPEC-TO-BOARD-PIPELINE-SPEC.md 2026-10-31
 **Deciders:** Jason (owner), Rayford (DA)
 **Trigger:** The board could not say what was done, in progress or next, and the
 reason was structural: 251 criteria were unticked across 23 specs and **six**

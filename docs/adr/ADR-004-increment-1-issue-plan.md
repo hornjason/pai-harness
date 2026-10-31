@@ -1,6 +1,6 @@
 ---
 doc-type: adr
-status: proposed
+status: accepted
 created: 2026-10-29
 updated: 2026-10-29
 owner: jason
@@ -9,7 +9,14 @@ governs: the issues that close the convergence spec's forward coverage gap — w
 
 # ADR-004 Increment 1: the issues that close the forward gap
 
-**Status:** Proposed — this file is the reservation. Nothing is created until
+## Status
+
+**Accepted on 2026-10-31.** The plan it describes is live on the tracker:
+#1162, #1167, #1266 and #1425 are all open and carry the scope this ADR
+assigns them. An issue plan is implemented by its issues existing, and they
+do.
+
+**Status:** Accepted 2026-10-31 — the four issues it plans are open on the tracker
 it is committed.
 **Deciders:** Jason (owner, authorised creation), Rayford (DA)
 
