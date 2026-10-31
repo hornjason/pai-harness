@@ -138,3 +138,35 @@ export function gitIsolatedEnv(
 ): NodeJS.ProcessEnv {
   return { ...base, ...GIT_ISOLATION_ENV };
 }
+
+/**
+ * The environment for a git command that must reach a REMOTE.
+ *
+ * `gitIsolatedEnv` is right for reads: nulling the global and system config
+ * makes a reading the same on every machine. It is wrong for `push` and
+ * `ls-remote`, because `credential.helper` is declared in exactly those
+ * files and removing them removes the credential.
+ *
+ * Measured 2026-10-31 on this machine, and it is every push rather than a
+ * corner case: the only `credential.helper` is `osxkeychain`, declared in
+ * the SYSTEM gitconfig at
+ * `/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig`. Under
+ * isolation `git push --dry-run` fails with *"could not read Username for
+ * 'https://github.com'"*; run with this env it reports *"Everything
+ * up-to-date"*.
+ *
+ * So this deliberately applies NO env isolation. Command-scope isolation
+ * still applies through `gitIsolatedArgs`, which is where the determinism
+ * that does not depend on credentials lives. It exists here, beside its
+ * opposite, so a caller choosing between them is choosing between two named
+ * things in the declaring position rather than hand-rolling an env object.
+ *
+ * `base` is copied rather than passed through, because a Bun child spawned
+ * with no `env` key does not observe a late edit to `process.env` — which
+ * would make this branch unreachable from any test that sets one.
+ */
+export function gitCredentialEnv(
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return { ...base };
+}

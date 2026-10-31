@@ -612,3 +612,57 @@ row, restored from that copy after every row, and confirmed **byte-identical by
   still have no demonstrated failing input** beyond *the schema DECLARES
   overlapLines*. They assert over a file this harness cannot mutate as a
   module, and they are reported as uncovered rather than counted as cases.
+
+## #1038 — work that exists on this machine and nowhere else
+
+A worktree is removed at the end of an ordinary session while its branch stays
+in `.git` holding the commits, so a reading attached to `git worktree list`
+cannot see most of the population it exists to find. Measured on this machine
+2026-10-31: **14 branches held 25 commits reachable from no `origin/*` ref, and
+5 of them still had a worktree.** Nine of fourteen were invisible to every
+instrument in the repository.
+
+Nothing reported it, for three reasons that had to hold at once. The rule in
+`.claude/rules/parallel-sessions.md` — *"Push finished work"* — has nothing
+executing it. `unpushedKeepReason` in `lib/worktree-cleanup.ts` asks the right
+question but only of worktrees, and only to decide whether to *keep* one. And
+`git status --porcelain`, which is how both the census and
+`CommitEnforcement.hook.ts` decide a tree is "clean", returns zero lines for a
+committed-but-unpushed branch — so **committing is the step that makes work
+invisible.** An agent that leaves a mess is flagged; an agent that tidily
+commits and stops is silent.
+
+The remedy is a push rather than a report, because a push ends the condition
+instead of describing it, and is idempotent — a branch already on origin costs
+one no-op round trip. The default branch is excluded: pushing it is either a
+no-op or an attempt to move a protected ref, and neither belongs in a hook that
+runs unattended at every session start.
+
+### Why `examined` is a field and not a length
+
+`pushed: []` with `examined: 0` is an instrument that did not run.
+`pushed: []` with `examined: 14` is a clean tree. A bare count of rescues
+spells those the same way, which is how "zero violations" comes to mean
+"nobody looked" — the shape named in
+`.claude/rules/checks-must-be-able-to-fail.md` as an assertion that holds
+vacuously. `unmeasured` carries the third case, a reading that could not be
+taken at all.
+
+### What was broken to prove it (SC-2630..2631)
+
+Four mutations of `lib/worktree-cleanup.ts`, each run against
+`test/worktree-cleanup.test.ts`, baseline 13 pass / 0 fail:
+
+| Mutation | Result |
+|---|---|
+| finder drops the `n > 0` filter, reporting every branch | 2 fail |
+| rescue reports success without invoking `git push` | 1 fail |
+| the default branch is no longer excluded | 1 fail |
+| a failed reading returns `unmeasured: null` | 1 fail |
+
+The second is the one that matters: it asserts by asking git again after the
+rescue, not by reading the return value, so a rescue that reports success
+while pushing nothing goes red.
+
+- [ ] SC-2630: lib/worktree-cleanup.ts contains [export function strandedBranches] — every local branch holding commits reachable from no origin ref, asked of branches rather than worktrees, with a repo that has no origin returning an empty list rather than every branch
+- [ ] SC-2631: lib/worktree-cleanup.ts contains [export function rescueStrandedBranches] — the branches are pushed rather than reported, never with --force and never the default branch, and the result separates a clean tree from a reading that could not be taken
