@@ -14,8 +14,22 @@ import { existsSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { CLI_COMMANDS, helpText, runCommandScript } from "../lib/cli-commands";
+import { harnessVersionLine } from "../lib/harness-identity";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Say which version is running, before anything else can fail.
+//
+// On STDERR, and that is the whole design. `ai-review.yml` captures the
+// adjudicator with `2>&1`, so this reaches the CI log either way and nothing
+// is lost by keeping it off stdout — while stdout stays what a caller can
+// parse. `--version` in particular exists to be read by a machine and must
+// remain exactly one line.
+//
+// Emitted for every invocation including `--help` and an unknown command: the
+// runs worth attributing are the ones that went wrong, and a banner that
+// skips the failure paths is absent exactly when it is wanted.
+console.error(harnessVersionLine(PACKAGE_ROOT));
 
 const [name, ...rest] = process.argv.slice(2);
 

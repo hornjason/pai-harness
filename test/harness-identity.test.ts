@@ -25,6 +25,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "os";
 import { join } from "path";
 import { isHarnessItself } from "../lib/generators/agents-md";
+import { harnessVersionLine } from "../lib/harness-identity";
 
 const ROOT = join(import.meta.dir, "..");
 const scratch: string[] = [];
@@ -146,5 +147,67 @@ describe("#380 SC-844: there is one implementation, so there is one binding to m
     const viaOwner = require("../lib/harness-identity").isHarnessItself;
     const viaGenerator = require("../lib/generators/agents-md").isHarnessItself;
     expect(viaGenerator).toBe(viaOwner);
+  });
+});
+
+/**
+ * The version the CLI announces must be READ from the package it is running
+ * out of. Nothing else in a CI log can answer "which version executed".
+ *
+ * The pin — `bunx rungate@0.8.5` — is authored text. It appears in the
+ * workflow, in the annotation that quotes the command back, and in the body
+ * of any PR that discusses pins, and all three are byte-identical to a
+ * resolved reading. Three separate readings of one run on 2026-10-24 each
+ * looked like they attributed a version and none of them could: the only
+ * `rungate@0.8.x` string in a 4,766-line log was the annotation's own copy
+ * of the pin, and bun's resolve block prints `Resolved, downloaded and
+ * extracted [76]` — a package count, with no name and no version in it.
+ *
+ * So a literal here would reproduce the exact defect it is meant to remove,
+ * which is why the cases below fabricate a version and watch it come back
+ * out rather than asserting that some line exists.
+ */
+describe("the announced version is read from package metadata, not written into the source", () => {
+  test("a fabricated version is what comes back", () => {
+    const root = fixture(JSON.stringify({ name: "rungate", version: "9.9.9-probe" }));
+    expect(harnessVersionLine(root)).toContain("9.9.9-probe");
+  });
+
+  test("two roots give two lines — a literal cannot do this", () => {
+    // The non-literal proof. A hardcoded version satisfies the case above by
+    // accident only if someone hardcodes "9.9.9-probe"; it cannot satisfy
+    // this one at all, because one string cannot equal two different
+    // fabricated versions.
+    const a = fixture(JSON.stringify({ name: "rungate", version: "1.2.3-a" }));
+    const b = fixture(JSON.stringify({ name: "rungate", version: "4.5.6-b" }));
+    expect(harnessVersionLine(a)).toContain("1.2.3-a");
+    expect(harnessVersionLine(b)).toContain("4.5.6-b");
+    expect(harnessVersionLine(a)).not.toBe(harnessVersionLine(b));
+  });
+
+  test("this tree's line carries this tree's version", () => {
+    const version = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8")).version;
+    expect(harnessVersionLine(ROOT)).toContain(version);
+  });
+
+  test("an unreadable package.json is UNMEASURED, and does not throw", () => {
+    // A CLI that dies because it could not introduce itself is worse than
+    // one that cannot. And a version it could not read must not be spelled
+    // the same as one it could — absent, silent and successful are the three
+    // states this repository keeps apart everywhere else.
+    expect(() => harnessVersionLine(fixture("{ not json"))).not.toThrow();
+    expect(harnessVersionLine(fixture("{ not json"))).toContain("UNMEASURED");
+    expect(harnessVersionLine(fixture(null))).toContain("UNMEASURED");
+    expect(harnessVersionLine(fixture(JSON.stringify({ name: "rungate" })))).toContain("UNMEASURED");
+  });
+
+  test("the marker is not spelled the way the pin is", () => {
+    // `rungate@0.8.5` is the pin's spelling and appears in authored text in
+    // at least three positions. If the announcement used it too, a grep for
+    // a resolved value would match authored text again and the line would
+    // have bought nothing.
+    const line = harnessVersionLine(fixture(JSON.stringify({ name: "rungate", version: "7.7.7" })));
+    expect(line).not.toContain("rungate@7.7.7");
+    expect(line).toContain("rungate-version:");
   });
 });

@@ -43,6 +43,62 @@ import { join } from "path";
 /** The harness's own package name. The one fact this module knows. */
 export const HARNESS_PACKAGE = "rungate";
 
+/**
+ * What the CLI says about itself before it does anything (#1598 follow-up).
+ *
+ * ## The reading this exists to make possible
+ *
+ * CI invokes the adjudicator as `bunx rungate@<version>`, and the version in
+ * that command is **authored text**. It is written into
+ * `.github/workflows/ai-review.yml` by the scaffold at generation time, and
+ * it is written again into the `::notice` annotation that quotes the command
+ * back to the reader. So a log can carry the string `rungate@0.8.4` three
+ * times and still not contain a single resolved reading of which version ran.
+ *
+ * That is not hypothetical. On 2026-10-24 three consecutive attempts to
+ * establish a version from a run log were wrong in the same direction, each
+ * correction finding the next layer:
+ *
+ * | the reading | why it cannot attribute a version |
+ * |---|---|
+ * | grep the log for `rungate@0.8.x` | matches the PR body, echoed by the round-counting step |
+ * | the same grep with colour codes excluded | still matches the annotation, which is authored |
+ * | bun's resolve block above the adjudication | prints `Resolved, downloaded and extracted [76]` — a count, no name, no version |
+ *
+ * The version had to be recovered from outside the log entirely, by reading
+ * the pin out of `ai-review.yml` at main's commit as of the run's
+ * `createdAt`. That works and it is three readings, two of which are easy to
+ * take against the wrong tree — `refs/pull/<N>/merge` is recomputed when main
+ * moves, so it describes a tree the run never saw.
+ *
+ * One line printed by the running process collapses all three into one.
+ *
+ * ## Why the spelling is deliberately not the pin's
+ *
+ * `rungate-version:` rather than `rungate@<v>`. If the announcement used the
+ * pin's spelling, a grep for a resolved value would match authored text again
+ * and this would have bought nothing — the defect reproduced inside its own
+ * fix. The marker is the discriminator; the version is the payload.
+ *
+ * ## UNMEASURED rather than a plausible default
+ *
+ * An unreadable or version-less `package.json` returns `UNMEASURED`, not a
+ * guess and not an empty string. A version that could not be read must not be
+ * spelled the same as one that could — `.claude/rules/config-access.md`,
+ * *Silent Default Substitution*. It does not throw: a CLI that dies because
+ * it could not introduce itself is worse than one that cannot.
+ */
+export function harnessVersionLine(root: string): string {
+  let version: unknown;
+  try {
+    version = JSON.parse(readFileSync(join(root, "package.json"), "utf-8"))?.version;
+  } catch {
+    version = undefined;
+  }
+  const resolved = typeof version === "string" && version.length > 0 ? version : "UNMEASURED";
+  return `rungate-version: ${resolved} (resolved at runtime, not the pin)`;
+}
+
 export function isHarnessItself(root: string): boolean {
   try {
     return JSON.parse(readFileSync(join(root, "package.json"), "utf-8"))?.name === HARNESS_PACKAGE;
