@@ -2,7 +2,7 @@
 doc-type: spec
 testable: true
 compliance: strict
-governs: THE ENGINE — the tooling that turns a spec into board state, and nothing that is shipped through it. How a spec's criteria become milestones, issues and blocked-by edges, and how the board shows which criterion each issue serves without anybody opening it. The first payload is specs/CODE-REVIEW-CONVERGENCE-SPEC.md, which this document does not govern
+governs: THE ENGINE that turns a spec into board state — not the specs it ships. Payload: CODE-REVIEW-CONVERGENCE-SPEC.md
 created: 2026-10-29
 status: active
 updated: 2026-10-31

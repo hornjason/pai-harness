@@ -6,10 +6,7 @@ paths:
   - "gates/**"
   - "hooks/**"
   - "scripts/**"
-generated-sha: 27a71202820e54d4
-doc-type: reference
-status: active
-updated: 2026-10-31
+generated-sha: a4d2fa8de3b99d9a
 ---
 
 Read the governing spec BEFORE making changes in that area.
@@ -40,6 +37,6 @@ Read the governing spec BEFORE making changes in that area.
 | SESSION-AUDIT-SPEC.md | Session behavioral audit — two feedback loops for instruction quality improvement | false |
 | SESSION-LIFECYCLE-SPEC.md | Session start and end rituals — cold-start context loading, session-end state capture, handoff brief generation | true |
 | SPEC-AUTHORING-SPEC.md | Spec authoring — the frame a new spec is born with, and the rule that a ticked criterion must name what proved it | true |
-| SPEC-TO-BOARD-PIPELINE-SPEC.md | THE ENGINE — the tooling that turns a spec into board state, and nothing that is shipped through it. How a spec's criteria become milestones, issues and blocked-by edges, and how the board shows which criterion each issue serves without anybody opening it. The first payload is specs/CODE-REVIEW-CONVERGENCE-SPEC.md, which this document does not govern | true |
+| SPEC-TO-BOARD-PIPELINE-SPEC.md | THE ENGINE that turns a spec into board state — not the specs it ships. Payload: CODE-REVIEW-CONVERGENCE-SPEC.md | true |
 | harness-automation-matrix.md | STATES NO CRITERIA — Automation strategy — bash scripts vs hooks vs workflows for harness enforcement | true |
 | bootstrap-data-flow/ (6 specs) | Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | true |
