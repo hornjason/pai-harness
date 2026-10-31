@@ -17,7 +17,6 @@ assigns them. An issue plan is implemented by its issues existing, and they
 do.
 
 **Status:** Accepted 2026-10-31 — the four issues it plans are open on the tracker
-it is committed.
 **Deciders:** Jason (owner, authorised creation), Rayford (DA)
 
 ## This is a one-off record, not a step in the pipeline
