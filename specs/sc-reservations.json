@@ -1,20 +1,20 @@
 {
   "_readme": [
     "SC id reservations. Read by lib/sc-reservations.ts and enforced by lib/create-sc.ts.",
-    "Declare your block HERE, on main, before you consume any id — including a renumber",
+    "Declare your block HERE, on main, before you consume any id \u2014 including a renumber",
     "during a repair, a hand-written fixture id, or a block chosen by eyeballing headroom.",
     "A renumber is an allocation. See .claude/rules/parallel-sessions.md and issue #725.",
     "",
     "Shape: every entry needs owner (branch name or issue ref), from and to (inclusive,",
     "positive integers; below the 9000 fixture floor for SC). note is optional. Blocks",
-    "must not overlap — the reader refuses the whole store if two do, because a store",
+    "must not overlap \u2014 the reader refuses the whole store if two do, because a store",
     "that hands one id to two owners is worse than no store at all.",
     "",
     "namespace is optional and ABSENT MEANS SC, so every entry written before #1363",
     "keeps its exact meaning. The store also holds FG (test/issue-filing-gate.test.ts)",
     "and AR (test/finding-arbiter.test.ts), which have no allocator and so collide the",
     "same way SC ids do. An unknown namespace refuses the whole store by name, and",
-    "overlap is judged WITHIN a namespace — FG 45-60 and SC 45-60 claim nothing in",
+    "overlap is judged WITHIN a namespace \u2014 FG 45-60 and SC 45-60 claim nothing in",
     "common. Adding a namespace means editing RESERVATION_NAMESPACES in",
     "lib/sc-reservations.ts and the table in .claude/rules/parallel-sessions.md.",
     "",
@@ -97,7 +97,13 @@
       "owner": "rg/pipeline-spec",
       "from": 2600,
       "to": 2629,
-      "note": "The spec-to-board pipeline spec (SPEC-TO-BOARD-PIPELINE-SPEC.md). The highest SC in specs/ on main was 2581 and the highest declared block ended at 2599, so this sits above both. SC-2600..2614 and SC-2615..2624 are consumed; 2625..2629 are free. SC-2615..2624 were added by ADR-009 and allocated INSIDE this block rather than a new one, because test/spec-to-board-pipeline.test.ts requires every id this spec consumes to sit in the single reservation owned by rg/pipeline-spec — a second block for the same spec fails it. Delete when both PRs merge."
+      "note": "The spec-to-board pipeline spec (SPEC-TO-BOARD-PIPELINE-SPEC.md). The highest SC in specs/ on main was 2581 and the highest declared block ended at 2599, so this sits above both. SC-2600..2614 and SC-2615..2624 are consumed; 2625..2629 are free. SC-2615..2624 were added by ADR-009 and allocated INSIDE this block rather than a new one, because test/spec-to-board-pipeline.test.ts requires every id this spec consumes to sit in the single reservation owned by rg/pipeline-spec \u2014 a second block for the same spec fails it. Delete when both PRs merge."
+    },
+    {
+      "owner": "rg/stranded-work-visible",
+      "from": 2630,
+      "to": 2631,
+      "note": "#1038 - commits that exist on this machine and nowhere else. Exactly the two ids consumed rather than a block of twenty: PROJECT-STATE.md on main names SC-2636 as the board-identifier config reader and no block reserves it, so a wider block would have squatted on a published plan's id without colliding with anything a diff could show. 2600-2629 (rg/pipeline-spec) is the highest declared block. Delete when the PR merges."
     }
   ]
 }

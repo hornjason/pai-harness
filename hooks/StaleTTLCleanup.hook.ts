@@ -129,11 +129,19 @@ if (PROJECT_ROOT) try {
     }
   }
 } catch (e) { log(`GAP scan error: ${e}`); }
+// Stranded work (#1038): a push CREATES a ref where the branch arm destroys one.
+let rescued = 0;
+if (PROJECT_ROOT) try {
+  const { rescueStrandedBranches, rescueReportLines } = await import('../lib/worktree-cleanup.ts');
+  const rs = rescueStrandedBranches(PROJECT_ROOT); rescued = rs.pushed.length;
+  for (const line of rescueReportLines(rs)) log(line);
+} catch (e) { log(`STRANDED rescue error: ${e}`); }
 
 const parts: string[] = [];
 if (deletedCount > 0) parts.push(`${deletedCount} removed`);
 if (orphansSignalled > 0) parts.push(`${orphansSignalled} orphaned processes signalled`);
 if (gapWarns > 0) parts.push(`${gapWarns} gap warnings`);
+if (rescued > 0) parts.push(`${rescued} stranded branch(es) pushed`);
 if (parts.length > 0) {
   console.log(`Stale TTL cleanup: ${parts.join(', ')}`);
 } else {

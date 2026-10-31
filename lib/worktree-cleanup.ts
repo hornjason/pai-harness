@@ -681,3 +681,21 @@ export function rescueStrandedBranches(projectRoot: string): RescueResult {
 
   return { examined: candidates.length, pushed, failed, unmeasured: null };
 }
+
+/**
+ * The rescue, as log lines. Formatting lives here and not in the hook
+ * because `specs/HOOK-ARCHITECTURE-SPEC.md` makes hooks thin triggers, and
+ * because these lines are the permanent record: one appended line per
+ * rescue means the count of rescues is `grep -c` over the log, with no
+ * counter to keep and nothing to get out of step with the pushes.
+ *
+ * Silence is reserved for "nothing to say". A reading that could not be
+ * taken always speaks — "0 rescued" and "could not look" are the pair this
+ * whole issue is about.
+ */
+export function rescueReportLines(r: RescueResult): string[] {
+  if (r.unmeasured) return [`STRANDED unmeasured: ${r.unmeasured}`];
+  const lines = r.pushed.map(p => `STRANDED rescued: pushed ${p.branch} (${p.commits} commit(s) that were on no remote)`);
+  for (const f of r.failed) lines.push(`STRANDED failed: ${f.branch} (${f.commits} commit(s)) — ${f.reason}`);
+  return lines;
+}
