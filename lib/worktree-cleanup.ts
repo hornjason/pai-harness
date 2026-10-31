@@ -68,6 +68,40 @@ function cleanupGit(args: readonly string[], cwd: string, timeout: number) {
   });
 }
 
+/**
+ * git for a command that CONTACTS THE REMOTE, so it reads the user's real config.
+ *
+ * `cleanupGit` sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`
+ * and `GIT_CONFIG_NOSYSTEM=1`, which is right for reads: it makes a reading the
+ * same on every machine. It is wrong for a push, because `credential.helper`
+ * lives in exactly those files and nulling them removes the credential.
+ *
+ * Measured on this machine 2026-10-31, and it is not a corner case — it is
+ * every push. The remote is `https://github.com/hornjason/rungate.git` and the
+ * only `credential.helper` is `osxkeychain`, declared in the SYSTEM gitconfig
+ * at `/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig`. Under
+ * isolation `git push --dry-run` fails with *"could not read Username for
+ * 'https://github.com': Device not configured"*; run plainly it reports
+ * *"Everything up-to-date"*. So the rescue would have pushed NOTHING, ever,
+ * and every branch would have been logged as a `failed` row — which reads like
+ * a diverged branch somebody should look at rather than a feature that is inert.
+ *
+ * Isolation is still applied at COMMAND scope via `gitIsolatedArgs`, so the
+ * determinism that does not depend on credentials is kept.
+ *
+ * `ls-remote` goes through here for the same reason `push` does: it is a
+ * network call, and `protectedFromRescue` using it to resolve the default
+ * branch would otherwise fail on exactly the repositories where the local
+ * symref is missing — the case it was added to cover.
+ */
+function networkGit(args: readonly string[], cwd: string, timeout: number) {
+  // `env` is passed EXPLICITLY rather than omitted. A Bun child spawned with
+  // no `env` key does not observe a late edit to `process.env`, so omitting
+  // it would make this unreachable from a test that sets one — and a branch
+  // no case can reach is a branch nobody can prove works.
+  return spawnSync("git", gitIsolatedArgs(args), { cwd, encoding: "utf-8", timeout, env: { ...process.env } });
+}
+
 export interface CleanupResult {
   removed: string[];
   kept: string[];
@@ -584,6 +618,22 @@ export interface StrandedBranch {
   commits: number;
 }
 
+/**
+ * What a sweep for stranded branches found, including what it could not read.
+ *
+ * `unreadable` exists because the first version of this `continue`d past a
+ * branch whose `rev-list` failed, which spells "could not tell" exactly like
+ * "nothing stranded" — the same conflation `examined` was added to prevent,
+ * one level further down. A branch nobody could measure is the single most
+ * likely place for stranded work to be hiding, so it is the last thing that
+ * should fall out of the reading silently.
+ */
+export interface StrandedReading {
+  stranded: StrandedBranch[];
+  /** Branches whose own count failed. Neither stranded nor known-clean. */
+  unreadable: string[];
+}
+
 export interface RescueResult {
   /**
    * Branches examined. The DENOMINATOR, and the reason it is a field rather
@@ -597,6 +647,13 @@ export interface RescueResult {
   pushed: StrandedBranch[];
   /** Held commits on no origin ref, and the push did not succeed. */
   failed: { branch: string; commits: number; reason: string }[];
+  /**
+   * Branches whose own count could not be read, so they are neither in
+   * `pushed` nor in `failed` nor known to be clean. Carried out of
+   * `StrandedReading` so the hook's log can say a branch went unmeasured
+   * instead of letting it vanish between the other three numbers.
+   */
+  unreadable: string[];
   /** No reading could be taken at all. Not the same as "nothing stranded". */
   unmeasured: string | null;
 }
@@ -617,37 +674,63 @@ export interface RescueResult {
  * could have been pushed to, so the question does not apply — the same
  * answer `unpushedCommitCount` gives, for the same reason.
  */
-export function strandedBranches(projectRoot: string): StrandedBranch[] | null {
+export function strandedBranches(projectRoot: string): StrandedReading | null {
   const remotes = cleanupGit(["remote"], projectRoot, 5000);
   if (remotes.status !== 0) return null;
-  if (!remotes.stdout.split("\n").map(r => r.trim()).includes("origin")) return [];
+  if (!remotes.stdout.split("\n").map(r => r.trim()).includes("origin")) {
+    return { stranded: [], unreadable: [] };
+  }
 
   const refs = cleanupGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"], projectRoot, 10_000);
   if (refs.status !== 0) return null;
 
-  const out: StrandedBranch[] = [];
+  const stranded: StrandedBranch[] = [];
+  const unreadable: string[] = [];
   for (const branch of refs.stdout.split("\n").map(b => b.trim()).filter(Boolean)) {
     const count = cleanupGit(["rev-list", "--count", branch, "--not", "--remotes=origin"], projectRoot, 10_000);
-    if (count.status !== 0) continue;
-    const n = parseInt(count.stdout.trim(), 10);
-    if (Number.isFinite(n) && n > 0) out.push({ branch, commits: n });
+    const n = count.status === 0 ? parseInt(count.stdout.trim(), 10) : NaN;
+    // A failed count and an unparseable count are the same fact: this branch
+    // was not measured. Recorded rather than skipped — see StrandedReading.
+    if (!Number.isFinite(n)) unreadable.push(branch);
+    else if (n > 0) stranded.push({ branch, commits: n });
   }
-  return out;
+  return { stranded, unreadable };
 }
 
 /**
- * The default branch, which is never rescued.
+ * The default branch, which is never rescued — or `null` if it cannot be
+ * established, which refuses the whole rescue rather than guessing.
  *
  * Pushing it is either a no-op or an attempt to move a protected ref, and a
  * hook that runs unattended at session start has no business doing either.
+ *
+ * This used to fall back to the literal `"main"`, which only protects the
+ * default branch on repositories where that is its name. `refs/remotes/origin/HEAD`
+ * is written by `git clone` and by `git remote set-head`, and it is absent in
+ * plenty of ordinary checkouts — a worktree added from a bare mirror, a remote
+ * added by hand. On a repository whose default is `master`, the fallback named
+ * a branch that is not protected and left the one that is unprotected, which is
+ * the precise inverse of the function's purpose.
+ *
+ * So the local symref is tried first and the REMOTE is asked second, because
+ * `ls-remote --symref` is the authority rather than a cached copy of it. Only
+ * when both are unreadable does this return `null`, and a `null` is a refusal:
+ * see `rescueStrandedBranches`.
  */
-export function protectedFromRescue(projectRoot: string): string {
-  const head = cleanupGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], projectRoot, 5000);
-  if (head.status === 0) {
-    const name = head.stdout.trim().replace(/^origin\//, "");
+export function protectedFromRescue(projectRoot: string): string | null {
+  const local = cleanupGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], projectRoot, 5000);
+  if (local.status === 0) {
+    const name = local.stdout.trim().replace(/^origin\//, "");
     if (name) return name;
   }
-  return "main";
+
+  const remote = networkGit(["ls-remote", "--symref", "origin", "HEAD"], projectRoot, 30_000);
+  if (remote.status === 0) {
+    const m = remote.stdout.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD$/m);
+    if (m?.[1]) return m[1];
+  }
+
+  return null;
 }
 
 /**
@@ -662,16 +745,25 @@ export function protectedFromRescue(projectRoot: string): string {
 export function rescueStrandedBranches(projectRoot: string): RescueResult {
   const found = strandedBranches(projectRoot);
   if (found === null) {
-    return { examined: 0, pushed: [], failed: [], unmeasured: "could not list branches or remotes" };
+    return { examined: 0, pushed: [], failed: [], unreadable: [], unmeasured: "could not list branches or remotes" };
   }
 
   const skip = protectedFromRescue(projectRoot);
-  const candidates = found.filter(b => b.branch !== skip);
+  if (skip === null) {
+    // Refuse rather than guess. Rescuing with no idea which branch is the
+    // default risks pushing the one branch this must never touch.
+    return {
+      examined: 0, pushed: [], failed: [], unreadable: found.unreadable,
+      unmeasured: "could not establish the default branch from origin/HEAD or ls-remote",
+    };
+  }
+
+  const candidates = found.stranded.filter(b => b.branch !== skip);
   const pushed: StrandedBranch[] = [];
   const failed: RescueResult["failed"] = [];
 
   for (const b of candidates) {
-    const res = cleanupGit(["push", "origin", b.branch], projectRoot, 120_000);
+    const res = networkGit(["push", "origin", b.branch], projectRoot, 120_000);
     if (res.status === 0) pushed.push(b);
     else {
       const reason = `${res.stderr || res.stdout || "push failed"}`.split("\n").filter(Boolean).slice(-1)[0] ?? "push failed";
@@ -679,7 +771,7 @@ export function rescueStrandedBranches(projectRoot: string): RescueResult {
     }
   }
 
-  return { examined: candidates.length, pushed, failed, unmeasured: null };
+  return { examined: candidates.length, pushed, failed, unreadable: found.unreadable, unmeasured: null };
 }
 
 /**
@@ -694,8 +786,14 @@ export function rescueStrandedBranches(projectRoot: string): RescueResult {
  * whole issue is about.
  */
 export function rescueReportLines(r: RescueResult): string[] {
-  if (r.unmeasured) return [`STRANDED unmeasured: ${r.unmeasured}`];
-  const lines = r.pushed.map(p => `STRANDED rescued: pushed ${p.branch} (${p.commits} commit(s) that were on no remote)`);
+  const lines = r.unmeasured ? [`STRANDED unmeasured: ${r.unmeasured}`] : [];
+  for (const p of r.pushed) {
+    lines.push(`STRANDED rescued: pushed ${p.branch} (${p.commits} commit(s) that were on no remote)`);
+  }
   for (const f of r.failed) lines.push(`STRANDED failed: ${f.branch} (${f.commits} commit(s)) — ${f.reason}`);
+  // Spoken even when the rescue itself was refused: a branch nobody could
+  // count is the likeliest hiding place for the work this feature exists to
+  // find, so it must not be swallowed by the refusal line above it.
+  for (const b of r.unreadable) lines.push(`STRANDED unreadable: ${b} — could not count its commits`);
   return lines;
 }
