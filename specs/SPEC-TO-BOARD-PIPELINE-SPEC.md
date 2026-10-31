@@ -43,6 +43,12 @@ the record of why the shape is what it is.
 
 ## What this spec does NOT govern
 
+**There are two boundaries and this is the first of them.** This section names
+the *sibling specs* that own neighbouring subjects. The engine/payload
+boundary — why no spec shipped *through* the pipeline is governed here — is a
+second list, under *What this does not govern* in the Success Criteria. A
+reader looking for the full scope boundary needs both.
+
 - **What a good criterion says.** `specs/SPEC-AUTHORING-SPEC.md` owns that.
 - **Whether a review finding is real.** `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`
   owns the arbiter, the jury and the noise buckets.
@@ -143,6 +149,11 @@ run time. ADR-009 draws the boundary.
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
 ### What this does not govern
+
+**The second of two boundaries.** The first, *What this spec does NOT govern*
+near the top, names the sibling specs that own neighbouring subjects. This one
+is the engine/payload split. Grepping this document for "does not govern"
+finds both; stopping at either gives half the scope.
 
 **This spec is the ENGINE. It governs no payload, and a payload's own
 criteria are never repaired by editing this file.**

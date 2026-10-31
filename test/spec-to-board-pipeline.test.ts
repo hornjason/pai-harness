@@ -106,4 +106,42 @@ describe("SPEC-TO-BOARD-PIPELINE-SPEC.md is readable by the pipeline it governs"
     const routing = readFileSync(join(ROOT, ".claude/rules/specs-routing.md"), "utf-8");
     expect(routing).toContain("SPEC-TO-BOARD-PIPELINE-SPEC.md");
   });
+
+  /**
+   * SC-2625 is the engine's terminal condition and NOTHING can check it yet:
+   * no mechanism distinguishes a tool-made edit from a hand edit through the
+   * GitHub API. Raised three times in review against CLAUDE.md's "SCs
+   * without tests are wishes".
+   *
+   * Writing a behavioural test would mean writing one that cannot fail,
+   * which `.claude/rules/checks-must-be-able-to-fail.md` refuses by name. So
+   * this binds the only property that IS checkable today and is the one that
+   * actually goes wrong: that the criterion stays declared-unmeasured until
+   * somebody builds the detector, rather than being quietly ticked.
+   *
+   * It is not decoration. It fails in both directions a wish would drift in:
+   * tick SC-2625 with no detector and it goes red; delete the generator's
+   * `REVIEW: unmatched` marker — the mechanical record that no registry
+   * pattern matches it — and it goes red. The marker is emitted by
+   * `scaffold . --fix`, not typed here, so it cannot be satisfied by writing
+   * a comment that says so.
+   */
+  test("SC-2625 is declared unmeasured, and cannot be ticked without a detector", () => {
+    const line = SPEC.split("\n").findIndex(l => l.includes("SC-2625:"));
+    expect(line, "SC-2625 is the acceptance test and must be present").toBeGreaterThan(-1);
+
+    const lines = SPEC.split("\n");
+    expect(
+      lines[line].startsWith("- [ ]"),
+      "SC-2625 is ticked, but no mechanism yet distinguishes a tool edit from a hand " +
+        "edit on the GitHub API. Build that detector (Stage D of ADR-009) before ticking it.",
+    ).toBe(true);
+
+    expect(
+      lines[line + 1] ?? "",
+      "SC-2625 lost its generator-emitted `REVIEW: unmatched` marker. That marker is the " +
+        "mechanical record that no registry pattern checks this criterion; without it the " +
+        "criterion reads as covered. Re-run `bun bin/rungate.ts scaffold . --fix`.",
+    ).toContain("REVIEW: unmatched");
+  });
 });
