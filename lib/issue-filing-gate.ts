@@ -214,7 +214,7 @@ export function waivableRefusal(refusal: ArbiterRefusal | null): boolean {
  * to the file — add a claim to `SUCCESS.md` and the suite goes red until this
  * number follows.
  */
-export const SUCCESS_CLAIM_COUNT = 6;
+export const SUCCESS_CLAIM_COUNT = 7;
 
 /**
  * Which `SUCCESS.md` claim a filing says it moves, or `null` for none.
