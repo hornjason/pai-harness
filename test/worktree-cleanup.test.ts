@@ -5,7 +5,7 @@ import { existsSync } from "fs";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { spawnSync } from "child_process";
-import { strandedBranches, rescueStrandedBranches, rescueReportLines, protectedFromRescue, RESCUE_BUDGET_MS } from "../lib/worktree-cleanup";
+import { strandedBranches, rescueStrandedBranches, rescueReportLines, protectedFromRescue, checkedOutBranches, RESCUE_BUDGET_MS } from "../lib/worktree-cleanup";
 
 describe("worktree-cleanup", () => {
   test("cleanupWorktrees function exists and is importable", () => {
@@ -420,21 +420,71 @@ describe("#1038: commits that exist here and nowhere else", () => {
    * looks like. The precondition asserts the push WOULD otherwise have
    * happened, so a green row cannot come from there being nothing to push.
    */
-  test("an unreadable HEAD refuses the sweep instead of declining nothing", () => {
+  /**
+   * Round 9's high finding, and the population #1038 is actually about.
+   *
+   * An agent works in `.claude/worktrees/wt-a` on a branch with a local
+   * commit. SessionStart fires the hook, which resolves `PROJECT_ROOT` via
+   * `repoRootFrom` — that runs `rev-parse --git-common-dir`, so from a
+   * worktree it names the MAIN checkout. Two earlier versions of this guard
+   * read the main checkout's HEAD, did not match the worktree's branch, and
+   * published somebody's live work.
+   *
+   * The control is the third branch: stranded, checked out NOWHERE, and
+   * still pushed in the same sweep. Without it "decline everything" passes.
+   */
+  test("a branch live in a LINKED WORKTREE is declined, not just the main checkout's", () => {
     const { repo, root } = plant();
     try {
-      commitOn(repo, "feat/live", "x\n");
-      expect(strandedBranches(repo)!.stranded.map(b => b.branch),
-        "precondition: there is something a fail-open guard would have pushed")
-        .toEqual(["feat/live"]);
+      commitOn(repo, "feat/in-worktree", "x\n");
+      commitOn(repo, "feat/nowhere", "y\n");
 
-      writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/\n");
+      const wt = join(root, "wt-a");
+      git(repo, "worktree", "add", wt, "feat/in-worktree");
+
+      // The main checkout is on main; the live branch is only in the worktree.
+      expect(gitPlain("-C", repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim(),
+        "precondition: main's HEAD is NOT the branch under test, or this measures nothing")
+        .toBe("main");
+      expect(strandedBranches(repo)!.stranded.map(b => b.branch).sort(),
+        "precondition: both are stranded")
+        .toEqual(["feat/in-worktree", "feat/nowhere"]);
 
       const r = rescueStrandedBranches(repo);
-      expect(r.unmeasured, "the refusal names WHICH reading failed").toContain("branch this checkout is on");
-      expect(r.pushed, "nothing is published when live work cannot be identified").toEqual([]);
-      expect(r.declined, "and it does not claim to have declined anything").toEqual([]);
-      expect(r.examined, "the denominator is not quietly a success").toBe(0);
+
+      expect(r.declined, "the worktree's branch is live work").toEqual(["feat/in-worktree"]);
+      expect(r.pushed.map(p => p.branch), "and it was not published").not.toContain("feat/in-worktree");
+      // The control.
+      expect(r.pushed.map(p => p.branch), "a branch checked out nowhere is still rescued")
+        .toEqual(["feat/nowhere"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  /**
+   * The fail-CLOSED contract, asserted where it can actually be driven.
+   *
+   * `null` and an empty Set must not be the same value: an empty set
+   * declines nothing, so returning one on a failed read publishes every live
+   * branch — which is how the two previous versions of this guard were
+   * wrong. A repository that cannot be listed is the only input that
+   * distinguishes them.
+   *
+   * The refusal WIRING — that `rescueStrandedBranches` turns a null into an
+   * UNMEASURED rather than an empty decline list — is proved by mutation
+   * rather than here, because `worktree list` fails only when the repository
+   * is broken enough that `strandedBranches` has already refused, so no
+   * fixture reaches that branch through the front door.
+   */
+  test("checkedOutBranches answers null on a repository it cannot list, never an empty set", () => {
+    expect(checkedOutBranches("/nonexistent/path/not/a/repo"),
+      "an unlistable repository must not spell the same as one with no branches checked out")
+      .toBeNull();
+
+    const { repo, root } = plant();
+    try {
+      const live = checkedOutBranches(repo);
+      expect(live, "a readable repository answers a set, so the null above is not vacuous").not.toBeNull();
+      expect([...live!], "and it names the branch the main checkout is on").toEqual(["main"]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

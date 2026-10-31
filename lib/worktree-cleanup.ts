@@ -618,6 +618,31 @@ export interface StrandedReading {
 }
 
 /**
+ * Every branch checked out in this repository — the main checkout and every
+ * linked worktree — or `null` if the listing could not be taken.
+ *
+ * `null` rather than an empty set, because the two mean opposite things to
+ * the caller: an empty set declines nothing and a failed read must decline
+ * everything. Returning `new Set()` on failure is what made the first two
+ * versions of this guard publish live work.
+ *
+ * Reads `git worktree list --porcelain`, whose `branch refs/heads/<name>`
+ * lines name exactly the branches git considers occupied. Git will not let
+ * the same branch be checked out twice, so "occupied" and "somebody is
+ * working on it" are the same set.
+ */
+export function checkedOutBranches(projectRoot: string): Set<string> | null {
+  const r = cleanupGit(["worktree", "list", "--porcelain"], projectRoot, 10_000);
+  if (r.status !== 0) return null;
+  const out = new Set<string>();
+  for (const line of r.stdout.split("\n")) {
+    const m = /^branch refs\/heads\/(.+)$/.exec(line.trim());
+    if (m?.[1]) out.add(m[1]);
+  }
+  return out;
+}
+
+/**
  * The wall-clock a whole rescue sweep may spend, against 120s for any one
  * push. It runs synchronously at SessionStart, so an origin that hangs must
  * cost a bounded wait rather than 120s times the number of stranded
@@ -786,28 +811,36 @@ export function rescueStrandedBranches(
   // delete arm is disarmed by default for the mirror-image reason, and this
   // arm stays armed only because it now declines the active branch.
   //
-  // `rev-parse --abbrev-ref HEAD` returns the literal "HEAD" on a detached
-  // checkout, which names no branch and so excludes nothing — correct, and
-  // the reason this is not compared against a branch list.
+  // Which branches are LIVE WORK is one question, and the answer is every
+  // branch checked out ANYWHERE in this repository — not the branch of the
+  // checkout this happens to be called from.
   //
-  // A FAILED read refuses the sweep rather than declining nothing. Defaulting
-  // `active` to "" matches no branch, so the guard would silently pass every
-  // branch through — including the live one it exists to protect — exactly
-  // when git is in the state least worth trusting. This hook runs at
-  // SessionStart, where a concurrent lock makes that failure plausible rather
-  // than theoretical. `.claude/rules/checks-must-be-able-to-fail.md` calls
-  // this shape fail-open error handling: a guard that reports "nothing to
-  // protect" because it could not look.
-  const head = cleanupGit(["rev-parse", "--abbrev-ref", "HEAD"], projectRoot, 5000);
-  if (head.status !== 0) {
+  // Two earlier versions got this wrong in the same place and that is why
+  // this reads a set rather than a value. `rev-parse HEAD` answers for one
+  // checkout, and `projectRoot` is `repoRootFrom(cwd)`, which resolves
+  // `--git-common-dir` and so ALWAYS names the main checkout. An agent
+  // working in `.claude/worktrees/wt-a` on `feat/live` would have its live
+  // branch read as main's HEAD, not match, and be published — the guard
+  // missing the exact population #1038 exists for.
+  //
+  // `git worktree list` is the whole class in one reading: git refuses to
+  // check a branch out in two worktrees at once, so the set of checked-out
+  // branches IS the set of live ones, and a worktree added later is covered
+  // without another patch. A detached worktree prints `detached` instead of
+  // a `branch` line and correctly contributes nothing.
+  const live = checkedOutBranches(projectRoot);
+  if (live === null) {
+    // Fail CLOSED. An empty set matches nothing, so a failed read would
+    // publish every branch including the live ones, exactly when git is in
+    // the state least worth trusting — the fail-open shape named first in
+    // `.claude/rules/checks-must-be-able-to-fail.md`.
     return {
       examined: 0, pushed: [], failed: [], declined: [], unreadable: found.unreadable,
-      unmeasured: "could not read the branch this checkout is on, so live work could not be told from stranded work",
+      unmeasured: "could not list the checkouts of this repository, so live work could not be told from stranded work",
     };
   }
-  const active = head.stdout.trim();
   const declined = found.stranded
-    .filter(b => b.branch !== skip && b.branch === active && active !== "HEAD")
+    .filter(b => b.branch !== skip && live.has(b.branch))
     .map(b => b.branch);
 
   const candidates = found.stranded.filter(
