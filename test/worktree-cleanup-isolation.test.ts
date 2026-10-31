@@ -229,8 +229,37 @@ console.log("RESULT " + JSON.stringify(await cleanupWorktrees({ projectRoot: pro
     const doors = [...src.matchAll(/spawnSync\(\s*"git"\s*,\s*([A-Za-z_$][\w$]*)\(/g)];
     expect(doors.length, "the one git invocation does not call anything to build its argv").toBe(1);
     expect(doors[0][1], "the one door does not apply lib/git-isolation.ts").toBe("gitIsolatedArgs");
-    expect(src, "the seam must apply the env half too; the flags alone leave ~/.gitconfig live")
-      .toContain("env: gitIsolatedEnv()");
+
+    // The env half used to be asserted as the literal `env: gitIsolatedEnv()`,
+    // which was exact while this module had ONE kind of git call. It now has
+    // two: a `push`/`ls-remote` must NOT null the global and system config,
+    // because `credential.helper` lives there and nulling it makes every push
+    // fail to authenticate (#1038).
+    //
+    // So the property asserted is the stronger one that survives that: the
+    // choice between the two environments is a single expression, both sides
+    // come from lib/git-isolation.ts, and the sides are not swapped. An
+    // inversion — handing the isolated env to the remote call — is the failure
+    // this replaces the literal with, and a bare `.toContain` of either name
+    // could not have caught it.
+    expect(
+      src.replace(/\s+/g, " "),
+      "the env half must be ONE expression routing to lib/git-isolation.ts, with remote on the credential side",
+    ).toContain('reach === "remote" ? gitCredentialEnv() : gitIsolatedEnv()');
+    expect(
+      [...src.matchAll(/env:\s*\{/g)].length,
+      "no inline env object — lib/git-isolation.ts is the declaring position for both modes",
+    ).toBe(0);
+    // Only remote-reaching verbs may ask for the credential environment.
+    // `[^;]` keeps the match inside ONE statement. A `[\s\S]*?` here spanned
+    // from `cleanupGit(["remote"], …)` to the `"remote"` argument of a later
+    // call and reported the verb `remote`, which does not exist.
+    const remoteCalls = [...src.matchAll(/cleanupGit\(\s*\[\s*"([a-z-]+)"[^;]*?"remote"\s*\)/g)].map(m => m[1]);
+    expect(
+      remoteCalls.filter(v => !["push", "ls-remote", "fetch"].includes(v)),
+      "a local verb asking for the credential env is a read that stopped being reproducible",
+    ).toEqual([]);
+    expect(remoteCalls.length, "the remote mode is reached, so the check is not vacuous").toBeGreaterThan(0);
     expect(
       src.includes("core.fsmonitor") || src.includes("core.excludesFile") || src.includes("GIT_CONFIG_GLOBAL"),
       "the isolation set must not be re-spelled here — lib/git-isolation.ts is the declaring position",

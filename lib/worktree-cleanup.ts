@@ -12,7 +12,7 @@
 import { readdirSync, realpathSync, statSync, existsSync, readFileSync, rmSync } from "fs";
 import { join, isAbsolute } from "path";
 import { spawnSync } from "child_process";
-import { gitIsolatedArgs, gitIsolatedEnv } from "./git-isolation";
+import { gitIsolatedArgs, gitIsolatedEnv, gitCredentialEnv } from "./git-isolation";
 
 /**
  * The ONE place this module runs `git` (#1097).
@@ -59,48 +59,31 @@ import { gitIsolatedArgs, gitIsolatedEnv } from "./git-isolation";
  * classified, which is why it is off by default; that is #436's argument
  * and this change does not touch it.
  */
-function cleanupGit(args: readonly string[], cwd: string, timeout: number) {
+/**
+ * The ONE place this module reaches git (#1097).
+ *
+ * `reach` picks which environment lib/git-isolation.ts hands back, and that
+ * is the only thing a caller may vary. A `"remote"` call keeps command-scope
+ * isolation and drops the env half, because `credential.helper` lives in the
+ * global and system config that the env half nulls — see `gitCredentialEnv`.
+ *
+ * A second `spawnSync` here would be a second door that can drift, which is
+ * what #1097 is about and what `test/worktree-cleanup-isolation.test.ts`
+ * refuses. Adding a mode is therefore an edit to this signature, never a new
+ * call site.
+ */
+type GitReach = "local" | "remote";
+
+function cleanupGit(args: readonly string[], cwd: string, timeout: number, reach: GitReach = "local") {
+  const env = reach === "remote" ? gitCredentialEnv() : gitIsolatedEnv();
   return spawnSync("git", gitIsolatedArgs(args), {
     cwd,
     encoding: "utf-8",
     timeout,
-    env: gitIsolatedEnv(),
+    env,
   });
 }
 
-/**
- * git for a command that CONTACTS THE REMOTE, so it reads the user's real config.
- *
- * `cleanupGit` sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`
- * and `GIT_CONFIG_NOSYSTEM=1`, which is right for reads: it makes a reading the
- * same on every machine. It is wrong for a push, because `credential.helper`
- * lives in exactly those files and nulling them removes the credential.
- *
- * Measured on this machine 2026-10-31, and it is not a corner case — it is
- * every push. The remote is `https://github.com/hornjason/rungate.git` and the
- * only `credential.helper` is `osxkeychain`, declared in the SYSTEM gitconfig
- * at `/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig`. Under
- * isolation `git push --dry-run` fails with *"could not read Username for
- * 'https://github.com': Device not configured"*; run plainly it reports
- * *"Everything up-to-date"*. So the rescue would have pushed NOTHING, ever,
- * and every branch would have been logged as a `failed` row — which reads like
- * a diverged branch somebody should look at rather than a feature that is inert.
- *
- * Isolation is still applied at COMMAND scope via `gitIsolatedArgs`, so the
- * determinism that does not depend on credentials is kept.
- *
- * `ls-remote` goes through here for the same reason `push` does: it is a
- * network call, and `protectedFromRescue` using it to resolve the default
- * branch would otherwise fail on exactly the repositories where the local
- * symref is missing — the case it was added to cover.
- */
-function networkGit(args: readonly string[], cwd: string, timeout: number) {
-  // `env` is passed EXPLICITLY rather than omitted. A Bun child spawned with
-  // no `env` key does not observe a late edit to `process.env`, so omitting
-  // it would make this unreachable from a test that sets one — and a branch
-  // no case can reach is a branch nobody can prove works.
-  return spawnSync("git", gitIsolatedArgs(args), { cwd, encoding: "utf-8", timeout, env: { ...process.env } });
-}
 
 export interface CleanupResult {
   removed: string[];
@@ -724,7 +707,7 @@ export function protectedFromRescue(projectRoot: string): string | null {
     if (name) return name;
   }
 
-  const remote = networkGit(["ls-remote", "--symref", "origin", "HEAD"], projectRoot, 30_000);
+  const remote = cleanupGit(["ls-remote", "--symref", "origin", "HEAD"], projectRoot, 30_000, "remote");
   if (remote.status === 0) {
     const m = remote.stdout.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD$/m);
     if (m?.[1]) return m[1];
@@ -775,7 +758,7 @@ export function rescueStrandedBranches(projectRoot: string): RescueResult {
   const failed: RescueResult["failed"] = [];
 
   for (const b of candidates) {
-    const res = networkGit(["push", "origin", b.branch], projectRoot, 120_000);
+    const res = cleanupGit(["push", "origin", b.branch], projectRoot, 120_000, "remote");
     if (res.status === 0) pushed.push(b);
     else {
       const reason = `${res.stderr || res.stdout || "push failed"}`.split("\n").filter(Boolean).slice(-1)[0] ?? "push failed";
