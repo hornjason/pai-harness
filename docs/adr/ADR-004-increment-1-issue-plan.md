@@ -11,10 +11,16 @@ governs: the issues that close the convergence spec's forward coverage gap — w
 
 ## Status
 
-**Accepted on 2026-10-31.** The plan it describes is live on the tracker:
-#1162, #1167, #1266 and #1425 are all open and carry the scope this ADR
-assigns them. An issue plan is implemented by its issues existing, and they
-do.
+**Accepted on 2026-10-31.** The pre-existing issues this plan edits are the
+three named in its own *edit before you file* table — #1162, #1167 and
+#1266 — and all three are open on the tracker carrying that scope.
+
+Scoped deliberately to those three. The *eighteen new issues* section lists
+unnumbered placeholders (P0-1, P1-1, …) that were never filed, so acceptance
+covers the edit-first half of the plan and not the creation half. An earlier
+draft of this note also cited #1425; that issue appears in this document only
+in an aside correcting a mistaken claim that it had closed, and is no part of
+the plan.
 
 **Status:** Accepted 2026-10-31 — the four issues it plans are open on the tracker
 **Deciders:** Jason (owner, authorised creation), Rayford (DA)

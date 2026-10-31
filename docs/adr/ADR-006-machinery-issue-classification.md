@@ -13,10 +13,22 @@ updated: 2026-10-29
 of record.
 
 **Its decision has NOT been applied to the tracker, and accepting it does not
-make that true.** Measured on 2026-10-31: neither #1242 nor #1495 cites
-CRC-C2 in its body, so the three issues this ADR reads as serving CRC-C2 are
-still, on the board, issues naming no criterion — the exact condition the ADR
-was written to resolve.
+make that true.** Measured on 2026-10-31 against the table below, all six
+rows, not a sample:
+
+| Issue | What the table assigns | On the tracker today |
+|---|---|---|
+| #1495 | `CRC-C2` | open, body does not cite CRC-C2 |
+| #1497 | `CRC-C2` | open, body does not cite CRC-C2 |
+| #1571 | `CRC-C2` | open, body does not cite CRC-C2 |
+| #1257 | `(b)` none — machinery | open, body does not say machinery |
+| #1173 | `(b)` none — machinery | open, body does not say machinery |
+| #1157 | `(b)` none — machinery | open, body does not say machinery |
+
+Six of six unrepaired. Every one of these issues still renders on the board
+exactly as it did before this ADR was written — a blank Criteria cell that
+reads the same whether nobody looked or somebody decided — which is the
+condition the ADR exists to remove.
 
 Recorded here rather than silently ticked. Accepting the reading and applying
 it are two acts, and only the first has happened.
