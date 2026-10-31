@@ -15,7 +15,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 
 ## Hard Constraints
 
-### How we work — eight rules; one to seven are Jason's call of 2026-10-28, rule 8 of 2026-10-30
+### How we work — nine rules; one to seven are Jason's call of 2026-10-28, rules 8 and 9 of 2026-10-30 and 2026-10-31
 
 1. **A spec says what must be true; it is never the to-do list.** Specs still
    carry checkboxes. Nobody works from them — work comes off the tracker.
@@ -50,6 +50,9 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
    that comes back empty is it logged as a blocker and left for the next
    unblocked item. Abandoning on the third try throws away the problems that
    were one search away from solved. Jason's call, 2026-10-30.
+9. **An agreement is not real until it is in `project-state.json`** — write
+   it there before the turn ends. Priority 2 says what the last unwritten
+   one cost. Jason's call, 2026-10-31.
 
 ## Rules
 
