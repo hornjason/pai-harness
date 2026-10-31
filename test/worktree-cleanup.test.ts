@@ -121,13 +121,28 @@ describe("#1038: commits that exist here and nowhere else", () => {
   const git = (cwd: string, ...a: string[]) =>
     spawnSync("git", a, { cwd, encoding: "utf-8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
 
+  /**
+   * The fixture spawns that take their path as an ARGUMENT rather than a cwd —
+   * `init`, `init --bare`, `clone`. One seam, and it passes the environment
+   * explicitly.
+   *
+   * Not a style preference. The last case in this file writes
+   * `process.env.GIT_CONFIG_GLOBAL`, and a Bun child given no `env` key does
+   * not observe a write that happened after startup (#1096) — so a bare
+   * `spawnSync` here would silently run against a DIFFERENT git config from
+   * the `git()` helper two lines up, which does pass one. Two environments in
+   * one fixture is the shape that makes a red case look like a flake.
+   */
+  const gitPlain = (...a: string[]) =>
+    spawnSync("git", a, { encoding: "utf-8", env: { ...process.env } });
+
   /** A repo with `origin` pointing at a real bare remote, one commit on main, pushed. */
   function plant(): { repo: string; root: string } {
     const root = mkdtempSync(join(tmpdir(), "rg-strand-"));
     const remote = join(root, "remote.git");
     const repo = join(root, "repo");
-    spawnSync("git", ["init", "--bare", "-b", "main", remote], { encoding: "utf-8" });
-    spawnSync("git", ["init", "-b", "main", repo], { encoding: "utf-8" });
+    gitPlain("init", "--bare", "-b", "main", remote);
+    gitPlain("init", "-b", "main", repo);
     writeFileSync(join(repo, "a.txt"), "a\n");
     git(repo, "add", "-A"); git(repo, "commit", "-m", "base");
     git(repo, "remote", "add", "origin", remote);
@@ -164,7 +179,7 @@ describe("#1038: commits that exist here and nowhere else", () => {
     const root = mkdtempSync(join(tmpdir(), "rg-strand-noorigin-"));
     try {
       const repo = join(root, "repo");
-      spawnSync("git", ["init", "-b", "main", repo], { encoding: "utf-8" });
+      gitPlain("init", "-b", "main", repo);
       writeFileSync(join(repo, "a.txt"), "a\n");
       git(repo, "add", "-A"); git(repo, "commit", "-m", "base");
       // There is nowhere the work could have been pushed TO, so the question
@@ -251,9 +266,9 @@ describe("#1038: commits that exist here and nowhere else", () => {
       // "main" here, so `master` — the one branch that must not be pushed —
       // was the only one left unprotected. The inverse of the intent.
       const bare = join(root, "origin.git");
-      spawnSync("git", ["init", "--bare", "-b", "master", bare], { encoding: "utf-8" });
+      gitPlain("init", "--bare", "-b", "master", bare);
       const repo = join(root, "repo");
-      spawnSync("git", ["clone", bare, repo], { encoding: "utf-8" });
+      gitPlain("clone", bare, repo);
       git(repo, "config", "user.email", "t@example.com");
       git(repo, "config", "user.name", "t");
       writeFileSync(join(repo, "a.txt"), "a\n");
@@ -299,7 +314,7 @@ describe("#1038: commits that exist here and nowhere else", () => {
     const root = mkdtempSync(join(tmpdir(), "rg-strand-cleanroom-"));
     try {
       const repo = join(root, "repo");
-      spawnSync("git", ["init", "-b", "main", repo], { encoding: "utf-8" });
+      gitPlain("init", "-b", "main", repo);
       writeFileSync(join(repo, "a.txt"), "a\n");
       git(repo, "add", "-A"); git(repo, "commit", "-m", "base");
 
@@ -313,6 +328,44 @@ describe("#1038: commits that exist here and nowhere else", () => {
       expect(r.pushed).toEqual([]);
       expect(r.examined).toBe(0);
       expect(rescueReportLines(r), "and it says nothing at all").toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  /**
+   * The combination the other cases do not reach: NOTHING stranded and
+   * something unreadable at the same time.
+   *
+   * Raised on #1687 as a conflation — `found.stranded.length === 0`
+   * short-circuits to a CLEAN reading, and that predicate is true both when
+   * the tree is genuinely clean and when every branch in it failed to count.
+   * The two must not produce the same bytes. They do not: `unreadable` is
+   * carried through the short-circuit and `rescueReportLines` prints it, so
+   * a reader of the log sees the branch nobody could measure.
+   *
+   * The control is the no-origin case above, which asserts
+   * `rescueReportLines(r)` is EXACTLY empty on a genuinely clean tree. Without
+   * it this case passes against a reporter that narrates on every run.
+   */
+  test("nothing stranded AND something unreadable is not the same reading as clean", () => {
+    const { repo, root } = plant();
+    try {
+      // A ref pointing at an object this repository does not have. It lists,
+      // and it cannot be counted — so `stranded` stays empty while
+      // `unreadable` does not.
+      writeFileSync(join(repo, ".git", "refs", "heads", "feat-uncountable"),
+        "0000000000000000000000000000000000000001\n");
+
+      const found = strandedBranches(repo)!;
+      expect(found.stranded, "precondition: nothing may be stranded here").toEqual([]);
+      expect(found.unreadable, "precondition: something must be uncountable").toContain("feat-uncountable");
+
+      const r = rescueStrandedBranches(repo);
+      expect(r.unmeasured, "the rescue itself took a reading").toBeNull();
+      expect(r.pushed).toEqual([]);
+      expect(r.unreadable, "the uncountable branch survives the short-circuit").toContain("feat-uncountable");
+      // The half that makes the two readings distinguishable to a HUMAN, which
+      // is the whole point: the clean tree above prints nothing, this prints.
+      expect(rescueReportLines(r).join("\n")).toContain("STRANDED unreadable: feat-uncountable");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
