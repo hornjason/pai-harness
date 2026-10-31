@@ -22,7 +22,7 @@ draft of this note also cited #1425; that issue appears in this document only
 in an aside correcting a mistaken claim that it had closed, and is no part of
 the plan.
 
-**Status:** Accepted 2026-10-31 — the four issues it plans are open on the tracker
+**Status:** Accepted 2026-10-31 — the three issues it edits (#1162, #1167, #1266) are open on the tracker; the eighteen new issues were never filed
 **Deciders:** Jason (owner, authorised creation), Rayford (DA)
 
 ## This is a one-off record, not a step in the pipeline
