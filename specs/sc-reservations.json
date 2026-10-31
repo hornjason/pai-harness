@@ -97,7 +97,7 @@
       "owner": "rg/pipeline-spec",
       "from": 2600,
       "to": 2629,
-      "note": "The spec-to-board pipeline spec (SPEC-TO-BOARD-PIPELINE-SPEC.md). The highest SC in specs/ on main was 2581 and the highest declared block ended at 2599, so this sits above both. SC-2600..2614 are consumed; 2615..2629 are free. Delete when the PR merges."
+      "note": "The spec-to-board pipeline spec (SPEC-TO-BOARD-PIPELINE-SPEC.md). The highest SC in specs/ on main was 2581 and the highest declared block ended at 2599, so this sits above both. SC-2600..2614 and SC-2615..2624 are consumed; 2625..2629 are free. SC-2615..2624 were added by ADR-009 and allocated INSIDE this block rather than a new one, because test/spec-to-board-pipeline.test.ts requires every id this spec consumes to sit in the single reservation owned by rg/pipeline-spec — a second block for the same spec fails it. Delete when both PRs merge."
     }
   ]
 }

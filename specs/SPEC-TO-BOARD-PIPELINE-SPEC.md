@@ -8,7 +8,7 @@ governs: >-
   serves without anybody opening it
 created: 2026-10-29
 status: active
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 
 # The spec-to-board pipeline
@@ -94,6 +94,57 @@ something to name — which is the whole argument of this spec.
 - [ ] SC-2613: lib/github.ts contains [filingGate] — `createIssue` is adjudicated by the filing cap, so a tool that creates issues is metered the way a `gh issue create` in a Bash command already is
 - [ ] SC-2614: lib/finding-arbiter.ts contains [STALE_CITATION] — a finding whose quoted source does not appear in the tree the review ran on is reported STALE rather than adjudicated as live, because a finding and its own staleness are indistinguishable to the person answering it; on PR #1672 round 4, two findings from ONE run at ONE head SHA disagreed about whether the milestone read was paginated, the one that said it was not quoted source the reviewed commit had deleted, and the sibling that said it was cited a file containing zero matches for either fetcher
 
+### The board's own state is a reading, not an impression
+
+Every criterion above names a symbol in `lib/`, and a symbol being present is
+not the same as the board being right. Measured 2026-10-30: **15 of 15** of
+them are that form, and SC-2609 is satisfiable — `NAMES_NONE` exists — while
+being false, because its value is `""`. The criteria below state the OUTCOME,
+so the thing this spec exists for is checkable rather than inferred from
+fifteen symbols. ADR-009 records the decision and the baselines.
+
+**None of them carries the `(behavioral)` marker, and that is deliberate.**
+They were written with it and `test/behavioral-cache.test.ts` AC-8 went red:
+in this repository `(behavioral)` means *verified through the behavioural
+eval system and mapped in `config/behavioral-sc-map.json`*, and the unmapped
+population is banded at 10-20 precisely to stop behavioural criteria
+accumulating with nothing able to verify them. Adding ten unmapped ones took
+it to 29. "States a behaviour" and "is eval-verified" are different
+properties and the marker already owns the second. Do not re-add it to buy
+the first; SC-2622 is what forbids symbol-satisfaction here.
+
+- [ ] SC-2615: every criterion in every testable spec resolves to exactly one phase, or the spec is reported UNPLANNED by name — the sweep reads all of `specs/`, never one spec named on the command line, because a board built from one spec reports every other spec's criteria as having no work
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2616: an open issue naming no criterion is reported as a refusal naming the issue, never counted as covered, and a blank cell is distinguishable from a deliberate "serves none" — 25 of 71 open issues named nothing on 2026-10-30 and the two states rendered identically
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2617: every issue whose work depends on another carries a `blocked by` edge on the tracker, so *what is next* is computed from the graph — 0 of 71 open issues carried one on 2026-10-30, which makes every ordering claim prose
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+
+### Nothing in the engine is hand-run
+
+The engine is the tooling that turns a spec into board state. The payload is a
+spec shipped through it. Judgement belongs on the payload and in
+human-authored artefacts in git; it does not belong in an agent's hands at
+run time. ADR-009 draws the boundary.
+
+- [ ] SC-2618: one command reports the board's conformance and exits non-zero while any reading is short of its target, so a loop has a terminal condition that is not an agent's opinion
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2619: every input that command reads comes from the repository or the live API, and a step that reads a file an agent assembled by hand is a refusal naming it — `criterion-inventory` needed a hand-built snapshot handed to it on 2026-10-30, so its numbers were reproducible by nobody else
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2620: the conformance command runs as a test on main, so a board that drifts reddens CI rather than waiting for somebody to look at it
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2621: the project board's identifiers are read from project config, so a session told nothing can address the board, and an absent board config is UNMEASURED rather than an empty reading — the node id appeared in 0 repository locations on 2026-10-30 and lived only in agent prompts
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+
+### The chain traces back to a goal
+
+- [ ] SC-2622: no criterion in this section is satisfied by a symbol being present — each names a behaviour, and a mutant removing that behaviour turns its test red; 1131 of 1485 ticked criteria repo-wide were symbol-presence on 2026-10-30
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2623: a spec declares which of the project's standing success claims it serves, so *which goal does this spec serve* is answerable without reading the spec — the same traceability this document demands of issues, one level up
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [ ] SC-2624: `/goal` establishes a goal from measured evidence when none exists or the recorded one is past its own staleness bound, instead of reporting against it — the fleet goal file carried one five days stale and about another subject throughout the session that wrote this
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+
 ### Phase placement — every criterion has exactly one home
 
 A criterion in no phase is unreadable as anything: *nobody has reached it*,
@@ -108,6 +159,9 @@ is built from this document.
 | **Phase 3** | SC-2608, SC-2609, SC-2610 |
 | **Phase 4** | SC-2611 |
 | **Phase 5** | SC-2612, SC-2613, SC-2614 |
+| **Phase 6** | SC-2615, SC-2616, SC-2617 |
+| **Phase 7** | SC-2618, SC-2619, SC-2620, SC-2621 |
+| **Phase 8** | SC-2622, SC-2623, SC-2624 |
 
 ### Phase 0 — the transform refuses
 
@@ -139,6 +193,24 @@ the board cannot place its criteria. This is the widest gap by count.
 A finding becomes a criterion, and every path that creates an issue is
 metered. Without these the backlog grows faster than the pipeline drains it —
 AGENTS.md rule 7, opened against closed.
+
+### Phase 6 — the board's state is a reading
+
+Phases 0-5 are about the machinery. This one is about its output: placed,
+attributed and ordered are three readings anybody can take, and each is
+currently taken by an agent looking at four tools and forming a view.
+
+### Phase 7 — nothing is hand-run
+
+One command, runnable by a person and by CI, reading only the repository and
+the live API. This is what takes the agent out of the trust chain, and it is
+also what makes `/loop` able to terminate on something other than an opinion.
+
+### Phase 8 — the chain traces back to a goal
+
+The defect this document fixes for issues, applied to specs. An issue that
+names no criterion and a spec that names no goal are the same failure at two
+heights, and only the first one has a tool.
 
 ### Exit conditions
 

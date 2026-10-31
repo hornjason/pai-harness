@@ -277,11 +277,23 @@ describe("#1644: Hard Constraints is read as a list, in both markdown forms", ()
     expect(hardConstraintsSection(createTempDir())).toBeNull();
   });
 
-  test("the real AGENTS.md parses to all seven rules", () => {
+  test("the real AGENTS.md parses to every rule in it", () => {
     // The input the finding was actually about. A fixture can agree with a
     // fixture; this is the file that went unread.
-    const got = loadExistingConstraints(join(import.meta.dir, "..", ".."));
-    expect(got).toHaveLength(7);
+    //
+    // Counted from the file rather than written as a literal. The literal
+    // was `7`, and adding rule 8 turned this red in CI having said nothing
+    // about the parser — the number is a census of a document that grows,
+    // so hardcoding it makes every new rule look like a parser regression.
+    // The parser is still what is under test: it must find ALL of them, and
+    // the `proved-by:` assertion below pins that it is reading content and
+    // not merely counting list markers.
+    const root = join(import.meta.dir, "..", "..");
+    const section = hardConstraintsSection(root)!;
+    const numbered = section.split("\n").filter((l) => /^\d+\. \*\*/.test(l)).length;
+    expect(numbered, "no numbered rules were found, so the count is vacuous").toBeGreaterThan(0);
+    const got = loadExistingConstraints(root);
+    expect(got).toHaveLength(numbered);
     expect(got.some((c) => c.includes("proved-by:"))).toBe(true);
   });
 
