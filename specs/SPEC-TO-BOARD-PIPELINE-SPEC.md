@@ -2,13 +2,10 @@
 doc-type: spec
 testable: true
 compliance: strict
-governs: >-
-  The spec-to-board pipeline — how a spec's criteria become milestones, issues
-  and blocked-by edges, and how the board shows which criterion each issue
-  serves without anybody opening it
+governs: THE ENGINE that turns a spec into board state — not the specs it ships. Payload: CODE-REVIEW-CONVERGENCE-SPEC.md
 created: 2026-10-29
 status: active
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # The spec-to-board pipeline
@@ -45,6 +42,12 @@ criterion deserves would be a tool nobody could review, and the artefact is
 the record of why the shape is what it is.
 
 ## What this spec does NOT govern
+
+**There are two boundaries and this is the first of them.** This section names
+the *sibling specs* that own neighbouring subjects. The engine/payload
+boundary — why no spec shipped *through* the pipeline is governed here — is a
+second list, under *What this does not govern* in the Success Criteria. A
+reader looking for the full scope boundary needs both.
 
 - **What a good criterion says.** `specs/SPEC-AUTHORING-SPEC.md` owns that.
 - **Whether a review finding is real.** `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`
@@ -145,6 +148,35 @@ run time. ADR-009 draws the boundary.
 - [ ] SC-2624: `/goal` establishes a goal from measured evidence when none exists or the recorded one is past its own staleness bound, instead of reporting against it — the fleet goal file carried one five days stale and about another subject throughout the session that wrote this
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
+### What this does not govern
+
+**The second of two boundaries.** The first, *What this spec does NOT govern*
+near the top, names the sibling specs that own neighbouring subjects. This one
+is the engine/payload split. Grepping this document for "does not govern"
+finds both; stopping at either gives half the scope.
+
+**This spec is the ENGINE. It governs no payload, and a payload's own
+criteria are never repaired by editing this file.**
+
+| | What it is | Who reviews it | Where its criteria live |
+|---|---|---|---|
+| **Engine** | the tooling that turns a spec into milestones, issues, blocked-by edges and board state | nobody by hand — a command | here |
+| **Payload** | a spec shipped *through* the engine | Jason | in that spec |
+
+`specs/CODE-REVIEW-CONVERGENCE-SPEC.md` is the first real payload and is
+named here so the boundary has an instance rather than a definition. Its 44
+phase criteria are its own; none of them is in scope for this document, and
+a finding against the convergence spec is not a finding against the engine.
+
+The two were conflated once already and it cost a build order. ADR-008 ran
+the pipeline against the pipeline's own spec, which is legitimate — the
+engine's work is also work — but it made *engine* and *payload* look like one
+population, and a criterion that belongs to neither is how 25 of 71 open
+issues came to name nothing at all.
+
+- [ ] SC-2625: the engine is finished when `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` reaches the board through the pipeline with no agent editing any issue, milestone, edge or field by hand — the acceptance test is a payload shipping untouched, not a count of criteria ticked here, because every criterion in this document can be green on a tool nobody else can run; a run in which any hand edit occurs fails it and names the edit
+<!-- REVIEW: unmatched (rewriting as file-exists would assert only that specs/CODE-REVIEW-CONVERGENCE-SPEC.md exists, while the criterion coordinates a further claim (field by hand — the acceptance test is a payload shipping untouched, not a count of criteria ticked here, because every criterion in this document can be green on a tool nobody else can run; a run in which any hand edit occurs fails it and names the edit) — the file is mentioned, not what the criterion is about) -->
+
 ### Phase placement — every criterion has exactly one home
 
 A criterion in no phase is unreadable as anything: *nobody has reached it*,
@@ -162,6 +194,7 @@ is built from this document.
 | **Phase 6** | SC-2615, SC-2616, SC-2617 |
 | **Phase 7** | SC-2618, SC-2619, SC-2620, SC-2621 |
 | **Phase 8** | SC-2622, SC-2623, SC-2624 |
+| **Phase 9** | SC-2625 |
 
 ### Phase 0 — the transform refuses
 
@@ -180,8 +213,13 @@ with no placement table, which is Phase 4.
 
 ### Phase 3 — the board tells the truth
 
-The acceptance test for this whole spec: open the board, see every issue, its
-milestone, and the criteria it serves, without opening anything.
+What the board must show: open it and see every issue, its milestone, and the
+criteria it serves, without opening anything. This is the *readable board* half
+of the goal, and it is measured on the engine's own issues.
+
+It is not the acceptance test — that is Phase 9, and the two are different
+questions. This one can be satisfied by a board an agent populated by hand;
+Phase 9 cannot, because its subject is a spec the engine did not write.
 
 ### Phase 4 — every spec is planned
 
@@ -212,10 +250,20 @@ The defect this document fixes for issues, applied to specs. An issue that
 names no criterion and a spec that names no goal are the same failure at two
 heights, and only the first one has a tool.
 
+### Phase 9 — the payload ships
+
+Strictly last, and the only phase whose subject is not this document. Every
+phase above can be green on an engine nobody but its author can run; this one
+cannot, because it is measured on a spec the engine did not write. It is the
+acceptance test, so it is also the honest answer to *when is the engine done*
+— and that answer is deliberately not "every box above is ticked".
+
 ### Exit conditions
 
 - Every open issue names at least one criterion, or carries a recorded reason
   it serves none.
+- `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` has reached the board through the
+  engine with no hand edits (SC-2625). This is the one that ends the work.
 - Every criterion in every spec is reachable from the board: a milestone, an
   issue, or an explicit "not started".
 - `rungate plan-deps` with no `--write` reports no missing edge.
