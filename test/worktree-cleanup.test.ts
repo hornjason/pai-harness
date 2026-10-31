@@ -295,6 +295,27 @@ describe("#1038: commits that exist here and nowhere else", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("a repo with no origin is CLEAN, and costs no network call", () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-strand-cleanroom-"));
+    try {
+      const repo = join(root, "repo");
+      spawnSync("git", ["init", "-b", "main", repo], { encoding: "utf-8" });
+      writeFileSync(join(repo, "a.txt"), "a\n");
+      git(repo, "add", "-A"); git(repo, "commit", "-m", "base");
+
+      // `strandedBranches` already answers "the question does not apply" here.
+      // The rescue must agree. Asking protectedFromRescue anyway would reach
+      // for ls-remote on a repo with no remote, get null, and report
+      // UNMEASURED — a clean tree rendered as an instrument failure, which is
+      // this issue's own defect with the sign flipped.
+      const r = rescueStrandedBranches(repo);
+      expect(r.unmeasured, "nothing stranded is a reading, not a failure").toBeNull();
+      expect(r.pushed).toEqual([]);
+      expect(r.examined).toBe(0);
+      expect(rescueReportLines(r), "and it says nothing at all").toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("the push reads the user's git config, or it cannot authenticate at all", () => {
     const { repo, root } = plant();
     const saved = process.env.GIT_CONFIG_GLOBAL;

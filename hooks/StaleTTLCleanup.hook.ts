@@ -75,15 +75,15 @@ if (PROJECT_ROOT) try {
 
 // Branch cleanup (#516, #1079). Thin trigger: lib/branch-cleanup.ts holds
 // every decision. This arm issues `git push origin --delete`, the one
-// irreversible thing this hook does and the only thing in it that reaches a
-// remote, at EVERY SessionStart from the shared checkout — so it is DISARMED
-// by default and signals nothing. Set RUNGATE_BRANCH_CLEANUP=1 to arm it.
+// IRREVERSIBLE thing this hook does, at EVERY SessionStart from the shared
+// checkout — DISARMED by default; set RUNGATE_BRANCH_CLEANUP=1 to arm. The
+// rescue below reaches the remote too and IS armed: a delete destroys a
+// commit's last copy, a push only creates a ref and never --forces.
 //
 // A disarmed arm and a run that could not resolve the repository both say so
 // by name: zero deletions has three causes here and only one is a clean
 // sweep. `.claude/rungate/hooks.json` names this arming and the #1079 slug
-// refusal as the two things that must BOTH hold before this hook may be
-// reconsidered for consumer deployment.
+// refusal as the two that must BOTH hold before consumer deployment.
 if (PROJECT_ROOT) try {
   const { runBranchCleanupArm } = await import('../lib/branch-cleanup.ts');
   const br = await runBranchCleanupArm({ projectRoot: PROJECT_ROOT, maxAgeDays: 7 });

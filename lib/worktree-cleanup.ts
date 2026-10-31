@@ -748,6 +748,18 @@ export function rescueStrandedBranches(projectRoot: string): RescueResult {
     return { examined: 0, pushed: [], failed: [], unreadable: [], unmeasured: "could not list branches or remotes" };
   }
 
+  // Nothing to rescue is a CLEAN reading, and it is reached without a
+  // network call. `strandedBranches` already short-circuits the no-origin
+  // case to an empty list — "there is nowhere the work could have been
+  // pushed to, so the question does not apply" — and asking
+  // `protectedFromRescue` anyway would spend an `ls-remote` to answer a
+  // question nobody asked, then report UNMEASURED on a repository that has
+  // no remote and no stranded work. A clean tree would have been reported
+  // as an instrument failure, which is this issue's own defect inverted.
+  if (found.stranded.length === 0) {
+    return { examined: 0, pushed: [], failed: [], unreadable: found.unreadable, unmeasured: null };
+  }
+
   const skip = protectedFromRescue(projectRoot);
   if (skip === null) {
     // Refuse rather than guess. Rescuing with no idea which branch is the
