@@ -406,6 +406,39 @@ describe("#1038: commits that exist here and nowhere else", () => {
   });
 
   /**
+   * Round 9: the decline guard must fail CLOSED.
+   *
+   * The first version defaulted `active` to "" when `rev-parse` failed. No
+   * branch equals "", so nothing was declined and every stranded branch —
+   * including the live one the guard exists to protect — was published,
+   * precisely when git was in the state least worth trusting. That is the
+   * fail-open shape `.claude/rules/checks-must-be-able-to-fail.md` names
+   * first: a guard reporting "nothing to protect" because it could not look.
+   *
+   * The unreadable HEAD is made by pointing `.git/HEAD` at a ref that cannot
+   * resolve, which is what a half-written HEAD during a concurrent operation
+   * looks like. The precondition asserts the push WOULD otherwise have
+   * happened, so a green row cannot come from there being nothing to push.
+   */
+  test("an unreadable HEAD refuses the sweep instead of declining nothing", () => {
+    const { repo, root } = plant();
+    try {
+      commitOn(repo, "feat/live", "x\n");
+      expect(strandedBranches(repo)!.stranded.map(b => b.branch),
+        "precondition: there is something a fail-open guard would have pushed")
+        .toEqual(["feat/live"]);
+
+      writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/\n");
+
+      const r = rescueStrandedBranches(repo);
+      expect(r.unmeasured, "the refusal names WHICH reading failed").toContain("branch this checkout is on");
+      expect(r.pushed, "nothing is published when live work cannot be identified").toEqual([]);
+      expect(r.declined, "and it does not claim to have declined anything").toEqual([]);
+      expect(r.examined, "the denominator is not quietly a success").toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  /**
    * The other half of round 8: the sweep runs synchronously from
    * SessionStart with a 120s timeout per push and no overall cap, so an
    * unreachable origin costs 120s times the number of stranded branches.

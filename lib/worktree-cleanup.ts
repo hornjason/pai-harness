@@ -789,8 +789,23 @@ export function rescueStrandedBranches(
   // `rev-parse --abbrev-ref HEAD` returns the literal "HEAD" on a detached
   // checkout, which names no branch and so excludes nothing — correct, and
   // the reason this is not compared against a branch list.
+  //
+  // A FAILED read refuses the sweep rather than declining nothing. Defaulting
+  // `active` to "" matches no branch, so the guard would silently pass every
+  // branch through — including the live one it exists to protect — exactly
+  // when git is in the state least worth trusting. This hook runs at
+  // SessionStart, where a concurrent lock makes that failure plausible rather
+  // than theoretical. `.claude/rules/checks-must-be-able-to-fail.md` calls
+  // this shape fail-open error handling: a guard that reports "nothing to
+  // protect" because it could not look.
   const head = cleanupGit(["rev-parse", "--abbrev-ref", "HEAD"], projectRoot, 5000);
-  const active = head.status === 0 ? head.stdout.trim() : "";
+  if (head.status !== 0) {
+    return {
+      examined: 0, pushed: [], failed: [], declined: [], unreadable: found.unreadable,
+      unmeasured: "could not read the branch this checkout is on, so live work could not be told from stranded work",
+    };
+  }
+  const active = head.stdout.trim();
   const declined = found.stranded
     .filter(b => b.branch !== skip && b.branch === active && active !== "HEAD")
     .map(b => b.branch);
